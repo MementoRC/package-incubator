@@ -8,7 +8,6 @@ pushd !SRC_DIR! || exit /b 1
   meson setup build-!PKG_NAME! ^
     --prefix=!PREFIX! ^
     --buildtype=release ^
-    --default-library=shared ^
     --strip ^
     --backend=ninja
    if errorlevel 1 exit 1
