@@ -1,6 +1,0 @@
-c_compiler:
-  - if: win
-    then:
-      - vs2019
-
-rust_compiler_version: 1.78
