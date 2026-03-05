@@ -8,6 +8,7 @@ context:
   library: ${{ "Library/" if not unix }}
   m2: ${{ "m2-" if not unix }}
   sh: ${{ ".bat" if not unix else ".sh" }}
+  so: ${{ ".so" if linux else ".dylib" if osx else ".dll" }}
 
   # Zig triplet mapping (for zig -target flag)
   zig_triplet: >-
@@ -48,20 +49,17 @@ source:
     patches:
       - patches/0001-pass-through-QEMU_LD_PREFIX-SDKROOT.patch
       - patches/0002-fix-non-unix-zstd-shared-lib-finding.patch
+      - if: not unix
+        then:
+          - patches/0003-remove-clang-cpp-export-all-symbols.patch
 
 build:
   number: ${{ build_number }}
-  # libc++/libc++abi/libunwind NEEDED entries are intentionally added to libLLVM.so
-  # and libclang-cpp.so so zig's ZigClangIsLLVMUsingSeparateLibcxx() check passes.
-  # rattler-build flags these as "overlinking" since symbols resolve transitively,
-  # but the direct NEEDED entries are required for zig compatibility.
-  dynamic_linking:
-    overlinking_behavior: ignore
   script:
     env:
       LLVM_TRIPLET: ${{ llvm_triplet }}
       ZIG_TRIPLET: ${{ zig_triplet }}
-      ZIG_LLVM_SKIP_BUILD: 1
+      # ZIG_LLVM_SKIP_BUILD: 1
       
       # --- BOOTSTRAPPING ---
       CONDA_BUILD_ZIG: >-
@@ -69,11 +67,11 @@ build:
           "x86_64-conda-linux-gnu"                 if build_platform == "linux-64"    else
           "x86_64-apple-darwin13.4.0"              if build_platform == "osx-64"      else
           "arm64-apple-darwin20.0.0"               if build_platform == "osx-arm64"   else
-          "aarch64-w64-windows-gnu"                if not unix and arm64              else
-          "x86_64-w64-windows-gnu"                 if not unix                        else
+          "aarch64-w64-mingw32"                    if not unix and arm64              else
+          "x86_64-w64-mingw32"                     if not unix                        else
           "unknown"
         }}-zig
-
+    
 requirements:
   build:
     - ${{ stdlib('c') }}
@@ -81,15 +79,23 @@ requirements:
     - cmake >=3.19
     - git
     - ninja
-    - if: linux
+    - if: not osx
       then:
         - lld
+    - if: linux
+      then:
         - patchelf
     # Cross-compilation: need host tablegen tools (provided by zig-llvm itself)
     - if: build_platform != target_platform
       then:
+        - libxml2
         - zig_${{ target_platform }}
-        - ${{ name }} ${{ version }}.*
+        - zlib
+        - zstd
+        - if: osx
+          then:
+            - libxml2-devel
+        # - ${{ name }} ${{ version }}.*
       else:
         - zig_${{ build_platform }}
     - if: not unix
@@ -98,39 +104,31 @@ requirements:
         - ${{ m2 }}findutils
         - pkg-config
   host:
+    - libxml2
     - zlib
     - zstd
   run_exports:
     - ${{ pin_subpackage(name, upper_bound='x.x') }}
 
 tests:
-  # Verify package structure
+  # Verify package structure (common files across all platforms)
   - package_contents:
-      strict: true
       files:
-        - lib/zig-llvm/bin/clang-tblgen
         - lib/zig-llvm/bin/llvm-config
         - lib/zig-llvm/bin/llvm-config.real
-        - lib/zig-llvm/bin/llvm-min-tblgen
-        - lib/zig-llvm/bin/llvm-tblgen
         - lib/zig-llvm/include/c++/*
         - lib/zig-llvm/include/clang/*
         - lib/zig-llvm/include/clang-c/*.h
-        - lib/zig-llvm/include/*libunwind*
         - lib/zig-llvm/include/lld/Common/*{.inc,.h}
         - lib/zig-llvm/include/llvm/*
         - lib/zig-llvm/include/llvm-c/*.h
-        - lib/zig-llvm/include/mach-o/compact_unwind_encoding.h
-        - lib/zig-llvm/include/unwind*.h
         - lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
         - lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
-        - lib/zig-llvm/lib/libc++abi.so*
-        - lib/zig-llvm/lib/libclang*
-        - lib/zig-llvm/lib/libc++.modules.json
-        - lib/zig-llvm/lib/libc++.so*
+        - lib/zig-llvm/lib/libc++abi*${{ so }}*
+        - lib/zig-llvm/lib/libclang-cpp*${{ so }}*
+        - lib/zig-llvm/lib/libc++*${{ so }}*
         - lib/zig-llvm/lib/liblld*.a
-        - lib/zig-llvm/lib/libLLVM*
-        - lib/zig-llvm/lib/libunwind*
+        - lib/zig-llvm/lib/libLLVM*${{ so }}*
         - lib/zig-llvm-path.txt
         # Post-install test resources
         - etc/conda/test-files/zig-llvm/*
@@ -145,7 +143,7 @@ tests:
       run:
         - python >=3.9
 
-  # Verify shared libraries: valid ELF, no libstdc++, GLIBC versions, symbols
+  # Verify shared libraries: valid format, no libstdc++, GLIBC versions, symbols
   - script:
       - python testing/test_shared_libs.py
     files:
@@ -154,11 +152,13 @@ tests:
     requirements:
       run:
         - python >=3.9
-        - binutils
+        - if: linux
+          then:
+            - binutils
 
   # CRITICAL: Reproduce zig's ZigClangIsLLVMUsingSeparateLibcxx() check.
-  # Uses ctypes to dlopen the actual installed libLLVM.so and libclang-cpp.so,
-  # checks NEEDED entries, symbol binding, and compares runtime addresses of
+  # Uses ctypes to dlopen the actual installed shared libraries,
+  # checks dependency entries, symbol binding, and compares runtime addresses of
   # std::generic_category().  Separate hidden copies → FAIL.
   - script:
       - python testing/test_libc++_shared.py
@@ -168,7 +168,9 @@ tests:
     requirements:
       run:
         - python >=3.9
-        - binutils
+        - if: linux
+          then:
+            - binutils
 
   # Verify zig can use this LLVM (requires zig in test env)
   - script:

@@ -1,89 +1,140 @@
 #!/usr/bin/env python3
 """Reproduce zig's ZigClangIsLLVMUsingSeparateLibcxx() check.
 
-Zig verifies at startup that libLLVM.so and libclang-cpp.so resolve
+Zig verifies at startup that libLLVM and libclang-cpp resolve
 std::generic_category() to the SAME address — i.e., they share one
-libc++ copy.  If each DSO has its own STB_LOCAL HIDDEN copy (from
-zig cc's static libc++ merge), the addresses differ and zig refuses
-to start.
+libc++ copy.  If each DSO has its own copy, the addresses differ
+and zig refuses to start.
+
+Platform-aware: Linux (ELF), macOS (Mach-O), Windows (PE/COFF).
 
 This script:
-1. Finds libLLVM.so and libclang-cpp.so in the installed package
-2. Checks ELF NEEDED entries for libc++.so.1
-3. Checks whether generic_category is LOCAL HIDDEN (bad) or absent/UNDEFINED (good)
-4. dlopen's both and compares the address of generic_category via a known vtable probe
+1. Finds libLLVM and libclang-cpp shared libraries
+2. Checks dependency entries for libc++ (NEEDED/LC_LOAD_DYLIB/DLL imports)
+3. Checks whether generic_category is local (bad) or undefined/global (good)
+4. dlopen's both and compares the address of generic_category
 
 Exit 0 = OK (single shared copy), exit 1 = FAIL (separate copies).
 """
 
 import ctypes
+import glob
 import os
 import re
 import subprocess
 import sys
 
 
+PLATFORM = sys.platform  # 'linux', 'darwin', 'win32'
+
+
 def find_lib(libdir, pattern):
-    """Find a real (non-symlink) .so file matching pattern."""
-    import glob
+    """Find a real (non-symlink) shared lib matching pattern."""
     candidates = sorted(glob.glob(os.path.join(libdir, pattern)))
     for c in candidates:
         if not os.path.islink(c) and os.path.isfile(c):
             return c
-    # fallback: accept symlinks
     for c in candidates:
         if os.path.isfile(c):
             return c
     return None
 
 
-def run_readelf(lib, flag):
-    """Run readelf and return stdout."""
+def find_shared_lib(libdir, base):
+    """Find a shared library by base name, platform-aware."""
+    if PLATFORM == "linux":
+        return find_lib(libdir, f"{base}*.so*")
+    elif PLATFORM == "darwin":
+        return find_lib(libdir, f"{base}*.dylib*")
+    else:
+        lib = find_lib(libdir, f"{base}*.dll")
+        if not lib:
+            bindir = os.path.join(os.path.dirname(libdir), "bin")
+            if os.path.isdir(bindir):
+                lib = find_lib(bindir, f"{base}*.dll")
+        return lib
+
+
+def run_cmd(cmd, timeout=30):
     try:
-        r = subprocess.run(
-            ["readelf", flag, lib],
-            capture_output=True, text=True, timeout=10,
-        )
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return r.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return ""
 
 
 def check_needed(lib):
-    """Return set of NEEDED sonames."""
-    out = run_readelf(lib, "-d")
-    return set(re.findall(r"Shared library: \[([^\]]+)\]", out))
+    """Return set of dependency names."""
+    if PLATFORM == "linux":
+        out = run_cmd(["readelf", "-d", lib])
+        return set(re.findall(r"Shared library: \[([^\]]+)\]", out))
+    elif PLATFORM == "darwin":
+        out = run_cmd(["otool", "-L", lib])
+        deps = set()
+        for line in out.splitlines()[1:]:
+            match = re.match(r"\s+(\S+)", line)
+            if match:
+                deps.add(os.path.basename(match.group(1)))
+        return deps
+    else:
+        out = run_cmd(["objdump", "-p", lib])
+        return set(re.findall(r"DLL Name:\s+(\S+)", out))
+
+
+def has_libcxx_dep(needed):
+    """Check if libc++ is in the dependency set."""
+    for n in needed:
+        n_lower = n.lower()
+        if "libc++." in n_lower or "libc++.so" in n_lower or "libc++.dylib" in n_lower:
+            if "abi" not in n_lower:
+                return True
+        # Windows: c++.dll or libc++.dll
+        if n_lower in ("c++.dll", "libc++.dll"):
+            return True
+    return False
 
 
 def check_symbol_binding(lib, symbol):
     """Check if symbol is LOCAL HIDDEN, GLOBAL, UNDEFINED, or absent."""
-    # Dynamic symbols first
-    out_dyn = run_readelf(lib, "--dyn-syms")
-    for line in out_dyn.splitlines():
-        if symbol in line:
-            if "LOCAL" in line and "HIDDEN" in line:
-                return "LOCAL_HIDDEN"
-            elif "GLOBAL" in line or "WEAK" in line:
-                if "UND" in line:
-                    return "UNDEFINED"
-                return "GLOBAL"
-    # Full symbol table
-    try:
-        r = subprocess.run(
-            ["nm", "-a", lib], capture_output=True, text=True, timeout=30,
-        )
-        for line in r.stdout.splitlines():
+    if PLATFORM == "linux":
+        out_dyn = run_cmd(["readelf", "--dyn-syms", "--wide", lib])
+        for line in out_dyn.splitlines():
             if symbol in line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    sym_type = parts[-2] if len(parts) == 3 else parts[0]
-                    if sym_type in ("t", "T"):
-                        return "LOCAL_DEFINED" if sym_type == "t" else "GLOBAL_DEFINED"
-                    elif sym_type == "U":
+                if "LOCAL" in line and "HIDDEN" in line:
+                    return "LOCAL_HIDDEN"
+                elif "GLOBAL" in line or "WEAK" in line:
+                    if "UND" in line:
                         return "UNDEFINED"
-        return "NOT_FOUND"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return "UNKNOWN"
+                    return "GLOBAL"
+        # Full symbol table
+        out = run_cmd(["nm", "-a", lib])
+    elif PLATFORM == "darwin":
+        # nm -gU: global defined only; nm -u: undefined only
+        out_g = run_cmd(["nm", "-gU", lib])
+        for line in out_g.splitlines():
+            if symbol in line:
+                return "GLOBAL"
+        out_u = run_cmd(["nm", "-u", lib])
+        for line in out_u.splitlines():
+            if symbol in line:
+                return "UNDEFINED"
+        # Check local symbols
+        out = run_cmd(["nm", "-a", lib])
+    else:
+        out = run_cmd(["nm", lib])
+
+    for line in out.splitlines():
+        if symbol in line:
+            parts = line.split()
+            if len(parts) >= 2:
+                sym_type = parts[-2] if len(parts) == 3 else parts[0]
+                if sym_type == "t":
+                    return "LOCAL_DEFINED"
+                elif sym_type == "T":
+                    return "GLOBAL_DEFINED"
+                elif sym_type == "U":
+                    return "UNDEFINED"
+    return "NOT_FOUND"
 
 
 def main():
@@ -94,10 +145,15 @@ def main():
         print(f"ERROR: libdir not found: {libdir}", file=sys.stderr)
         return 1
 
-    libllvm = find_lib(libdir, "libLLVM*.so.*")
-    libclang = find_lib(libdir, "libclang-cpp*.so.*")
-    libcxx = find_lib(libdir, "libc++.so.1*")
+    libllvm = find_shared_lib(libdir, "libLLVM")
+    libclang = find_shared_lib(libdir, "libclang-cpp")
+    libcxx = find_shared_lib(libdir, "libc++")
 
+    # Windows fallback: LLVM-20.dll, not libLLVM
+    if not libllvm and PLATFORM == "win32":
+        libllvm = find_shared_lib(libdir, "LLVM")
+
+    print(f"  platform: {PLATFORM}")
     print(f"  libdir:   {libdir}")
     print(f"  libLLVM:  {libllvm}")
     print(f"  libclang: {libclang}")
@@ -107,19 +163,18 @@ def main():
         print("ERROR: Could not find libLLVM or libclang-cpp", file=sys.stderr)
         return 1
 
-    # --- Step 1: Static checks ---
-    print("\n--- Step 1: NEEDED entries ---")
+    # --- Step 1: Dependency checks ---
+    print("\n--- Step 1: Dependency entries ---")
+    static_warnings = []  # May be overridden by runtime check
     errors = []
 
     for name, lib in [("libLLVM", libllvm), ("libclang", libclang)]:
         needed = check_needed(lib)
-        has_libcxx = any("libc++.so" in n and "abi" not in n for n in needed)
-        has_libcxxabi = any("libc++abi.so" in n for n in needed)
-        print(f"  {name} NEEDED: {sorted(needed)}")
-        print(f"    libc++.so: {'YES' if has_libcxx else 'NO'}")
-        print(f"    libc++abi.so: {'YES' if has_libcxxabi else 'NO'}")
-        if not has_libcxx:
-            errors.append(f"{name} missing libc++.so in NEEDED")
+        has_cxx = has_libcxx_dep(needed)
+        print(f"  {name} deps: {sorted(needed)}")
+        print(f"    libc++: {'YES' if has_cxx else 'NO'}")
+        if not has_cxx:
+            static_warnings.append(f"{name} missing libc++ in dependencies")
 
     # --- Step 2: Symbol binding check ---
     print("\n--- Step 2: generic_category symbol binding ---")
@@ -134,29 +189,50 @@ def main():
                 "private libc++ copy baked in, cannot be interposed"
             )
         elif binding == "LOCAL_DEFINED":
-            errors.append(
+            static_warnings.append(
                 f"{name} has local (lowercase t) {SYMBOL} — "
-                "static libc++ merged in"
+                "static libc++ merged in (may be OK if runtime check passes)"
             )
 
     if libcxx:
         binding = check_symbol_binding(libcxx, SYMBOL)
-        print(f"  libc++.so {SYMBOL}: {binding}")
+        print(f"  libc++ {SYMBOL}: {binding}")
         if binding not in ("GLOBAL", "GLOBAL_DEFINED", "WEAK"):
-            errors.append(f"libc++.so {SYMBOL} is {binding}, expected GLOBAL")
+            static_warnings.append(f"libc++ {SYMBOL} is {binding}, expected GLOBAL")
 
     # --- Step 3: Runtime address comparison ---
-    # Spawn a subprocess with LD_LIBRARY_PATH set correctly (it must be set
-    # before process start for ld.so to honour it).
+    # This is the AUTHORITATIVE check — it reproduces what zig actually does.
     print("\n--- Step 3: Runtime address comparison ---")
+    runtime_passed = False
+
+    # Build the library search path env var
+    if PLATFORM == "linux":
+        ld_env_var = "LD_LIBRARY_PATH"
+    elif PLATFORM == "darwin":
+        ld_env_var = "DYLD_LIBRARY_PATH"
+    else:
+        ld_env_var = "PATH"
+
     dlopen_script = f"""\
-import ctypes, sys
+import ctypes, sys, os
 libdir = {libdir!r}
-libllvm = {libllvm!r}
-libclang = {libclang!r}
+libllvm_path = {libllvm!r}
+libclang_path = {libclang!r}
+platform = {PLATFORM!r}
+
+if platform == "win32":
+    os.add_dll_directory(libdir)
+    bindir = os.path.join(os.path.dirname(libdir), "bin")
+    if os.path.isdir(bindir):
+        os.add_dll_directory(bindir)
+
 try:
-    llvm = ctypes.CDLL(libllvm, mode=ctypes.RTLD_GLOBAL)
-    clang = ctypes.CDLL(libclang, mode=ctypes.RTLD_GLOBAL)
+    if platform == "win32":
+        llvm = ctypes.CDLL(libllvm_path)
+        clang = ctypes.CDLL(libclang_path)
+    else:
+        llvm = ctypes.CDLL(libllvm_path, mode=ctypes.RTLD_GLOBAL)
+        clang = ctypes.CDLL(libclang_path, mode=ctypes.RTLD_GLOBAL)
 except OSError as e:
     print(f"  dlopen failed: {{e}}")
     sys.exit(2)
@@ -195,7 +271,12 @@ except Exception as e:
 """
     try:
         env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = libdir + ":" + env.get("LD_LIBRARY_PATH", "")
+        old = env.get(ld_env_var, "")
+        if PLATFORM == "win32":
+            bindir = os.path.join(os.path.dirname(libdir), "bin")
+            env[ld_env_var] = libdir + os.pathsep + bindir + os.pathsep + old
+        else:
+            env[ld_env_var] = libdir + ":" + old
         r = subprocess.run(
             [sys.executable, "-c", dlopen_script],
             env=env, capture_output=True, text=True, timeout=30,
@@ -203,16 +284,34 @@ except Exception as e:
         print(r.stdout.rstrip())
         if r.stderr.strip():
             print(r.stderr.rstrip())
-        if r.returncode == 1:
+        if r.returncode == 0:
+            runtime_passed = True
+        elif r.returncode == 1:
             errors.append("Runtime: generic_category at different addresses (separate copies)")
         elif r.returncode == 2:
-            errors.append(f"Runtime: dlopen/dlsym failed")
+            errors.append("Runtime: dlopen/dlsym failed")
     except Exception as e:
         print(f"  subprocess failed: {e}")
         errors.append(f"Runtime check failed: {e}")
 
     # --- Summary ---
+    # Runtime address comparison (step 3) is AUTHORITATIVE.
+    # On macOS, libc++ is statically merged with -fvisibility=default, so:
+    #   - libc++ won't appear in NEEDED/deps (step 1 warns)
+    #   - generic_category may be LOCAL_DEFINED (step 2 warns)
+    # But if runtime addresses match, zig's check will pass — that's what matters.
     print(f"\n--- Summary ---")
+    if static_warnings:
+        if runtime_passed:
+            print("STATIC WARNINGS (overridden by runtime check):")
+        else:
+            print("STATIC WARNINGS (promoted to errors — runtime check did not pass):")
+        for w in static_warnings:
+            print(f"  - {w}")
+
+    if not runtime_passed:
+        errors.extend(static_warnings)
+
     if errors:
         print("ERRORS:")
         for e in errors:

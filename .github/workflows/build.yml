@@ -18,12 +18,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: linux-64, os: ubuntu-latest }
-          - { target: win-64, os: windows-latest }
-          - { target: win-arm64, os: windows-11-arm }
-          # - { target: osx-64, os: macos-15-intel }
-          - { target: osx-64, os: macos-14 }
-          - { target: osx-arm64, os: macos-14 }
+          - { target: linux-64, os: ubuntu-latest, build: linux-64 }
+          - { target: win-64, os: windows-latest, build: win-64 }
+          - { target: win-arm64, os: windows-latest, build: win-64 }
+          # - { target: win-64, os: windows-11-arm, build: win-arm64 }
+          # - { target: win-arm64, os: windows-11-arm, build: win-arm64 }
+          # - { target: osx-64, os: macos-15-intel, build: osx-arm64 }
+          - { target: osx-64, os: macos-14, build: osx-arm64 }
+          - { target: osx-arm64, os: macos-14, build: osx-arm64 }
       fail-fast: false
 
     name: ${{ matrix.target }}
@@ -35,7 +37,7 @@ jobs:
 
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.61.0
+          pixi-version: v0.65.0
 
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
@@ -46,7 +48,7 @@ jobs:
         shell: bash
         run: |
           rattler-build build --recipe-dir ./recipes \
-            --skip-existing=all --target-platform=${{ matrix.target }} \
+            --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
 
       - name: Upload all packages
