@@ -72,6 +72,10 @@ build:
           "unknown"
         }}-zig
     
+      # --- DEBUG ---
+      skip: unix
+      # --- DEBUG ---
+      
 requirements:
   build:
     - ${{ stdlib('c') }}

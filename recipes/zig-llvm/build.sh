@@ -469,16 +469,15 @@ is_not_unix && {
     # pointing to a non-existent .lib file, causing cmake to error.
     # Disable zstd to avoid the broken cmake config.
     #
-    # atexit collision: zig's mingw dllcrt2.obj defines atexit, and
-    # --export-all-symbols exports it from libLLVM-20.dll.a. When
-    # libclang-cpp.dll links both its own CRT and libLLVM-20.dll.a,
-    # atexit collides. zig's lld rejects --exclude-symbols and
-    # --allow-multiple-definition.
-    # Primary fix: patch 0003 removes --export-all-symbols from
-    # clang/tools/clang-shlib/CMakeLists.txt (hardcoded for MINGW).
-    # Also disable LLVM_EXPORT_SYMBOLS_FOR_PLUGINS to prevent CMake
-    # from generating .def files with extract_symbols.py.
-    # Zig uses the C API (LLVMGetVersion etc.) which is already dllexport'd.
+    # atexit collision: zig's mingw dllcrt2.obj defines atexit.
+    # lld's AutoExporter excludes dllcrt2.o but NOT dllcrt2.obj (zig's name).
+    # So atexit leaks into libLLVM-20.dll.a. When libclang-cpp.dll links
+    # its own CRT + libLLVM-20.dll.a, atexit collides.
+    # zig's lld rejects --exclude-symbols and --allow-multiple-definition.
+    #
+    # Fix: Two-phase build. Build libLLVM first, strip atexit from import
+    # lib with objcopy, then build remaining targets (libclang-cpp etc.).
+    # Patch 0003 removes --export-all-symbols from libclang-cpp CMakeLists.
     CMAKE_PLATFORM_FLAGS=(
       -DCMAKE_OBJECT_PATH_MAX=1024
       -DLLVM_USE_INTEL_JITEVENTS=ON
@@ -1040,20 +1039,33 @@ STUBCPP
   echo "  === Stub .so test PASSED ==="
   rm -rf "${_stub_dir}"
 elif is_not_unix; then
-  # Verify atexit collision is avoided with LLVM_EXPORT_SYMBOLS_FOR_PLUGINS=OFF.
-  # Without --export-all-symbols, only __declspec(dllexport) symbols are exported.
-  # atexit from dllcrt2.obj stays internal → no collision when libB links libA.
-  # Takes ~5 seconds instead of 2 hours.
+  # Reproduce the EXACT atexit collision scenario and validate the fix.
+  #
+  # The real failure: libLLVM.dll auto-exports atexit (from dllcrt2.obj) into
+  # its import lib. libclang-cpp.dll links its own CRT + libLLVM.dll.a → collision.
+  #
+  # This stub test validates the two-phase-build fix:
+  # 1. Build libA.dll (reproduces libLLVM — atexit leaks into import lib)
+  # 2. Verify atexit IS in the import lib (confirms the bug exists)
+  # 3. Strip atexit with zig objcopy (validates our fix works)
+  # 4. Verify atexit is gone from import lib
+  # 5. Link libB.dll against cleaned import lib (must succeed)
+  #
+  # Takes ~5 seconds instead of 2+ hours.
   echo "=== Fast Windows atexit collision test ==="
   _stub_dir="${SRC_DIR}/_stub_test"
   mkdir -p "${_stub_dir}"
+  _stub_fail=0
 
   # Parse semicolon-separated ZIG_CC into array
   IFS=';' read -ra _zig_cc_args <<< "${ZIG_CC}"
   echo "  ZIG_CC parsed: ${_zig_cc_args[*]}"
 
+  _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
+  echo "  zig binary: ${_zig_bin}"
+
   cat > "${_stub_dir}/a.c" << 'ASRC'
-__declspec(dllexport) int func_a(void) { return 42; }
+int func_a(void) { return 42; }
 ASRC
   cat > "${_stub_dir}/b.c" << 'BSRC'
 __declspec(dllimport) int func_a(void);
@@ -1064,44 +1076,144 @@ BSRC
   "${_zig_cc_args[@]}" -c -o "${_stub_dir}/a.o" "${_stub_dir}/a.c"
   "${_zig_cc_args[@]}" -c -o "${_stub_dir}/b.o" "${_stub_dir}/b.c"
 
-  # Step 1: Create libA.dll WITHOUT --export-all-symbols (dllexport only)
-  echo "  Step 1: Creating libA.dll (dllexport only, no --export-all-symbols)..."
-  if "${_zig_cc_args[@]}" -shared \
+  # Step 1: Create libA.dll — NO dllexport, so auto-export kicks in (like libLLVM)
+  echo "  Step 1: Creating libA.dll (auto-export, like libLLVM)..."
+  if ! "${_zig_cc_args[@]}" -shared \
       -o "${_stub_dir}/libA.dll" \
       -Wl,--out-implib,"${_stub_dir}/libA.dll.a" \
       "${_stub_dir}/a.o" 2>"${_stub_dir}/a_err.txt"; then
+    echo "    FAIL: cannot create libA.dll"
+    head -10 "${_stub_dir}/a_err.txt" | sed 's/^/      /'
+    _stub_fail=1
+  else
     echo "    OK: libA.dll created"
-    echo "    Check atexit NOT in import lib:"
+  fi
+
+  # Step 2: Verify atexit IS in the import lib (confirms bug exists with zig)
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 2: Checking if atexit leaked into import lib..."
     if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'atexit'; then
-      echo "      WARNING: atexit found in import lib even without --export-all-symbols"
+      echo "    CONFIRMED: atexit present in import lib (this is the bug)"
       nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'atexit' | head -3 | sed 's/^/      /'
     else
-      echo "      OK: no atexit in import lib"
+      echo "    UNEXPECTED: atexit not in import lib — bug may not exist on this zig version"
+      echo "    (proceeding anyway to validate fix)"
     fi
-  else
-    echo "    FAIL: cannot create libA.dll"
-    cat "${_stub_dir}/a_err.txt" | head -10 | sed 's/^/      /'
   fi
 
-  # Step 2: Link libB.dll against libA.dll.a (should succeed — no atexit collision)
-  if [[ -f "${_stub_dir}/libA.dll.a" ]]; then
-    echo "  Step 2: Creating libB.dll linking against libA.dll.a..."
+  # Step 3: Reproduce the collision (link libB against libA import lib)
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 3: Reproducing collision (libB.dll + libA.dll.a)..."
     if "${_zig_cc_args[@]}" -shared \
-        -o "${_stub_dir}/libB.dll" \
-        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_err.txt"; then
-      echo "    OK: libB.dll links successfully (no atexit collision)"
+        -o "${_stub_dir}/libB_before.dll" \
+        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_before_err.txt"; then
+      echo "    No collision even before fix — safe (atexit may not be in import lib)"
     else
-      echo "    FAIL: libB.dll link failed"
-      cat "${_stub_dir}/b_err.txt" | head -5 | sed 's/^/      /'
+      if grep -qi 'atexit' "${_stub_dir}/b_before_err.txt"; then
+        echo "    CONFIRMED: atexit collision reproduced"
+        head -3 "${_stub_dir}/b_before_err.txt" | sed 's/^/      /'
+      else
+        echo "    FAIL: link failed but NOT due to atexit:"
+        head -5 "${_stub_dir}/b_before_err.txt" | sed 's/^/      /'
+        _stub_fail=1
+      fi
     fi
   fi
 
-  echo "  === Windows atexit collision test done ==="
+  # Step 4: Apply fix — strip atexit from import lib
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 4: Stripping atexit from import lib with zig objcopy..."
+    if "${_zig_bin}" objcopy --strip-symbol=atexit "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/objcopy_err.txt"; then
+      echo "    OK: objcopy succeeded"
+      # Verify atexit is gone
+      if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'atexit'; then
+        echo "    FAIL: atexit still present after objcopy!"
+        nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'atexit' | head -3 | sed 's/^/      /'
+        _stub_fail=1
+      else
+        echo "    OK: atexit removed from import lib"
+      fi
+    else
+      echo "    FAIL: zig objcopy --strip-symbol failed"
+      cat "${_stub_dir}/objcopy_err.txt" | sed 's/^/      /'
+      echo "    Trying system objcopy as fallback..."
+      if objcopy --strip-symbol=atexit "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/objcopy2_err.txt"; then
+        echo "    OK: system objcopy succeeded"
+      else
+        echo "    FAIL: system objcopy also failed"
+        cat "${_stub_dir}/objcopy2_err.txt" | sed 's/^/      /'
+        _stub_fail=1
+      fi
+    fi
+  fi
+
+  # Step 5: Link libB against CLEANED import lib (must succeed now)
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 5: Linking libB.dll against cleaned import lib..."
+    if "${_zig_cc_args[@]}" -shared \
+        -o "${_stub_dir}/libB_after.dll" \
+        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_after_err.txt"; then
+      echo "    OK: libB.dll links successfully after atexit removal"
+    else
+      echo "    FAIL: libB.dll still fails after fix!"
+      head -5 "${_stub_dir}/b_after_err.txt" | sed 's/^/      /'
+      _stub_fail=1
+    fi
+  fi
+
+  if [[ ${_stub_fail} -ne 0 ]]; then
+    echo ""
+    echo "  ============================================================"
+    echo "  EARLY ABORT: Windows atexit collision fix does not work."
+    echo "  The two-phase build + objcopy --strip-symbol approach cannot"
+    echo "  fix the atexit collision. Need a different strategy."
+    echo "  ============================================================"
+    rm -rf "${_stub_dir}"
+    exit 1
+  fi
+  echo "  === Windows atexit collision test PASSED ==="
   rm -rf "${_stub_dir}"
 fi
 
 echo "=== Building LLVM ==="
-cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
+if is_not_unix; then
+  # Two-phase build on Windows to fix atexit collision.
+  # Phase 1: Build libLLVM DLL target only.
+  # zig's dllcrt2.obj defines atexit, but lld's AutoExporter only excludes
+  # dllcrt2.o (not .obj), so atexit leaks into libLLVM-20.dll.a.
+  # After building, strip atexit from the import lib before phase 2.
+  echo "  Phase 1: Building LLVM shared library..."
+  cmake --build "${LLVM_BUILD}" --target LLVM -j"${CPU_COUNT}"
+
+  # Strip atexit from import library to prevent collision when
+  # libclang-cpp.dll links its own CRT + libLLVM-20.dll.a
+  _implib=$(find "${LLVM_BUILD}" -name 'libLLVM*.dll.a' -o -name 'LLVM*.dll.a' | head -1)
+  if [[ -n "${_implib}" ]]; then
+    echo "  Stripping atexit from import lib: ${_implib}"
+    if nm "${_implib}" 2>/dev/null | grep -q ' T atexit'; then
+      echo "    Found atexit in import lib — stripping"
+      # Use zig objcopy (bundled llvm-objcopy) to strip the symbol
+      _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
+      "${_zig_bin}" objcopy --strip-symbol=atexit "${_implib}" \
+        || objcopy --strip-symbol=atexit "${_implib}" 2>/dev/null \
+        || echo "    WARNING: could not strip atexit (objcopy not available)"
+      # Verify
+      if nm "${_implib}" 2>/dev/null | grep -q ' T atexit'; then
+        echo "    WARNING: atexit still present after strip attempt"
+      else
+        echo "    OK: atexit removed"
+      fi
+    else
+      echo "    OK: no atexit in import lib"
+    fi
+  fi
+
+  # Phase 2: Build remaining targets (libclang-cpp, lld, tools)
+  echo "  Phase 2: Building remaining targets..."
+  cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
+else
+  cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
+fi
 
 echo "=== Installing LLVM ==="
 cmake --install "${LLVM_BUILD}"

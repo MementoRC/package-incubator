@@ -4,14 +4,12 @@ Date: Sun, 9 Mar 2026 00:00:00 +0000
 Subject: [PATCH] Remove --export-all-symbols from libclang-cpp on MinGW
 
 When building with zig cc, the MinGW dllcrt2.obj defines atexit.
---export-all-symbols exports atexit from libLLVM-20.dll.a, causing
-a duplicate symbol error when libclang-cpp.dll links both its own
-CRT and libLLVM-20.dll.a.
+--export-all-symbols forces all symbols (including atexit) to be
+exported regardless of dllexport annotations. Removing it lets
+MinGW lld's default auto-export behavior handle symbol export.
 
-zig's lld rejects both --exclude-symbols and --allow-multiple-definition,
-so the only fix is to not use --export-all-symbols at all. The symbols
-that need to be exported are already marked with __declspec(dllexport)
-or have default visibility.
+The atexit collision with libLLVM's import library is handled
+separately in build.sh by stripping the symbol post-build.
 
 ---
  clang/tools/clang-shlib/CMakeLists.txt | 7 -------
