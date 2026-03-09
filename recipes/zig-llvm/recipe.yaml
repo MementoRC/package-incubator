@@ -8,7 +8,7 @@ context:
   library: ${{ "Library/" if not unix }}
   m2: ${{ "m2-" if not unix }}
   sh: ${{ ".bat" if not unix else ".sh" }}
-  so: ${{ ".so" if linux else ".dylib" if osx else ".dll" }}
+  so: ${{ ".so" if linux else ".dylib" if osx else ".dll.a" }}
 
   # Zig triplet mapping (for zig -target flag)
   zig_triplet: >-
@@ -51,7 +51,7 @@ source:
       - patches/0002-fix-non-unix-zstd-shared-lib-finding.patch
       - if: not unix
         then:
-          - patches/0003-remove-clang-cpp-export-all-symbols.patch
+          - patches/0004-add-llvm-dylib-export-all-symbols-mingw.patch
 
 build:
   number: ${{ build_number }}
@@ -72,9 +72,9 @@ build:
           "unknown"
         }}-zig
     
-      # --- DEBUG ---
-      skip: unix
-      # --- DEBUG ---
+  # --- DEBUG ---
+  skip: unix or arm64
+  # --- DEBUG ---
       
 requirements:
   build:
@@ -128,11 +128,20 @@ tests:
         - lib/zig-llvm/include/llvm-c/*.h
         - lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
         - lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
-        - lib/zig-llvm/lib/libc++abi*${{ so }}*
-        - lib/zig-llvm/lib/libclang-cpp*${{ so }}*
-        - lib/zig-llvm/lib/libc++*${{ so }}*
         - lib/zig-llvm/lib/liblld*.a
-        - lib/zig-llvm/lib/libLLVM*${{ so }}*
+        # Shared libraries: .so/.dylib in lib/, .dll in bin/ with .dll.a import libs in lib/
+        - if: unix
+          then:
+            - lib/zig-llvm/lib/libc++abi*${{ so }}*
+            - lib/zig-llvm/lib/libclang-cpp*${{ so }}*
+            - lib/zig-llvm/lib/libc++*${{ so }}*
+            - lib/zig-llvm/lib/libLLVM*${{ so }}*
+        - if: not unix
+          then:
+            # DLLs (runtime) in bin/
+            - lib/zig-llvm/bin/libLLVM*.dll
+            - lib/zig-llvm/bin/libclang-cpp*.dll
+            - lib/zig-llvm/bin/libc++*.dll
         - lib/zig-llvm-path.txt
         # Post-install test resources
         - etc/conda/test-files/zig-llvm/*

@@ -18,8 +18,9 @@ if [[ ${BASH_VERSINFO[0]} -lt 5 || (${BASH_VERSINFO[0]} -eq 5 && ${BASH_VERSINFO
   fi
 fi
 
-source ${RECIPE_DIR}/post-install.sh
-source ${RECIPE_DIR}/remove-unneeded.sh
+source ${RECIPE_DIR}/building/post-install.sh
+source ${RECIPE_DIR}/building/remove-unneeded.sh
+source ${RECIPE_DIR}/building/strip_atexit_from_implib.sh
 
 build_platform="${build_platform:-${target_platform}}"
 
@@ -139,11 +140,6 @@ is_not_unix && ZIG_WRAPPERS="${BUILD_PREFIX}/Library/share/zig/wrappers"
 if [[ ! -d "${ZIG_WRAPPERS}" ]]; then
   echo "ERROR: zig wrappers not found at ${ZIG_WRAPPERS}"
   echo "  Is zig-compiler installed as a build dependency?"
-  exit 1
-fi
-
-if [[ -z "${CONDA_BUILD_ZIG:-}" ]]; then
-  echo "ERROR: CONDA_BUILD_ZIG not set"
   exit 1
 fi
 
@@ -462,28 +458,29 @@ if is_osx; then
   )
 fi
 
-# non-Unix: path-length workaround, zstd config, and atexit collision fix
+# non-Unix: path-length workaround, zstd config, and symbol export fixes
 is_not_unix && {
     # zstd on conda-forge Windows: only libzstd.dll exists (no import library).
     # conda's zstdConfig.cmake declares zstd::libzstd_shared with IMPORTED_IMPLIB
     # pointing to a non-existent .lib file, causing cmake to error.
     # Disable zstd to avoid the broken cmake config.
     #
-    # atexit collision: zig's mingw dllcrt2.obj defines atexit.
-    # lld's AutoExporter excludes dllcrt2.o but NOT dllcrt2.obj (zig's name).
-    # So atexit leaks into libLLVM-20.dll.a. When libclang-cpp.dll links
-    # its own CRT + libLLVM-20.dll.a, atexit collides.
-    # zig's lld rejects --exclude-symbols and --allow-multiple-definition.
-    #
-    # Fix: Two-phase build. Build libLLVM first, strip atexit from import
-    # lib with objcopy, then build remaining targets (libclang-cpp etc.).
-    # Patch 0003 removes --export-all-symbols from libclang-cpp CMakeLists.
+    # Symbol export fixes (two patches + dlltool post-processing):
+    # - Patch 0004: adds --export-all-symbols to libLLVM (backport from LLVM 22.1.0)
+    #   Without this, data symbols (vtables, ::ID) aren't exported.
+    # - build.sh Phase 1.5/2.5: zig dlltool regenerates import libs without atexit
+    #   (zig's driver rejects --exclude-symbols, so we post-process instead)
+    # - CMAKE_SHARED_LINKER_FLAGS: force --export-all-symbols on ALL shared libs
+    #   as a belt-and-suspenders with the CMakeLists.txt guards. This ensures
+    #   libclang-cpp.dll exports all symbols even if CMake's MINGW detection
+    #   doesn't trigger the if(MINGW OR CYGWIN) block.
     CMAKE_PLATFORM_FLAGS=(
       -DCMAKE_OBJECT_PATH_MAX=1024
       -DLLVM_USE_INTEL_JITEVENTS=ON
       -DLLVM_ENABLE_DUMP=ON
       -DLLVM_ENABLE_ZSTD=OFF
       -DLLVM_EXPORT_SYMBOLS_FOR_PLUGINS=OFF
+      "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--export-all-symbols"
     )
 }
 
@@ -618,6 +615,147 @@ echo "  === Flag compatibility test PASSED ==="
 rm -rf "${_test_dir}"
 fi  # is_unix
 
+# Windows: fast-fail test (~5 seconds) BEFORE any slow builds.
+# Validates that --export-all-symbols + --exclude-symbols=atexit work through
+# zig's driver. If this fails, no point waiting 2+ hours for the LLVM build.
+if is_not_unix; then
+  echo "=== Fast Windows data-symbol export test ==="
+  _stub_dir="${SRC_DIR}/_stub_test"
+  mkdir -p "${_stub_dir}"
+  _stub_fail=0
+
+  IFS=';' read -ra _zig_cc_args <<< "${ZIG_CC}"
+  IFS=';' read -ra _zig_cxx_args <<< "${ZIG_CXX}"
+  echo "  ZIG_CC parsed: ${_zig_cc_args[*]}"
+  echo "  ZIG_CXX parsed: ${_zig_cxx_args[*]}"
+
+  _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
+
+  # Pre-build tool validation: catch missing tools in ~1 second, before any compilation.
+  echo "  Pre-build tool validation..."
+  _tools_ok=1
+  for _tool in nm awk sed sort; do
+    if command -v "${_tool}" >/dev/null 2>&1; then
+      echo "    ${_tool}: OK"
+    else
+      echo "    ${_tool}: MISSING"
+      _tools_ok=0
+    fi
+  done
+  # zig dlltool --help exits non-zero; just check binary is callable
+  if _dlltool_out=$("${_zig_bin}" dlltool 2>&1) || [[ "${_dlltool_out}" =~ [Uu]sage|dlltool|error ]]; then
+    echo "    zig dlltool: OK"
+  else
+    echo "    zig dlltool (${_zig_bin}): MISSING or non-functional"
+    _tools_ok=0
+  fi
+  if [[ ${_tools_ok} -eq 0 ]]; then
+    echo "  EARLY ABORT: required tools missing for Windows import lib processing."
+    exit 1
+  fi
+  echo "  Pre-build tool validation PASSED"
+
+  # Verify --export-all-symbols is present in both DLL CMakeLists after patching.
+  # Without it, data symbols (vtables, ::ID statics) are silently dropped on MinGW.
+  for _shlib_cmake in \
+    "${SRC_DIR}/llvm/tools/llvm-shlib/CMakeLists.txt" \
+    "${SRC_DIR}/clang/tools/clang-shlib/CMakeLists.txt"; do
+    if [[ -f "${_shlib_cmake}" ]]; then
+      if grep -q 'export-all-symbols' "${_shlib_cmake}"; then
+        echo "    $(basename "$(dirname "${_shlib_cmake}")")/CMakeLists.txt: --export-all-symbols OK"
+      else
+        echo "  EARLY ABORT: ${_shlib_cmake} missing --export-all-symbols!"
+        echo "  Patch 0004 or upstream source must provide this for MinGW DLL builds."
+        exit 1
+      fi
+    fi
+  done
+
+  # a.c: data symbol + function, no dllexport (like libLLVM with auto-export)
+  cat > "${_stub_dir}/a.c" << 'ASRC'
+int func_a(void) { return 42; }
+int global_data = 99;
+ASRC
+  # b.cpp: imports both function and data from libA, like libclang-cpp from libLLVM
+  cat > "${_stub_dir}/b.cpp" << 'BSRC'
+extern "C" __declspec(dllimport) int func_a(void);
+extern "C" __declspec(dllimport) int global_data;
+extern "C" __declspec(dllexport) int func_b(void) { return func_a() + global_data; }
+BSRC
+
+  echo "  Compiling..."
+  "${_zig_cc_args[@]}" -c -o "${_stub_dir}/a.o" "${_stub_dir}/a.c"
+  "${_zig_cxx_args[@]}" -c -o "${_stub_dir}/b.o" "${_stub_dir}/b.cpp"
+
+  # Step 1: Create libA.dll with --export-all-symbols
+  echo "  Step 1: Creating libA.dll with --export-all-symbols..."
+  if ! "${_zig_cc_args[@]}" -shared \
+      -Wl,--export-all-symbols \
+      -o "${_stub_dir}/libA.dll" \
+      -Wl,--out-implib,"${_stub_dir}/libA.dll.a" \
+      "${_stub_dir}/a.o" 2>"${_stub_dir}/a_err.txt"; then
+    echo "    FAIL: cannot create libA.dll"
+    head -10 "${_stub_dir}/a_err.txt" | sed 's/^/      /'
+    _stub_fail=1
+  else
+    echo "    OK: libA.dll created"
+  fi
+
+  # Step 2: Verify data symbols present, check atexit status
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 2: Checking import lib symbols..."
+    nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'global_data\|func_a\|atexit' | awk 'NR<=10' | sed 's/^/      /'
+    if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'global_data'; then
+      echo "    OK: data symbol (global_data) present in import lib"
+    else
+      echo "    FAIL: data symbol missing from import lib!"
+      _stub_fail=1
+    fi
+  fi
+
+  # Step 3: Remove atexit from import lib via strip_atexit_from_implib().
+  # The shared function tests the same logic that Phase 1.5 will use on libLLVM —
+  # any bug here surfaces in ~5 s instead of ~90 min after the real LLVM build.
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 3: Removing atexit from import lib via dlltool (shared function)..."
+    if ! strip_atexit_from_implib "${_stub_dir}/libA.dll.a" "${_zig_bin}" "libA"; then
+      echo "    FAIL: strip_atexit_from_implib reported an error"
+      _stub_fail=1
+    else
+      # Verify data symbol survived in-place
+      if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'global_data'; then
+        echo "    OK: data symbol preserved in regenerated import lib"
+      else
+        echo "    FAIL: data symbol lost in dlltool regeneration!"
+        nm "${_stub_dir}/libA.dll.a" 2>/dev/null | awk 'NR<=20' | sed 's/^/      /'
+        _stub_fail=1
+      fi
+    fi
+  fi
+
+  # Step 4: Link libB.dll against CLEANED import lib (in-place) — no atexit collision
+  if [[ ${_stub_fail} -eq 0 ]]; then
+    echo "  Step 4: Linking libB.dll against cleaned import lib (atexit collision test)..."
+    if "${_zig_cxx_args[@]}" -shared \
+        -o "${_stub_dir}/libB.dll" \
+        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_err.txt"; then
+      echo "    OK: libB.dll links successfully (no atexit collision, data symbols resolved)"
+    else
+      echo "    FAIL: libB.dll link failed!"
+      awk 'NR<=10' "${_stub_dir}/b_err.txt" | sed 's/^/      /'
+      _stub_fail=1
+    fi
+  fi
+
+  if [[ ${_stub_fail} -ne 0 ]]; then
+    echo "  EARLY ABORT: Windows data-symbol export test failed."
+    rm -rf "${_stub_dir}"
+    exit 1
+  fi
+  echo "  === Windows data-symbol export test PASSED ==="
+  rm -rf "${_stub_dir}"
+fi
+
 mkdir -p "${LLVM_BUILD}"
 
 if is_unix || is_not_unix; then
@@ -650,15 +788,18 @@ if is_unix || is_not_unix; then
     -DLIBCXX_CXX_ABI=libcxxabi
   )
 
+  # libunwind provides _Unwind_* symbols needed by libc++abi's exception handling.
+  # On Unix: DWARF unwinding. On MinGW: SEH-based unwinding (libunwind has a SEH adapter).
+  # Without it, -nostdlib++ (used by runtimes CMake) strips zig's bundled unwind.
+  _RUNTIMES_LIST="libunwind;${_RUNTIMES_LIST}"
+  _RUNTIMES_FLAGS+=(
+    -DLIBUNWIND_ENABLE_SHARED=ON
+    -DLIBUNWIND_ENABLE_STATIC=OFF
+    -DLIBUNWIND_USE_COMPILER_RT=ON
+    -DLIBCXXABI_USE_LLVM_UNWINDER=ON
+  )
+
   if is_unix; then
-    # Unix: also build libunwind (Windows uses SEH, not DWARF unwinding)
-    _RUNTIMES_LIST="libunwind;${_RUNTIMES_LIST}"
-    _RUNTIMES_FLAGS+=(
-      -DLIBUNWIND_ENABLE_SHARED=ON
-      -DLIBUNWIND_ENABLE_STATIC=OFF
-      -DLIBUNWIND_USE_COMPILER_RT=ON
-      -DLIBCXXABI_USE_LLVM_UNWINDER=ON
-    )
     # Override zig cc's default -fvisibility=hidden so libc++ symbols are public
     # and genuinely shared between libLLVM.so and libclang-cpp.so.
     _RUNTIMES_CMAKE+=(
@@ -667,11 +808,27 @@ if is_unix || is_not_unix; then
       -DCMAKE_SKIP_RPATH=ON
     )
     _RUNTIMES_CMAKE+=(-DLLVM_CONFIG_PATH="${BUILD_PREFIX}/bin/llvm-config")
-  else
-    # Windows/MinGW: libc++ uses __declspec(dllexport) via _LIBCPP_DLL_VIS,
-    # no visibility flags needed. No rpath on Windows.
-    # Windows: libcxxabi doesn't use libunwind
-    _RUNTIMES_FLAGS+=(-DLIBCXXABI_USE_LLVM_UNWINDER=OFF)
+  fi
+
+  if is_not_unix; then
+    # MinGW: circular dependency between libc++.dll and libc++abi.dll —
+    #   libc++abi needs __libcpp_mutex_lock (defined in libc++)
+    #   libc++ needs __cxa_* (defined in libc++abi)
+    # On Windows all symbols must resolve at link time (no lazy binding).
+    # Fix: statically link libc++abi into libc++.dll (no separate libc++abi.dll).
+    _RUNTIMES_FLAGS+=(
+      -DLIBCXX_HAS_WIN32_THREAD_API=ON
+      -DLIBCXXABI_HAS_WIN32_THREAD_API=ON
+      -DLIBCXX_HAS_PTHREAD_API=OFF
+      -DLIBCXXABI_HAS_PTHREAD_API=OFF
+      -DLIBCXXABI_ENABLE_SHARED=OFF
+      -DLIBCXXABI_ENABLE_STATIC=ON
+      -DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON
+    )
+    _RUNTIMES_CMAKE+=(
+      -DCMAKE_C_FLAGS="-fvisibility=default"
+      -DCMAKE_CXX_FLAGS="-fvisibility=default"
+    )
   fi
 
   # macOS: tell cmake the correct arch (prevents -mcpu=core2 on cross-builds)
@@ -682,32 +839,14 @@ if is_unix || is_not_unix; then
   echo "  Building runtimes: ${_RUNTIMES_LIST}..."
   mkdir -p "${SRC_DIR}/conda-runtimes-build"
 
-  _runtimes_ok=1
-  if is_not_unix; then
-    # Windows runtimes build is exploratory — don't fail the whole build
-    echo "  [Windows: runtimes build is exploratory, non-fatal]"
-    if cmake -S "${LIBCXX_SRC}" -B "${SRC_DIR}/conda-runtimes-build" \
-        "${_RUNTIMES_CMAKE[@]}" \
-        -DLLVM_ENABLE_RUNTIMES="${_RUNTIMES_LIST}" \
-        "${_RUNTIMES_FLAGS[@]}" \
-        -G Ninja 2>&1; then
-      cmake --build "${SRC_DIR}/conda-runtimes-build" -j"${CPU_COUNT}" 2>&1 && \
-      cmake --install "${SRC_DIR}/conda-runtimes-build" 2>&1 || _runtimes_ok=0
-    else
-      _runtimes_ok=0
-    fi
-    if [[ ${_runtimes_ok} -eq 0 ]]; then
-      echo "  WARNING: Windows runtimes build failed (exploratory, continuing)"
-    fi
-  else
-    cmake -S "${LIBCXX_SRC}" -B "${SRC_DIR}/conda-runtimes-build" \
-      "${_RUNTIMES_CMAKE[@]}" \
-      -DLLVM_ENABLE_RUNTIMES="${_RUNTIMES_LIST}" \
-      "${_RUNTIMES_FLAGS[@]}" \
-      -G Ninja
-    cmake --build "${SRC_DIR}/conda-runtimes-build" -j"${CPU_COUNT}"
-    cmake --install "${SRC_DIR}/conda-runtimes-build"
-  fi
+  # Runtimes build is now fatal on all platforms — no silent failures.
+  cmake -S "${LIBCXX_SRC}" -B "${SRC_DIR}/conda-runtimes-build" \
+    "${_RUNTIMES_CMAKE[@]}" \
+    -DLLVM_ENABLE_RUNTIMES="${_RUNTIMES_LIST}" \
+    "${_RUNTIMES_FLAGS[@]}" \
+    -G Ninja
+  cmake --build "${SRC_DIR}/conda-runtimes-build" -j"${CPU_COUNT}"
+  cmake --install "${SRC_DIR}/conda-runtimes-build"
 
   echo "  libc++ runtimes installed to ${LLVM_INSTALL}/lib"
 
@@ -1038,179 +1177,69 @@ STUBCPP
   fi
   echo "  === Stub .so test PASSED ==="
   rm -rf "${_stub_dir}"
-elif is_not_unix; then
-  # Reproduce the EXACT atexit collision scenario and validate the fix.
-  #
-  # The real failure: libLLVM.dll auto-exports atexit (from dllcrt2.obj) into
-  # its import lib. libclang-cpp.dll links its own CRT + libLLVM.dll.a → collision.
-  #
-  # This stub test validates the two-phase-build fix:
-  # 1. Build libA.dll (reproduces libLLVM — atexit leaks into import lib)
-  # 2. Verify atexit IS in the import lib (confirms the bug exists)
-  # 3. Strip atexit with zig objcopy (validates our fix works)
-  # 4. Verify atexit is gone from import lib
-  # 5. Link libB.dll against cleaned import lib (must succeed)
-  #
-  # Takes ~5 seconds instead of 2+ hours.
-  echo "=== Fast Windows atexit collision test ==="
-  _stub_dir="${SRC_DIR}/_stub_test"
-  mkdir -p "${_stub_dir}"
-  _stub_fail=0
-
-  # Parse semicolon-separated ZIG_CC into array
-  IFS=';' read -ra _zig_cc_args <<< "${ZIG_CC}"
-  echo "  ZIG_CC parsed: ${_zig_cc_args[*]}"
-
-  _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
-  echo "  zig binary: ${_zig_bin}"
-
-  cat > "${_stub_dir}/a.c" << 'ASRC'
-int func_a(void) { return 42; }
-ASRC
-  cat > "${_stub_dir}/b.c" << 'BSRC'
-__declspec(dllimport) int func_a(void);
-__declspec(dllexport) int func_b(void) { return func_a() + 1; }
-BSRC
-
-  echo "  Compiling a.c and b.c..."
-  "${_zig_cc_args[@]}" -c -o "${_stub_dir}/a.o" "${_stub_dir}/a.c"
-  "${_zig_cc_args[@]}" -c -o "${_stub_dir}/b.o" "${_stub_dir}/b.c"
-
-  # Step 1: Create libA.dll — NO dllexport, so auto-export kicks in (like libLLVM)
-  echo "  Step 1: Creating libA.dll (auto-export, like libLLVM)..."
-  if ! "${_zig_cc_args[@]}" -shared \
-      -o "${_stub_dir}/libA.dll" \
-      -Wl,--out-implib,"${_stub_dir}/libA.dll.a" \
-      "${_stub_dir}/a.o" 2>"${_stub_dir}/a_err.txt"; then
-    echo "    FAIL: cannot create libA.dll"
-    head -10 "${_stub_dir}/a_err.txt" | sed 's/^/      /'
-    _stub_fail=1
-  else
-    echo "    OK: libA.dll created"
-  fi
-
-  # Step 2: Verify atexit IS in the import lib (confirms bug exists with zig)
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 2: Checking if atexit leaked into import lib..."
-    if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'atexit'; then
-      echo "    CONFIRMED: atexit present in import lib (this is the bug)"
-      nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'atexit' | head -3 | sed 's/^/      /'
-    else
-      echo "    UNEXPECTED: atexit not in import lib — bug may not exist on this zig version"
-      echo "    (proceeding anyway to validate fix)"
-    fi
-  fi
-
-  # Step 3: Reproduce the collision (link libB against libA import lib)
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 3: Reproducing collision (libB.dll + libA.dll.a)..."
-    if "${_zig_cc_args[@]}" -shared \
-        -o "${_stub_dir}/libB_before.dll" \
-        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_before_err.txt"; then
-      echo "    No collision even before fix — safe (atexit may not be in import lib)"
-    else
-      if grep -qi 'atexit' "${_stub_dir}/b_before_err.txt"; then
-        echo "    CONFIRMED: atexit collision reproduced"
-        head -3 "${_stub_dir}/b_before_err.txt" | sed 's/^/      /'
-      else
-        echo "    FAIL: link failed but NOT due to atexit:"
-        head -5 "${_stub_dir}/b_before_err.txt" | sed 's/^/      /'
-        _stub_fail=1
-      fi
-    fi
-  fi
-
-  # Step 4: Apply fix — strip atexit from import lib
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 4: Stripping atexit from import lib with zig objcopy..."
-    if "${_zig_bin}" objcopy --strip-symbol=atexit "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/objcopy_err.txt"; then
-      echo "    OK: objcopy succeeded"
-      # Verify atexit is gone
-      if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'atexit'; then
-        echo "    FAIL: atexit still present after objcopy!"
-        nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'atexit' | head -3 | sed 's/^/      /'
-        _stub_fail=1
-      else
-        echo "    OK: atexit removed from import lib"
-      fi
-    else
-      echo "    FAIL: zig objcopy --strip-symbol failed"
-      cat "${_stub_dir}/objcopy_err.txt" | sed 's/^/      /'
-      echo "    Trying system objcopy as fallback..."
-      if objcopy --strip-symbol=atexit "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/objcopy2_err.txt"; then
-        echo "    OK: system objcopy succeeded"
-      else
-        echo "    FAIL: system objcopy also failed"
-        cat "${_stub_dir}/objcopy2_err.txt" | sed 's/^/      /'
-        _stub_fail=1
-      fi
-    fi
-  fi
-
-  # Step 5: Link libB against CLEANED import lib (must succeed now)
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 5: Linking libB.dll against cleaned import lib..."
-    if "${_zig_cc_args[@]}" -shared \
-        -o "${_stub_dir}/libB_after.dll" \
-        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_after_err.txt"; then
-      echo "    OK: libB.dll links successfully after atexit removal"
-    else
-      echo "    FAIL: libB.dll still fails after fix!"
-      head -5 "${_stub_dir}/b_after_err.txt" | sed 's/^/      /'
-      _stub_fail=1
-    fi
-  fi
-
-  if [[ ${_stub_fail} -ne 0 ]]; then
-    echo ""
-    echo "  ============================================================"
-    echo "  EARLY ABORT: Windows atexit collision fix does not work."
-    echo "  The two-phase build + objcopy --strip-symbol approach cannot"
-    echo "  fix the atexit collision. Need a different strategy."
-    echo "  ============================================================"
-    rm -rf "${_stub_dir}"
-    exit 1
-  fi
-  echo "  === Windows atexit collision test PASSED ==="
-  rm -rf "${_stub_dir}"
 fi
 
 echo "=== Building LLVM ==="
 if is_not_unix; then
-  # Two-phase build on Windows to fix atexit collision.
-  # Phase 1: Build libLLVM DLL target only.
-  # zig's dllcrt2.obj defines atexit, but lld's AutoExporter only excludes
-  # dllcrt2.o (not .obj), so atexit leaks into libLLVM-20.dll.a.
-  # After building, strip atexit from the import lib before phase 2.
+  # Two-phase build on Windows:
+  # Phase 1: Build libLLVM.dll (patch 0004 adds --export-all-symbols for data symbols)
+  # Phase 1.5: atexit from dllcrt2.obj leaks into the import lib. Zig's driver rejects
+  #   --exclude-symbols, so we regenerate the import lib via zig dlltool from a cleaned
+  #   .def file (removing atexit). This prevents duplicate symbol errors in Phase 2.
+  # Phase 2: Build everything else (libclang-cpp links against cleaned import lib)
+
+  # Phase 1: Build libLLVM DLL only
   echo "  Phase 1: Building LLVM shared library..."
   cmake --build "${LLVM_BUILD}" --target LLVM -j"${CPU_COUNT}"
 
-  # Strip atexit from import library to prevent collision when
-  # libclang-cpp.dll links its own CRT + libLLVM-20.dll.a
-  _implib=$(find "${LLVM_BUILD}" -name 'libLLVM*.dll.a' -o -name 'LLVM*.dll.a' | head -1)
+  # Phase 1.5: Remove atexit from import lib via strip_atexit_from_implib().
+  # The same function is exercised by the fast-fail stub test above, so any bug
+  # in the shared logic surfaces in ~5 s (stub) rather than after the 90-min build.
+  _implib=$(find "${LLVM_BUILD}" \( -name 'libLLVM*.dll.a' -o -name 'LLVM*.dll.a' \) 2>/dev/null | awk 'NR==1')
+  _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
+
   if [[ -n "${_implib}" ]]; then
-    echo "  Stripping atexit from import lib: ${_implib}"
-    if nm "${_implib}" 2>/dev/null | grep -q ' T atexit'; then
-      echo "    Found atexit in import lib — stripping"
-      # Use zig objcopy (bundled llvm-objcopy) to strip the symbol
-      _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
-      "${_zig_bin}" objcopy --strip-symbol=atexit "${_implib}" \
-        || objcopy --strip-symbol=atexit "${_implib}" 2>/dev/null \
-        || echo "    WARNING: could not strip atexit (objcopy not available)"
-      # Verify
-      if nm "${_implib}" 2>/dev/null | grep -q ' T atexit'; then
-        echo "    WARNING: atexit still present after strip attempt"
-      else
-        echo "    OK: atexit removed"
-      fi
-    else
-      echo "    OK: no atexit in import lib"
+    echo "  Phase 1.5: Stripping atexit from import lib: ${_implib}"
+    if ! strip_atexit_from_implib "${_implib}" "${_zig_bin}"; then
+      echo "  ERROR: strip_atexit_from_implib failed — aborting build."
+      exit 1
     fi
+    # Spot-check a known data symbol to confirm dlltool preserved it
+    if nm "${_implib}" 2>/dev/null | grep -qi 'ErrorInfoBase'; then
+      echo "  OK: data symbols preserved (ErrorInfoBase found)"
+    else
+      echo "  WARNING: ErrorInfoBase not found (may use different mangling — proceeding)"
+    fi
+  else
+    echo "  WARNING: import lib not found — skipping Phase 1.5"
   fi
 
-  # Phase 2: Build remaining targets (libclang-cpp, lld, tools)
+  # Phase 2: Build all remaining targets.
+  # CMAKE_SHARED_LINKER_FLAGS=-Wl,--export-all-symbols ensures all DLLs
+  # export their symbols, so clang tools (.exe) link fine against libclang-cpp.
   echo "  Phase 2: Building remaining targets..."
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
+
+  # Phase 2.5: Strip atexit from libclang-cpp import lib + verify exports.
+  # libclang-cpp.dll uses --export-all-symbols (upstream CMake + CMAKE_SHARED_LINKER_FLAGS),
+  # which also leaks atexit from dllcrt2.obj — same issue as libLLVM.
+  _clang_implib=$(find "${LLVM_BUILD}" \( -name 'libclang-cpp*.dll.a' -o -name 'clang-cpp*.dll.a' \) 2>/dev/null | awk 'NR==1')
+  if [[ -n "${_clang_implib}" ]]; then
+    echo "  Phase 2.5: Stripping atexit from clang-cpp import lib: ${_clang_implib}"
+    if ! strip_atexit_from_implib "${_clang_implib}" "${_zig_bin}" "libclang-cpp"; then
+      echo "  ERROR: strip_atexit_from_implib failed for clang-cpp — aborting build."
+      exit 1
+    fi
+    # Verify --export-all-symbols actually worked: check known clang symbols
+    if nm "${_clang_implib}" 2>/dev/null | grep -qi 'CompilerInstance\|ASTContext'; then
+      echo "  OK: libclang-cpp exports verified (known symbols found)"
+    else
+      echo "  ERROR: libclang-cpp import lib missing expected symbols!"
+      echo "  --export-all-symbols may not have reached the linker."
+      echo "  Check CMAKE_SHARED_LINKER_FLAGS and MINGW detection."
+      exit 1
+    fi
+  fi
 else
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
 fi

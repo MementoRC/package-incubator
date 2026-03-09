@@ -1,16 +1,18 @@
 function remove_unneeded() {
   # Remove static libraries - zig only needs shared libs (saves ~500MB)
+  # Keep .dll.a import libraries on Windows (needed to link against DLLs)
+  # Keep liblld*.a on all platforms (lld is used as static lib)
   echo "=== Removing static libraries ==="
-  # find "${LLVM_INSTALL}/lib" -name "*.a" -type f -delete
-  find "${LLVM_INSTALL}/lib" -name "*.a" ! -name "liblld*.a" -type f -delete
-  echo "  Removed .a files from ${LLVM_INSTALL}/lib"
+  find "${LLVM_INSTALL}/lib" -name "*.a" ! -name "*.dll.a" ! -name "liblld*.a" -type f -delete
+  echo "  Removed .a files from ${LLVM_INSTALL}/lib (kept .dll.a import libs and liblld*.a)"
 
   # Remove all tools except llvm-config (other tools come from conda-forge llvm-tools)
   # Many LLVM tools are symlinks, so delete both files and symlinks
+  # On Windows, keep DLLs in bin/ (cmake installs .dll runtime there)
   echo "=== Removing tools except llvm-config ==="
-  find "${LLVM_INSTALL}/bin" \( -type f -o -type l \) ! \( -name "llvm-config*" -o -name "*-tblgen" \) -delete
+  find "${LLVM_INSTALL}/bin" \( -type f -o -type l \) ! \( -name "llvm-config*" -o -name "*-tblgen" -o -name "*.dll" \) -delete
   ls "${LLVM_INSTALL}/bin/"
-  echo "  Kept only llvm-config in ${LLVM_INSTALL}/bin"
+  echo "  Kept llvm-config (and DLLs on Windows) in ${LLVM_INSTALL}/bin"
 
   # Remove share/ directory (clang-format helpers, cmake modules we don't need)
   echo "=== Removing share/ directory ==="
