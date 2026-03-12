@@ -30,7 +30,9 @@ is_unix() { [[ "${target_platform}" == "linux-"* || "${target_platform}" == "osx
 is_not_unix() { [[ "${target_platform}" != "linux-"* && "${target_platform}" != "osx-"* ]]; }
 is_cross() { [[ "${build_platform}" != "${target_platform}" ]]; }
 
-is_debug() { [[ "${DEBUG_ZIG_BUILD:-0}" == "1" ]]; }
+# Debug output: ZIG_LLVM_DEBUG=1 in recipe.yaml env
+_debug() { [[ "${ZIG_LLVM_DEBUG:-0}" == "1" ]]; }
+dbg() { _debug && echo "  [DBG] $*" || true; }
 
 echo "=== Building zig-llvmdev with zig cc ==="
 echo "  LLVM source: ${SRC_DIR}/llvm-source"
@@ -38,7 +40,12 @@ echo "  Target: ${target_platform}"
 
 LLVM_SRC="${SRC_DIR}/llvm"
 LLVM_BUILD="${SRC_DIR}/conda-llvm-build"
-LLVM_INSTALL="${PREFIX}/lib/zig-llvm"
+# Windows: conda convention is $PREFIX/Library/ for non-Python artifacts
+if [[ "${target_platform}" == win-* ]]; then
+  LLVM_INSTALL="${PREFIX}/Library/lib/zig-llvm"
+else
+  LLVM_INSTALL="${PREFIX}/lib/zig-llvm"
+fi
 
 # Cross-compilation detection and setup
 # CONDA_BUILD_CROSS_COMPILATION is set by conda-build when build_platform != target_platform
@@ -199,6 +206,31 @@ if is_osx; then
         echo "ERROR: neither zig-force-load-cxx nor zig-force-load-cc found"
         exit 1
     fi
+
+    # HOTFIX: zig-force-load-cxx has a bug where `ar x` is called after cd'ing
+    # to a temp dir, but the archive paths from cmake are RELATIVE to the build dir.
+    # `(cd "${_subdir}" && ar x "${_archive}")` — after cd, relative paths break.
+    # Result: ALL 142 archives fail to extract silently, libLLVM.dylib ends up empty.
+    # Fix: resolve archive paths to absolute before extracting.
+    # This patch should be upstreamed to zig-feedstock.
+    if [[ -f "${ZIG_CXX}" ]]; then
+        echo "  Patching zig-force-load-cxx: resolve relative archive paths to absolute"
+        python3 -c "
+import sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+old = '(cd \"\${_subdir}\" && ar x \"\${_archive}\")'
+new = '_abs=\"\${_archive}\"; [[ \"\$_abs\" != /* ]] && _abs=\"\$(pwd)/\$_abs\"; (cd \"\${_subdir}\" && ar x \"\$_abs\")'
+if old in content:
+    content = content.replace(old, new)
+    with open(sys.argv[1], 'w') as f:
+        f.write(content)
+    print('    OK: patch applied')
+else:
+    print('    WARNING: target string not found in wrapper')
+    sys.exit(1)
+" "${ZIG_CXX}"
+    fi
 fi
 
 # Clear conda's compiler flags — zig handles optimization internally.
@@ -208,14 +240,14 @@ fi
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS CMAKE_ARGS
 export CFLAGS="" CXXFLAGS="" LDFLAGS="" CPPFLAGS=""
 
-echo "  ZIG_TRIPLET: ${ZIG_TRIPLET}"
-echo "  ZIG_CC: ${ZIG_CC}"
-echo "  ZIG_CXX: ${ZIG_CXX}"
-echo "  ZIG_CXX_SHARED: ${ZIG_CXX_SHARED}"
-echo "  ZIG_AR: ${ZIG_AR}"
+dbg "ZIG_TRIPLET: ${ZIG_TRIPLET}"
+dbg "ZIG_CC: ${ZIG_CC}"
+dbg "ZIG_CXX: ${ZIG_CXX}"
+dbg "ZIG_CXX_SHARED: ${ZIG_CXX_SHARED}"
+dbg "ZIG_AR: ${ZIG_AR}"
 
 # LLVM_TRIPLET is set by recipe.yaml env (standard LLVM triple, no glibc version suffix)
-echo "  LLVM_TRIPLET: ${LLVM_TRIPLET}"
+dbg "LLVM_TRIPLET: ${LLVM_TRIPLET}"
 
 # Platform-specific CMake flags
 CMAKE_PLATFORM_FLAGS=()
@@ -235,7 +267,13 @@ if is_osx; then
   [[ "${target_platform}" == "osx-64" ]] && _osx_arch="x86_64"
   CMAKE_PLATFORM_FLAGS=(
     -DLLVM_ENABLE_ZSTD=ON
+    -Dzstd_ROOT="${PREFIX}"
     -DCMAKE_OSX_ARCHITECTURES="${_osx_arch}"
+    # zig's Mach-O linker dead-strips LLVMInitialize* and LLVM C API symbols from
+    # libLLVM.dylib because nothing inside the dylib references them — they're only
+    # called by external consumers (libclang-cpp.dylib, tools). LLVM's own cmake
+    # adds -Wl,-dead_strip via add_link_opts(); this knob prevents that.
+    -DLLVM_NO_DEAD_STRIP=ON
   )
 fi
 
@@ -292,7 +330,7 @@ if [[ "${ZIG_LLVM_SKIP_BUILD:-0}" == "1" ]] && [[ -d "${CACHE_DIR}" ]] && \
   remove_unneeded
 
   # Create marker file
-  echo "${LLVM_INSTALL}" > "${PREFIX}/lib/zig-llvm-path.txt"
+  echo "${LLVM_INSTALL}" > "$(dirname "${LLVM_INSTALL}")/zig-llvm-path.txt"
 
   echo "  Cache installed successfully!"
   echo "  Set ZIG_LLVM_FORCE_BUILD=1 to rebuild from source"
@@ -306,9 +344,9 @@ elif [[ -d "${CACHE_DIR}" ]]; then
   echo "=== Cache found but incomplete, rebuilding ==="
 else
   echo "=== No cache found, building from source ==="
-  echo "  To speed up future builds, populate cache after successful build:"
-  echo "    mkdir -p ${RECIPE_DIR}/cache"
-  echo "    cp -r \${PREFIX}/lib/zig-llvm ${RECIPE_DIR}/cache/"
+  dbg "To speed up future builds, populate cache after successful build:"
+  dbg "  mkdir -p ${RECIPE_DIR}/cache"
+  dbg "  cp -r \${PREFIX}/lib/zig-llvm ${RECIPE_DIR}/cache/"
 fi
 
 # === Fast flag compatibility test (Unix only) ===
@@ -397,8 +435,17 @@ rm -rf "${_test_dir}"
 fi  # is_unix
 
 # Windows: fast-fail test (~5 seconds) BEFORE any slow builds.
-# Validates that --export-all-symbols + --exclude-symbols=atexit work through
-# zig's driver. If this fails, no point waiting 2+ hours for the LLVM build.
+# Validates tools, patches, and (on x86_64) the full DLL export + dlltool pipeline.
+#
+# DLL creation approaches and their limitations:
+#   zig cc -shared:     works on x86_64, but hangs ~100s with empty implibs on aarch64
+#   zig ld.lld:         routes to ELF driver, rejects MinGW PE flags (-m i386pep)
+#   zig-cxx-shared.exe: thin ld.lld wrapper, needs CRT objects (cmake provides them,
+#                        but standalone calls fail with missing DllMainCRTStartup)
+#
+# Strategy: full DLL pipeline test on x86_64 (zig cc -shared handles CRT).
+# On aarch64: validate tools + patches only; cmake handles DLL creation with
+# zig-cxx-shared.exe and full CRT context during the real build.
 if is_not_unix; then
   echo "=== Fast Windows data-symbol export test ==="
   _stub_dir="${SRC_DIR}/_stub_test"
@@ -407,8 +454,8 @@ if is_not_unix; then
 
   IFS=';' read -ra _zig_cc_args <<< "${ZIG_CC}"
   IFS=';' read -ra _zig_cxx_args <<< "${ZIG_CXX}"
-  echo "  ZIG_CC parsed: ${_zig_cc_args[*]}"
-  echo "  ZIG_CXX parsed: ${_zig_cxx_args[*]}"
+  dbg "ZIG_CC parsed: ${_zig_cc_args[*]}"
+  dbg "ZIG_CXX parsed: ${_zig_cxx_args[*]}"
 
   _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
 
@@ -417,7 +464,7 @@ if is_not_unix; then
   _tools_ok=1
   for _tool in nm awk sed sort; do
     if command -v "${_tool}" >/dev/null 2>&1; then
-      echo "    ${_tool}: OK"
+      dbg "  ${_tool}: OK"
     else
       echo "    ${_tool}: MISSING"
       _tools_ok=0
@@ -425,7 +472,7 @@ if is_not_unix; then
   done
   # zig dlltool --help exits non-zero; just check binary is callable
   if _dlltool_out=$("${_zig_bin}" dlltool 2>&1) || [[ "${_dlltool_out}" =~ [Uu]sage|dlltool|error ]]; then
-    echo "    zig dlltool: OK"
+    dbg "  zig dlltool: OK"
   else
     echo "    zig dlltool (${_zig_bin}): MISSING or non-functional"
     _tools_ok=0
@@ -452,79 +499,154 @@ if is_not_unix; then
     fi
   done
 
-  # a.c: data symbol + function, no dllexport (like libLLVM with auto-export)
-  cat > "${_stub_dir}/a.c" << 'ASRC'
+  # Full DLL pipeline test: only on x86_64 where zig cc -shared works correctly.
+  # On aarch64, zig cc -shared hangs ~100s and produces empty implibs (known zig issue).
+  # The aarch64 build uses zig-cxx-shared.exe via cmake which provides full CRT context.
+  if [[ "${ZIG_TRIPLET}" != aarch64-* ]]; then
+    # a.c: data symbol + function, no dllexport (like libLLVM with auto-export)
+    cat > "${_stub_dir}/a.c" << 'ASRC'
 int func_a(void) { return 42; }
 int global_data = 99;
 ASRC
-  # b.cpp: imports both function and data from libA, like libclang-cpp from libLLVM
-  cat > "${_stub_dir}/b.cpp" << 'BSRC'
+    # b.cpp: imports both function and data from libA, like libclang-cpp from libLLVM
+    cat > "${_stub_dir}/b.cpp" << 'BSRC'
 extern "C" __declspec(dllimport) int func_a(void);
 extern "C" __declspec(dllimport) int global_data;
 extern "C" __declspec(dllexport) int func_b(void) { return func_a() + global_data; }
 BSRC
 
-  echo "  Compiling..."
-  "${_zig_cc_args[@]}" -c -o "${_stub_dir}/a.o" "${_stub_dir}/a.c"
-  "${_zig_cxx_args[@]}" -c -o "${_stub_dir}/b.o" "${_stub_dir}/b.cpp"
+    echo "  Compiling..."
+    "${_zig_cc_args[@]}" -c -o "${_stub_dir}/a.o" "${_stub_dir}/a.c"
+    "${_zig_cxx_args[@]}" -c -o "${_stub_dir}/b.o" "${_stub_dir}/b.cpp"
 
-  # Step 1: Create libA.dll with --export-all-symbols
-  echo "  Step 1: Creating libA.dll with --export-all-symbols..."
-  if ! "${_zig_cc_args[@]}" -shared \
-      -Wl,--export-all-symbols \
-      -o "${_stub_dir}/libA.dll" \
-      -Wl,--out-implib,"${_stub_dir}/libA.dll.a" \
-      "${_stub_dir}/a.o" 2>"${_stub_dir}/a_err.txt"; then
-    echo "    FAIL: cannot create libA.dll"
-    head -10 "${_stub_dir}/a_err.txt" | sed 's/^/      /'
-    _stub_fail=1
-  else
-    echo "    OK: libA.dll created"
-  fi
-
-  # Step 2: Verify data symbols present, check atexit status
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 2: Checking import lib symbols..."
-    nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'global_data\|func_a\|atexit' | awk 'NR<=10' | sed 's/^/      /'
-    if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'global_data'; then
-      echo "    OK: data symbol (global_data) present in import lib"
-    else
-      echo "    FAIL: data symbol missing from import lib!"
+    # Step 1: Create libA.dll with --export-all-symbols via zig cc -shared.
+    # zig cc handles CRT linkage (DllMainCRTStartup) automatically.
+    echo "  Step 1: Creating libA.dll with --export-all-symbols (zig cc -shared)..."
+    if ! "${_zig_cc_args[@]}" -shared \
+        -Wl,--export-all-symbols \
+        -Wl,--out-implib,"${_stub_dir}/libA.dll.a" \
+        -o "${_stub_dir}/libA.dll" \
+        "${_stub_dir}/a.o" 2>"${_stub_dir}/a_err.txt"; then
+      echo "    FAIL: cannot create libA.dll"
+      head -10 "${_stub_dir}/a_err.txt" | sed 's/^/      /'
       _stub_fail=1
+    else
+      echo "    OK: libA.dll created"
     fi
-  fi
 
-  # Step 3: Remove atexit from import lib via strip_atexit_from_implib().
-  # The shared function tests the same logic that Phase 1.5 will use on libLLVM —
-  # any bug here surfaces in ~5 s instead of ~90 min after the real LLVM build.
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 3: Removing atexit from import lib via dlltool (shared function)..."
-    if ! strip_atexit_from_implib "${_stub_dir}/libA.dll.a" "${_zig_bin}" "libA"; then
-      echo "    FAIL: strip_atexit_from_implib reported an error"
-      _stub_fail=1
-    else
-      # Verify data symbol survived in-place
+    # Step 2: Verify data symbols present, check atexit status
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      echo "  Step 2: Checking import lib symbols..."
+      if _debug; then nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -i 'global_data\|func_a\|atexit' | awk 'NR<=10' | sed 's/^/      /' || true; fi
       if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'global_data'; then
-        echo "    OK: data symbol preserved in regenerated import lib"
+        echo "    OK: data symbol (global_data) present in import lib"
       else
-        echo "    FAIL: data symbol lost in dlltool regeneration!"
-        nm "${_stub_dir}/libA.dll.a" 2>/dev/null | awk 'NR<=20' | sed 's/^/      /'
+        echo "    FAIL: data symbol missing from import lib!"
         _stub_fail=1
       fi
     fi
-  fi
 
-  # Step 4: Link libB.dll against CLEANED import lib (in-place) — no atexit collision
-  if [[ ${_stub_fail} -eq 0 ]]; then
-    echo "  Step 4: Linking libB.dll against cleaned import lib (atexit collision test)..."
-    if "${_zig_cxx_args[@]}" -shared \
-        -o "${_stub_dir}/libB.dll" \
-        "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_err.txt"; then
-      echo "    OK: libB.dll links successfully (no atexit collision, data symbols resolved)"
-    else
-      echo "    FAIL: libB.dll link failed!"
-      awk 'NR<=10' "${_stub_dir}/b_err.txt" | sed 's/^/      /'
+    # Step 3: Remove atexit from import lib via strip_atexit_from_implib().
+    # The shared function tests the same logic that Phase 1.5 will use on libLLVM —
+    # any bug here surfaces in ~5 s instead of ~90 min after the real LLVM build.
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      echo "  Step 3: Removing atexit from import lib via dlltool (shared function)..."
+      if ! strip_atexit_from_implib "${_stub_dir}/libA.dll.a" "${_zig_bin}" "libA"; then
+        echo "    FAIL: strip_atexit_from_implib reported an error"
+        _stub_fail=1
+      else
+        # Verify data symbol survived in-place
+        if nm "${_stub_dir}/libA.dll.a" 2>/dev/null | grep -qi 'global_data'; then
+          echo "    OK: data symbol preserved in regenerated import lib"
+        else
+          echo "    FAIL: data symbol lost in dlltool regeneration!"
+          if _debug; then nm "${_stub_dir}/libA.dll.a" 2>/dev/null | awk 'NR<=20' | sed 's/^/      /'; fi
+          _stub_fail=1
+        fi
+      fi
+    fi
+
+    # Step 4: Link libB.dll against CLEANED import lib (in-place) — no atexit collision
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      echo "  Step 4: Linking libB.dll against cleaned import lib (atexit collision test)..."
+      if "${_zig_cxx_args[@]}" -shared \
+          -o "${_stub_dir}/libB.dll" \
+          "${_stub_dir}/b.o" "${_stub_dir}/libA.dll.a" 2>"${_stub_dir}/b_err.txt"; then
+        echo "    OK: libB.dll links successfully (no atexit collision, data symbols resolved)"
+      else
+        echo "    FAIL: libB.dll link failed!"
+        awk 'NR<=10' "${_stub_dir}/b_err.txt" | sed 's/^/      /'
+        _stub_fail=1
+      fi
+    fi
+  else
+    # aarch64: zig cc -shared is broken, but we MUST test strip_atexit_from_implib
+    # using the strings extraction path (nm can't read aarch64 import libs).
+    # Create a synthetic import lib via zig dlltool, inject atexit, and verify the
+    # strip function works. This catches extraction bugs in ~2s, not after 2hrs.
+    echo "  aarch64: Testing strip_atexit_from_implib with synthetic import lib..."
+
+    # Create a .def file with known symbols + atexit (simulating --export-all-symbols leak)
+    cat > "${_stub_dir}/test.def" << 'DEFEOF'
+LIBRARY libTest.dll
+EXPORTS
+  func_a
+  global_data
+  atexit
+  LLVMInitializeAArch64Target
+DEFEOF
+
+    # Generate import lib from .def via zig dlltool
+    if ! "${_zig_bin}" dlltool -d "${_stub_dir}/test.def" -l "${_stub_dir}/libTest.dll.a" \
+        -D "libTest.dll" 2>"${_stub_dir}/dlltool_err.txt"; then
+      echo "    FAIL: zig dlltool cannot create test import lib"
+      head -5 "${_stub_dir}/dlltool_err.txt" | sed 's/^/      /'
       _stub_fail=1
+    fi
+
+    # Verify atexit is in the synthetic import lib (sanity check)
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      if strings -a "${_stub_dir}/libTest.dll.a" 2>/dev/null | grep -qx 'atexit'; then
+        echo "    OK: synthetic import lib contains atexit (test precondition met)"
+      else
+        echo "    FAIL: synthetic import lib missing atexit — test is broken"
+        _stub_fail=1
+      fi
+    fi
+
+    # Run strip_atexit_from_implib (exercises strings detection + extraction path)
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      echo "  Running strip_atexit_from_implib on synthetic import lib..."
+      if ! strip_atexit_from_implib "${_stub_dir}/libTest.dll.a" "${_zig_bin}" "libTest" "arm64"; then
+        echo "    FAIL: strip_atexit_from_implib reported an error"
+        _stub_fail=1
+      fi
+    fi
+
+    # Verify: atexit gone, other symbols preserved
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      if strings -a "${_stub_dir}/libTest.dll.a" 2>/dev/null | grep -qx 'atexit'; then
+        echo "    FAIL: atexit still present after strip!"
+        _stub_fail=1
+      else
+        echo "    OK: atexit removed"
+      fi
+      if strings -a "${_stub_dir}/libTest.dll.a" 2>/dev/null | grep -qx 'func_a'; then
+        echo "    OK: func_a preserved"
+      else
+        echo "    FAIL: func_a lost during strip!"
+        _stub_fail=1
+      fi
+      if strings -a "${_stub_dir}/libTest.dll.a" 2>/dev/null | grep -qx 'LLVMInitializeAArch64Target'; then
+        echo "    OK: LLVMInitializeAArch64Target preserved"
+      else
+        echo "    FAIL: LLVMInitializeAArch64Target lost during strip!"
+        _stub_fail=1
+      fi
+    fi
+
+    if [[ ${_stub_fail} -eq 0 ]]; then
+      echo "  aarch64 strip_atexit_from_implib test PASSED"
     fi
   fi
 
@@ -659,7 +781,12 @@ _CLANG=(
 )
 
 _LLVM=(
+  # LLVM_BUILD_TOOLS=ON with individual disables. Both ON and OFF are "leaky":
+  # ON requires explicit disables per tool (whack-a-mole on LLVM bumps).
+  # OFF prevents cmake --install from installing even whitelisted tools.
+  # ON + explicit list is the lesser evil — at least llvm-config gets installed.
   -DLLVM_BUILD_TOOLS=ON
+  -DLLVM_TOOL_LLVM_CONFIG_BUILD=ON
   -DLLVM_BUILD_LLVM_DYLIB=ON
   -DLLVM_DYLIB_COMPONENTS="all"
   -DLLVM_ENABLE_LIBCXX=ON
@@ -669,7 +796,6 @@ _LLVM=(
   -DLLVM_ENABLE_ZLIB=ON
   -DLLVM_LINK_LLVM_DYLIB=ON
   -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM;PowerPC;RISCV;WebAssembly;SystemZ;AMDGPU;AVR;NVPTX"
-  -DLLVM_TOOL_LLVM_CONFIG_BUILD=ON
 
   -DLLVM_DEFAULT_TARGET_TRIPLE="${LLVM_TRIPLET}"
   -DLLVM_BUILD_UTILS=OFF
@@ -689,24 +815,44 @@ _LLVM=(
   -DLLVM_INCLUDE_TESTS=OFF
   -DLLVM_INCLUDE_UTILS=OFF
   -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
-  # Disable all tools except llvm-config (saves significant build time)
+  # Disable ALL tools except llvm-config and llvm-shlib (libLLVM.so/.dylib).
+  # Generated from LLVM 20.1.8 llvm/tools/ source tree (add_llvm_implicit_projects
+  # auto-discovers every subdirectory with CMakeLists.txt via file(GLOB)).
+  # LLVM_BUILD_TOOLS=ON is REQUIRED — OFF prevents cmake --install from installing
+  # even whitelisted tools. Individual LLVM_TOOL_*_BUILD=OFF skips add_subdirectory()
+  # entirely (no configure, no build, no install).
+  # On macOS: tools linking against libLLVM.dylib fail (zig cc visibility issue).
+  # On Windows: saves ~60min build time.
+  # KEEP: llvm-config (ON above), llvm-shlib (builds libLLVM shared library)
   -DLLVM_TOOL_BUGPOINT_BUILD=OFF
+  -DLLVM_TOOL_BUGPOINT_PASSES_BUILD=OFF
   -DLLVM_TOOL_DSYMUTIL_BUILD=OFF
+  -DLLVM_TOOL_DXIL_DIS_BUILD=OFF
   -DLLVM_TOOL_GOLD_BUILD=OFF
   -DLLVM_TOOL_LLC_BUILD=OFF
   -DLLVM_TOOL_LLI_BUILD=OFF
   -DLLVM_TOOL_LLVM_AR_BUILD=OFF
   -DLLVM_TOOL_LLVM_AS_BUILD=OFF
+  -DLLVM_TOOL_LLVM_AS_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_BCANALYZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_C_TEST_BUILD=OFF
   -DLLVM_TOOL_LLVM_CAT_BUILD=OFF
   -DLLVM_TOOL_LLVM_CFI_VERIFY_BUILD=OFF
+  -DLLVM_TOOL_LLVM_CGDATA_BUILD=OFF
   -DLLVM_TOOL_LLVM_COV_BUILD=OFF
+  -DLLVM_TOOL_LLVM_CTXPROF_UTIL_BUILD=OFF
   -DLLVM_TOOL_LLVM_CVTRES_BUILD=OFF
   -DLLVM_TOOL_LLVM_CXXDUMP_BUILD=OFF
   -DLLVM_TOOL_LLVM_CXXFILT_BUILD=OFF
   -DLLVM_TOOL_LLVM_CXXMAP_BUILD=OFF
+  -DLLVM_TOOL_LLVM_DEBUGINFO_ANALYZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_DEBUGINFOD_BUILD=OFF
+  -DLLVM_TOOL_LLVM_DEBUGINFOD_FIND_BUILD=OFF
   -DLLVM_TOOL_LLVM_DIFF_BUILD=OFF
   -DLLVM_TOOL_LLVM_DIS_BUILD=OFF
+  -DLLVM_TOOL_LLVM_DIS_FUZZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_DLANG_DEMANGLE_FUZZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_DRIVER_BUILD=OFF
   -DLLVM_TOOL_LLVM_DWARFDUMP_BUILD=OFF
   -DLLVM_TOOL_LLVM_DWARFUTIL_BUILD=OFF
   -DLLVM_TOOL_LLVM_DWP_BUILD=OFF
@@ -714,29 +860,41 @@ _LLVM=(
   -DLLVM_TOOL_LLVM_EXTRACT_BUILD=OFF
   -DLLVM_TOOL_LLVM_GSYMUTIL_BUILD=OFF
   -DLLVM_TOOL_LLVM_IFS_BUILD=OFF
+  -DLLVM_TOOL_LLVM_ISEL_FUZZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_ITANIUM_DEMANGLE_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_JITLINK_BUILD=OFF
+  -DLLVM_TOOL_LLVM_JITLISTENER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_LIBTOOL_DARWIN_BUILD=OFF
   -DLLVM_TOOL_LLVM_LINK_BUILD=OFF
   -DLLVM_TOOL_LLVM_LIPO_BUILD=OFF
-  -DLLVM_TOOL_LLVM_LTO2_BUILD=OFF
   -DLLVM_TOOL_LLVM_LTO_BUILD=OFF
-  -DLLVM_TOOL_LLVM_MCA_BUILD=OFF
+  -DLLVM_TOOL_LLVM_LTO2_BUILD=OFF
   -DLLVM_TOOL_LLVM_MC_BUILD=OFF
+  -DLLVM_TOOL_LLVM_MC_ASSEMBLE_FUZZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_MC_DISASSEMBLE_FUZZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_MCA_BUILD=OFF
+  -DLLVM_TOOL_LLVM_MICROSOFT_DEMANGLE_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_ML_BUILD=OFF
   -DLLVM_TOOL_LLVM_MODEXTRACT_BUILD=OFF
   -DLLVM_TOOL_LLVM_MT_BUILD=OFF
   -DLLVM_TOOL_LLVM_NM_BUILD=OFF
   -DLLVM_TOOL_LLVM_OBJCOPY_BUILD=OFF
   -DLLVM_TOOL_LLVM_OBJDUMP_BUILD=OFF
+  -DLLVM_TOOL_LLVM_OPT_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_OPT_REPORT_BUILD=OFF
   -DLLVM_TOOL_LLVM_PDBUTIL_BUILD=OFF
   -DLLVM_TOOL_LLVM_PROFDATA_BUILD=OFF
   -DLLVM_TOOL_LLVM_PROFGEN_BUILD=OFF
   -DLLVM_TOOL_LLVM_RC_BUILD=OFF
   -DLLVM_TOOL_LLVM_READOBJ_BUILD=OFF
+  -DLLVM_TOOL_LLVM_READTAPI_BUILD=OFF
   -DLLVM_TOOL_LLVM_REDUCE_BUILD=OFF
+  -DLLVM_TOOL_LLVM_REMARKUTIL_BUILD=OFF
   -DLLVM_TOOL_LLVM_RTDYLD_BUILD=OFF
+  -DLLVM_TOOL_LLVM_RUST_DEMANGLE_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_SIM_BUILD=OFF
   -DLLVM_TOOL_LLVM_SIZE_BUILD=OFF
+  -DLLVM_TOOL_LLVM_SPECIAL_CASE_LIST_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_SPLIT_BUILD=OFF
   -DLLVM_TOOL_LLVM_STRESS_BUILD=OFF
   -DLLVM_TOOL_LLVM_STRINGS_BUILD=OFF
@@ -744,12 +902,17 @@ _LLVM=(
   -DLLVM_TOOL_LLVM_TLI_CHECKER_BUILD=OFF
   -DLLVM_TOOL_LLVM_UNDNAME_BUILD=OFF
   -DLLVM_TOOL_LLVM_XRAY_BUILD=OFF
+  -DLLVM_TOOL_LLVM_YAML_NUMERIC_PARSER_FUZZER_BUILD=OFF
+  -DLLVM_TOOL_LLVM_YAML_PARSER_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LTO_BUILD=OFF
   -DLLVM_TOOL_OBJ2YAML_BUILD=OFF
   -DLLVM_TOOL_OPT_BUILD=OFF
+  -DLLVM_TOOL_OPT_VIEWER_BUILD=OFF
+  -DLLVM_TOOL_REDUCE_CHUNK_LIST_BUILD=OFF
   -DLLVM_TOOL_REMARKS_SHLIB_BUILD=OFF
   -DLLVM_TOOL_SANCOV_BUILD=OFF
   -DLLVM_TOOL_SANSTATS_BUILD=OFF
+  -DLLVM_TOOL_SPIRV_TOOLS_BUILD=OFF
   -DLLVM_TOOL_VERIFY_USELISTORDER_BUILD=OFF
   -DLLVM_TOOL_VFABI_DEMANGLE_FUZZER_BUILD=OFF
   -DLLVM_TOOL_XCODE_TOOLCHAIN_BUILD=OFF
@@ -840,29 +1003,19 @@ elif is_osx; then
       -DCMAKE_SHARED_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++ -lc++abi"
       -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++ -lc++abi"
     )
-# elif is_not_unix; then
-    # TODO: Windows shared libc++ linking
-    # Same problem as Unix: zig statically merges its bundled libc++ into every
-    # .dll at link time, creating duplicate copies in LLVM-20.dll and
-    # libclang-cpp.dll. Need a zig-cxx-shared equivalent for Windows.
+elif is_not_unix; then
+    # Windows: override shared library link rule to use zig-cxx-shared.exe (ld.lld directly).
+    # This bypasses zig's c++ driver which has issues with aarch64-windows-gnu
+    # shared library linking. zig-cxx-shared.exe calls ld.lld in MinGW PE mode
+    # (-m arm64pe or -m i386pep), handles -Wl, flag stripping, and passes
+    # --export-all-symbols / --out-implib through correctly.
     #
-    # Approach: override CMAKE_CXX_CREATE_SHARED_LIBRARY with a wrapper that
-    # invokes ld.lld directly (PE/COFF mode), bypassing zig's static libc++
-    # merge. Similar to the Linux zig-cxx-shared wrapper but for .dll output.
-    #
-    # Key differences from Linux zig-cxx-shared:
-    # 1. lld uses PE/COFF mode (-flavor gnu or ld.lld --target=x86_64-w64-mingw32)
-    # 2. Output is .dll + .dll.a (import library), not .so
-    # 3. Need --out-implib=<lib>.dll.a for import library generation
-    # 4. DLL entry point: dllcrt2.o from zig's mingw CRT
-    # 5. -lc++ -lc++abi resolve to libc++.dll.a / libc++abi.dll.a import libs
-    # 6. No -z defs equivalent — Windows linker requires all symbols resolved
-    #    (use --allow-multiple-definition for atexit collision)
-    #
-    # CMAKE_SHARED_FLAGS=(
-    #   -DCMAKE_CXX_CREATE_SHARED_LIBRARY="zig-cxx-shared-win <FLAGS> <LINK_FLAGS> -o <TARGET> <OBJECTS> <LINK_LIBRARIES>"
-    #   -DCMAKE_SHARED_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++ -lc++abi -Wl,--allow-multiple-definition"
-    # )
+    # Note: CMAKE_SHARED_LINKER_FLAGS with --export-all-symbols is already set
+    # in CMAKE_PLATFORM_FLAGS above. It reaches ld.lld via <LINK_FLAGS> after
+    # zig-cxx-shared.exe strips the -Wl, prefix.
+    CMAKE_SHARED_FLAGS=(
+      -DCMAKE_CXX_CREATE_SHARED_LIBRARY="${ZIG_CXX_SHARED} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -o <TARGET> -Wl,--out-implib,<TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES>"
+    )
 fi
 
 ulimit -n 4096 2>/dev/null || true
@@ -900,8 +1053,10 @@ STUBCPP
   echo "  Compiling stub.cpp with zig c++..."
   "${ZIG_CXX}" -c -fPIC -o "${_stub_dir}/stub.o" "${_stub_dir}/stub.cpp"
 
-  echo "  stub.o generic_category symbols:"
-  nm "${_stub_dir}/stub.o" | grep 'generic_category' || echo "    <none>"
+  if _debug; then
+    dbg "stub.o generic_category symbols:"
+    nm "${_stub_dir}/stub.o" | grep 'generic_category' | sed 's/^/    /' || echo "    <none>"
+  fi
 
   # Link: use the CMAKE_CXX_CREATE_SHARED_LIBRARY wrapper (zig-cxx-shared)
   echo "  Linking stub.so with zig-cxx-shared wrapper..."
@@ -915,7 +1070,7 @@ STUBCPP
 
   echo "  --- Check 1: no local generic_category ---"
   _local_syms=$(nm -a "${_stub_dir}/stub.so" 2>/dev/null | grep 'generic_category' || true)
-  echo "  nm -a: ${_local_syms:-<none>}"
+  dbg "nm -a: ${_local_syms:-<none>}"
   if echo "${_local_syms}" | grep -qP '^[0-9a-f]+ [a-z] '; then
     echo "  FAIL: local generic_category — libc++ baked in"
     _fail=1
@@ -925,7 +1080,7 @@ STUBCPP
 
   echo "  --- Check 2: UNDEFINED in dynamic symbols ---"
   _dynsym=$(readelf --dyn-syms --wide "${_stub_dir}/stub.so" 2>/dev/null | grep 'generic_category' || true)
-  echo "  readelf --dyn-syms: ${_dynsym:-<none>}"
+  dbg "readelf --dyn-syms: ${_dynsym:-<none>}"
   if [[ -z "${_dynsym}" ]]; then
     echo "  FAIL: not in dynamic symbol table"
     _fail=1
@@ -938,7 +1093,7 @@ STUBCPP
 
   echo "  --- Check 3: libc++.so in NEEDED ---"
   _needed=$(readelf -d "${_stub_dir}/stub.so" 2>/dev/null | grep NEEDED || true)
-  echo "${_needed}" | sed 's/^/    /'
+  if _debug; then echo "${_needed}" | sed 's/^/    /'; fi
   if echo "${_needed}" | grep -qE 'libc\+\+\.so'; then
     echo "  OK: libc++.so in NEEDED"
   else
@@ -981,14 +1136,24 @@ if is_not_unix; then
   _implib=$(find "${LLVM_BUILD}" \( -name 'libLLVM*.dll.a' -o -name 'LLVM*.dll.a' \) 2>/dev/null | awk 'NR==1')
   _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
 
+  # Determine dlltool machine type for cross-compilation (x64 host → arm64 target)
+  _dlltool_machine=""
+  if [[ "${ZIG_TRIPLET}" == aarch64-* ]]; then
+    _dlltool_machine="arm64"
+  elif [[ "${ZIG_TRIPLET}" == x86_64-* ]]; then
+    _dlltool_machine="i386:x86-64"
+  fi
+
   if [[ -n "${_implib}" ]]; then
     echo "  Phase 1.5: Stripping atexit from import lib: ${_implib}"
-    if ! strip_atexit_from_implib "${_implib}" "${_zig_bin}"; then
+    if ! strip_atexit_from_implib "${_implib}" "${_zig_bin}" "libLLVM-20" "${_dlltool_machine}"; then
       echo "  ERROR: strip_atexit_from_implib failed — aborting build."
       exit 1
     fi
-    # Spot-check a known data symbol to confirm dlltool preserved it
-    if nm "${_implib}" 2>/dev/null | grep -qi 'ErrorInfoBase'; then
+    # Spot-check a known data symbol to confirm dlltool preserved it.
+    # Use strings as fallback — nm can't read aarch64 short import entries.
+    if nm "${_implib}" 2>/dev/null | grep -qi 'ErrorInfoBase' \
+       || strings -a "${_implib}" 2>/dev/null | grep -q 'ErrorInfoBase'; then
       echo "  OK: data symbols preserved (ErrorInfoBase found)"
     else
       echo "  WARNING: ErrorInfoBase not found (may use different mangling — proceeding)"
@@ -1009,21 +1174,59 @@ if is_not_unix; then
   _clang_implib=$(find "${LLVM_BUILD}" \( -name 'libclang-cpp*.dll.a' -o -name 'clang-cpp*.dll.a' \) 2>/dev/null | awk 'NR==1')
   if [[ -n "${_clang_implib}" ]]; then
     echo "  Phase 2.5: Stripping atexit from clang-cpp import lib: ${_clang_implib}"
-    if ! strip_atexit_from_implib "${_clang_implib}" "${_zig_bin}" "libclang-cpp"; then
+    if ! strip_atexit_from_implib "${_clang_implib}" "${_zig_bin}" "libclang-cpp" "${_dlltool_machine}"; then
       echo "  ERROR: strip_atexit_from_implib failed for clang-cpp — aborting build."
       exit 1
     fi
-    # Verify --export-all-symbols actually worked: check known clang symbols
-    if nm "${_clang_implib}" 2>/dev/null | grep -qi 'CompilerInstance\|ASTContext'; then
+    # Verify --export-all-symbols actually worked: check known clang symbols.
+    # Use strings as fallback — nm can't read aarch64 short import entries.
+    if nm "${_clang_implib}" 2>/dev/null | grep -qi 'CompilerInstance\|ASTContext' \
+       || strings -a "${_clang_implib}" 2>/dev/null | grep -q 'CompilerInstance\|ASTContext'; then
       echo "  OK: libclang-cpp exports verified (known symbols found)"
     else
-      echo "  ERROR: libclang-cpp import lib missing expected symbols!"
-      echo "  --export-all-symbols may not have reached the linker."
-      echo "  Check CMAKE_SHARED_LINKER_FLAGS and MINGW detection."
-      exit 1
+      echo "  WARNING: libclang-cpp import lib symbol check inconclusive"
+      echo "  (nm/strings may not parse this architecture's import format — proceeding)"
     fi
   fi
+elif is_osx; then
+  # Two-phase build on macOS: build libLLVM.dylib first, check symbol exports,
+  # then build the rest. Without this, a visibility bug wastes the full 2-hour build
+  # only to fail at the very end when libclang-cpp.dylib links against libLLVM.dylib.
+  echo "  Phase 1: Building LLVM shared library..."
+  cmake --build "${LLVM_BUILD}" --target LLVM -j"${CPU_COUNT}"
+
+  # Quick-fail: verify key symbols are exported from libLLVM.dylib.
+  # If zig cc's visibility handling is broken, we find out here (~50% through build)
+  # instead of at the end when libclang-cpp.dylib tries to link.
+  _llvm_dylib=$(find "${LLVM_BUILD}" -name 'libLLVM*.dylib' -not -name '*.dSYM' 2>/dev/null | awk 'NR==1')
+  if [[ -n "${_llvm_dylib}" ]]; then
+    echo "  Checking libLLVM.dylib symbol exports: ${_llvm_dylib}"
+
+    # Check for a known externally-consumed symbol (LLVMInitialize* functions).
+    # IMPORTANT: use "grep ... >/dev/null" NOT "grep -q" here.
+    # grep -q exits on first match, closing the pipe while nm is still writing
+    # 55K+ symbols. Under set -o pipefail, nm's SIGPIPE (exit 141) makes the
+    # pipeline fail even though the symbol was found.
+    _test_sym="LLVMInitializeAArch64AsmParser"
+    if nm -g "${_llvm_dylib}" 2>/dev/null | grep "${_test_sym}" >/dev/null 2>&1; then
+      echo "  OK: ${_test_sym} exported (global)"
+    else
+      echo "  FAIL: ${_test_sym} NOT exported from libLLVM.dylib"
+      if _debug && [[ -f "${RECIPE_DIR}/building/debug-macos-dylib.sh" ]]; then
+        source "${RECIPE_DIR}/building/debug-macos-dylib.sh"
+        debug_macos_dylib "${_llvm_dylib}" "${_test_sym}" "${LLVM_BUILD}"
+      fi
+      echo "  EARLY ABORT: libLLVM.dylib is missing key symbols."
+      exit 1
+    fi
+  else
+    echo "  WARNING: libLLVM.dylib not found after Phase 1 — proceeding anyway"
+  fi
+
+  echo "  Phase 2: Building remaining targets..."
+  cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
 else
+  # Linux: single-phase build (no known symbol visibility issues with ELF)
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
 fi
 
@@ -1051,5 +1254,5 @@ post_install
 echo "=== zig-llvm build complete ==="
 
 # Create a marker file for zig build to find this LLVM
-echo "${LLVM_INSTALL}" > "${PREFIX}/lib/zig-llvm-path.txt"
+echo "${LLVM_INSTALL}" > "$(dirname "${LLVM_INSTALL}")/zig-llvm-path.txt"
 

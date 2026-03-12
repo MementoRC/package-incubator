@@ -6,6 +6,7 @@ context:
   version: 20.1.8
 
   library: ${{ "Library/" if not unix }}
+  exe: ${{ ".exe" if not unix }}
   m2: ${{ "m2-" if not unix }}
   sh: ${{ ".bat" if not unix else ".sh" }}
   so: ${{ ".so" if linux else ".dylib" if osx else ".dll.a" }}
@@ -34,8 +35,8 @@ context:
       "s390x-unknown-linux-gnu"                    if target_platform == "linux-s390x"    else
       "x86_64-apple-darwin"                        if target_platform == "osx-64"         else
       "aarch64-apple-darwin"                       if target_platform == "osx-arm64"      else
-      "x86_64-w64-windows-gnu"                     if not unix and arm64                  else
-      "aarch64-w64-windows-gnu"                    if not unix                            else
+      "aarch64-w64-windows-gnu"                    if not unix and arm64                  else
+      "x86_64-w64-windows-gnu"                     if not unix                            else
       "native"
     }}
 
@@ -60,6 +61,7 @@ build:
       LLVM_TRIPLET: ${{ llvm_triplet }}
       ZIG_TRIPLET: ${{ zig_triplet }}
       # ZIG_LLVM_SKIP_BUILD: 1
+      ZIG_LLVM_DEBUG: 1
       
       # --- BOOTSTRAPPING ---
       CONDA_BUILD_ZIG: >-
@@ -108,9 +110,11 @@ requirements:
         - ${{ m2 }}findutils
         - pkg-config
   host:
-    - libxml2
     - zlib
-    - zstd
+    - if: unix
+      then:
+        - libxml2
+        - zstd
   run_exports:
     - ${{ pin_subpackage(name, upper_bound='x.x') }}
 
@@ -118,31 +122,31 @@ tests:
   # Verify package structure (common files across all platforms)
   - package_contents:
       files:
-        - lib/zig-llvm/bin/llvm-config
-        - lib/zig-llvm/bin/llvm-config.real
-        - lib/zig-llvm/include/c++/*
-        - lib/zig-llvm/include/clang/*
-        - lib/zig-llvm/include/clang-c/*.h
-        - lib/zig-llvm/include/lld/Common/*{.inc,.h}
-        - lib/zig-llvm/include/llvm/*
-        - lib/zig-llvm/include/llvm-c/*.h
-        - lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
-        - lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
-        - lib/zig-llvm/lib/liblld*.a
-        # Shared libraries: .so/.dylib in lib/, .dll in bin/ with .dll.a import libs in lib/
+        - ${{ library }}lib/zig-llvm/bin/llvm-config
+        - ${{ library }}lib/zig-llvm/bin/llvm-config.real${{ exe }}
+        - ${{ library }}lib/zig-llvm/include/c++/*
+        - ${{ library }}lib/zig-llvm/include/clang/*
+        - ${{ library }}lib/zig-llvm/include/clang-c/*.h
+        - ${{ library }}lib/zig-llvm/include/lld/Common/*{.inc,.h}
+        - ${{ library }}lib/zig-llvm/include/llvm/*
+        - ${{ library }}lib/zig-llvm/include/llvm-c/*.h
+        - ${{ library }}lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
+        - ${{ library }}lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
+        - ${{ library }}lib/zig-llvm/lib/liblld*.a
+
         - if: unix
           then:
-            - lib/zig-llvm/lib/libc++abi*${{ so }}*
-            - lib/zig-llvm/lib/libclang-cpp*${{ so }}*
-            - lib/zig-llvm/lib/libc++*${{ so }}*
-            - lib/zig-llvm/lib/libLLVM*${{ so }}*
+            - ${{ library }}lib/zig-llvm/lib/libc++abi*${{ so }}*
+        - ${{ library }}lib/zig-llvm/lib/libclang-cpp*${{ so }}*
+        - ${{ library }}lib/zig-llvm/lib/libc++*${{ so }}*
+        - ${{ library }}lib/zig-llvm/lib/libLLVM*${{ so }}*
         - if: not unix
           then:
             # DLLs (runtime) in bin/
-            - lib/zig-llvm/bin/libLLVM*.dll
-            - lib/zig-llvm/bin/libclang-cpp*.dll
-            - lib/zig-llvm/bin/libc++*.dll
-        - lib/zig-llvm-path.txt
+            - Library/lib/zig-llvm/bin/libLLVM*.dll
+            - Library/lib/zig-llvm/bin/libclang-cpp*.dll
+            - Library/lib/zig-llvm/bin/libc++*.dll
+        - ${{ library }}lib/zig-llvm-path.txt
         # Post-install test resources
         - etc/conda/test-files/zig-llvm/*
 
@@ -155,6 +159,9 @@ tests:
     requirements:
       run:
         - python >=3.9
+        - if: not unix
+          then:
+            - ${{ m2 }}bash >=5.2
 
   # Verify shared libraries: valid format, no libstdc++, GLIBC versions, symbols
   - script:

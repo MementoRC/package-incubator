@@ -44,10 +44,32 @@ jobs:
         run: |
           echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Run code in changed subdirectories
+      - name: Restore zig-llvm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/${{ matrix.build }}/*.conda
+          key: zig-llvm-${{ matrix.build }}-${{ hashFiles('recipes/zig-llvm/**') }}
+          restore-keys: |
+            zig-llvm-${{ matrix.build }}-
+
+      - name: Build zig-llvm (skips if cached package matches)
         shell: bash
         run: |
-          rattler-build build --recipe-dir ./recipes \
+          rattler-build build --recipe recipes/zig-llvm \
+            --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+
+      - name: Save zig-llvm cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/${{ matrix.build }}/*.conda
+          key: zig-llvm-${{ matrix.build }}-${{ hashFiles('recipes/zig-llvm/**') }}
+
+      - name: Build zig-zig
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zig \
             --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
 

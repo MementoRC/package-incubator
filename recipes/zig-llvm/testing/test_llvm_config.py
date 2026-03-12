@@ -6,16 +6,45 @@ import subprocess
 import sys
 
 
-def run_llvm_config(*args):
+def _zig_llvm_prefix():
+    """Get the zig-llvm install prefix (handles Windows Library/ convention)."""
     prefix = os.environ.get("CONDA_PREFIX", os.environ.get("PREFIX", ""))
-    llvm_config = os.path.join(prefix, "lib", "zig-llvm", "bin", "llvm-config")
-    r = subprocess.run(
-        [llvm_config, *args],
-        capture_output=True, text=True, timeout=10,
-    )
+    if sys.platform == "win32":
+        return os.path.join(prefix, "Library", "lib", "zig-llvm")
+    return os.path.join(prefix, "lib", "zig-llvm")
+
+
+def _find_llvm_config():
+    """Find llvm-config, handling Windows where it may be a bash wrapper script."""
+    base = os.path.join(_zig_llvm_prefix(), "bin", "llvm-config")
+    # Try exact name first, then with .exe
+    for candidate in [base, base + ".exe"]:
+        if os.path.isfile(candidate):
+            return candidate
+    return base  # return base for error reporting
+
+
+def run_llvm_config(*args):
+    llvm_config = _find_llvm_config()
+    # On Windows, llvm-config may be a bash wrapper script — invoke via bash
+    if sys.platform == "win32" and not llvm_config.endswith(".exe"):
+        cmd = ["bash", llvm_config, *args]
+    else:
+        cmd = [llvm_config, *args]
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError as exc:
+        print(f"  llvm-config {' '.join(args)} FAILED: {exc}", file=sys.stderr)
+        print(f"  cmd: {cmd}", file=sys.stderr)
+        return None
     if r.returncode != 0:
         print(f"  llvm-config {' '.join(args)} FAILED (rc={r.returncode})", file=sys.stderr)
         print(f"  stderr: {r.stderr.strip()}", file=sys.stderr)
+        print(f"  stdout: {r.stdout.strip()}", file=sys.stderr)
+        print(f"  cmd: {cmd}", file=sys.stderr)
         return None
     return r.stdout.strip()
 
@@ -24,8 +53,12 @@ def main():
     errors = []
 
     # Check llvm-config binary exists
-    prefix = os.environ.get("CONDA_PREFIX", os.environ.get("PREFIX", ""))
-    llvm_config = os.path.join(prefix, "lib", "zig-llvm", "bin", "llvm-config")
+    llvm_config = _find_llvm_config()
+    zig_llvm_bin = os.path.join(_zig_llvm_prefix(), "bin")
+    print(f"  zig-llvm bin: {zig_llvm_bin}")
+    if os.path.isdir(zig_llvm_bin):
+        print(f"  contents: {os.listdir(zig_llvm_bin)}")
+    print(f"  llvm-config: {llvm_config} (exists={os.path.isfile(llvm_config)})")
     if not os.path.isfile(llvm_config):
         print(f"ERROR: llvm-config not found at {llvm_config}", file=sys.stderr)
         return 1

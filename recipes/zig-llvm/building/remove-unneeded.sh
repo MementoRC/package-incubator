@@ -34,12 +34,25 @@ function remove_unneeded() {
   # zig build calls llvm-config --ldflags and passes results directly to its linker
   # Flags like -Bsymbolic-functions are GNU ld specific and not supported by lld/zig linker
   echo "=== Creating llvm-config wrapper to filter unsupported linker flags ==="
-  mv "${LLVM_INSTALL}/bin/llvm-config" "${LLVM_INSTALL}/bin/llvm-config.real"
+  # Rename the real binary: ensure .exe on Windows (cross-compile may omit it)
+  if [[ -f "${LLVM_INSTALL}/bin/llvm-config.exe" ]]; then
+    mv "${LLVM_INSTALL}/bin/llvm-config.exe" "${LLVM_INSTALL}/bin/llvm-config.real.exe"
+  elif [[ "${target_platform}" == win-* ]]; then
+    # Cross-compiled PE binary without .exe — add extension
+    mv "${LLVM_INSTALL}/bin/llvm-config" "${LLVM_INSTALL}/bin/llvm-config.real.exe"
+  else
+    mv "${LLVM_INSTALL}/bin/llvm-config" "${LLVM_INSTALL}/bin/llvm-config.real"
+  fi
   cat > "${LLVM_INSTALL}/bin/llvm-config" << 'WRAPPER_EOF'
 #!/usr/bin/env bash
 # Wrapper for llvm-config that filters out flags unsupported by zig's linker
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REAL_CONFIG="${SCRIPT_DIR}/llvm-config.real"
+# Find llvm-config.real: try .exe first (Windows), then without
+if [[ -f "${SCRIPT_DIR}/llvm-config.real.exe" ]]; then
+  REAL_CONFIG="${SCRIPT_DIR}/llvm-config.real.exe"
+else
+  REAL_CONFIG="${SCRIPT_DIR}/llvm-config.real"
+fi
 
 # Run the real llvm-config
 output=$("${REAL_CONFIG}" "$@")

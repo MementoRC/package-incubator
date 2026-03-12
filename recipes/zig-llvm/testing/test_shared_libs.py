@@ -129,7 +129,11 @@ def get_symbol_count(path, symbol):
 
 def main():
     prefix = os.environ.get("CONDA_PREFIX", os.environ.get("PREFIX", ""))
-    libdir = os.path.join(prefix, "lib", "zig-llvm", "lib")
+    # Windows conda convention: non-Python artifacts under Library/
+    if sys.platform == "win32":
+        libdir = os.path.join(prefix, "Library", "lib", "zig-llvm", "lib")
+    else:
+        libdir = os.path.join(prefix, "lib", "zig-llvm", "lib")
 
     if not os.path.isdir(libdir):
         print(f"ERROR: libdir not found: {libdir}", file=sys.stderr)
