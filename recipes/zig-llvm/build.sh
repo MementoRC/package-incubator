@@ -161,119 +161,13 @@ if is_not_unix; then
   export ZIG_CC="${_zig};cc;-target;${_target};-mcpu=baseline"
   export ZIG_CXX="${_zig};c++;-target;${_target};-mcpu=baseline"
   export ZIG_ASM="${_zig};cc;-target;${_target};-mcpu=baseline"
-  # CMAKE_AR/CMAKE_RANLIB don't support semicolon syntax (CMake invokes them
-  # directly via cmd.exe, not as compiler commands). Cross-compiler .bat wrappers
-  # reference aarch64-w64-mingw32-zig.exe which doesn't exist.
-  # Create .bat wrappers that cmd.exe can invoke, calling the native .exe.
-  # Convert forward-slash path to backslash for cmd.exe.
-  _native_zig_win=$(echo "${_native_zig}" | sed 's|/|\\|g')
-
-  _zig_ar="${SRC_DIR}/_zig_ar.bat"
-  cat > "${_zig_ar}" << ARWRAP
-@echo off
-"${_native_zig_win}" ar %*
-ARWRAP
-
-  _zig_ranlib="${SRC_DIR}/_zig_ranlib.bat"
-  cat > "${_zig_ranlib}" << RANLIBWRAP
-@echo off
-"${_native_zig_win}" ranlib %*
-RANLIBWRAP
-
-  export ZIG_AR="${_zig_ar}"
-  export ZIG_RANLIB="${_zig_ranlib}"
+  # AR/RANLIB/RC/CXX_SHARED: use zig _11 activation wrappers directly.
+  # zig _11 provides zig-ar.bat, zig-ranlib.bat, zig-rc.bat, and
+  # zig-cxx-shared.exe (compiled C, native, arch-aware) via activation.
+  export ZIG_AR="${ZIG_WRAPPERS}/zig-ar.bat"
+  export ZIG_RANLIB="${ZIG_WRAPPERS}/zig-ranlib.bat"
   export ZIG_RC="${_zig};rc"
-  # Windows zig-cxx-shared: bash wrapper that invokes ld.lld directly for
-  # DLL creation, bypassing zig's static libc++ merge.
-  # CMake calls this via CMAKE_CXX_CREATE_SHARED_LIBRARY.
-  ZIG_CXX_SHARED_WIN="${SRC_DIR}/_zig_cxx_shared_win"
-  cat > "${ZIG_CXX_SHARED_WIN}" << 'SHAREDWIN'
-#!/usr/bin/env bash
-set -euo pipefail
-# Windows DLL linker wrapper — invokes ld.lld directly in MinGW mode.
-# Translates compiler-driver flags to raw linker flags, similar to
-# the Linux zig-cxx-shared wrapper.
-#
-# Why: zig c++ always statically merges its bundled libc++ into .dll files.
-# By invoking ld.lld directly, we link against the shared libc++.dll instead.
-
-_args=()
-_libs=()
-_output=""
-_implib=""
-
-for arg in "$@"; do
-    case "$arg" in
-        # Output file
-        -o) _next_is_output=1; continue ;;
-        # Strip compiler-only flags that ld.lld doesn't understand
-        -target|--target=*) continue ;;
-        -mcpu=*|-march=*|-mtune=*) continue ;;
-        -stdlib=*) continue ;;
-        -f*|-O*|-g|-g[0-9]|-D*|-I*|-std=*|-W*|-pedantic) continue ;;
-        -Werror=*|-Wno-*) continue ;;
-        # Translate -Wl, flags
-        -Wl,*)
-            _wl_args="${arg#-Wl,}"
-            IFS=',' read -ra _parts <<< "${_wl_args}"
-            for _p in "${_parts[@]}"; do
-                _args+=("${_p}")
-            done
-            continue ;;
-        # Translate -Xlinker
-        -Xlinker) _next_is_xlinker=1; continue ;;
-        # Shared flag → already handled
-        -shared) _args+=("--shared"); continue ;;
-        # Pass through everything else (objects, libraries, -L paths)
-        *) ;;
-    esac
-
-    if [[ "${_next_is_output:-0}" == "1" ]]; then
-        _output="$arg"
-        _next_is_output=0
-        continue
-    fi
-    if [[ "${_next_is_xlinker:-0}" == "1" ]]; then
-        _args+=("$arg")
-        _next_is_xlinker=0
-        continue
-    fi
-
-    _args+=("$arg")
-done
-
-# Find lld: prefer conda lld package, then zig's internal lld
-_lld=""
-if command -v ld.lld >/dev/null 2>&1; then
-    _lld="ld.lld"
-elif command -v lld >/dev/null 2>&1; then
-    _lld="lld"
-elif command -v lld-link >/dev/null 2>&1; then
-    # zig ships lld-link on Windows; lld-link -flavor gnu = MinGW mode
-    _lld="lld-link"
-fi
-
-if [[ -z "${_lld}" ]]; then
-    echo "ERROR: no lld found in PATH" >&2
-    echo "  Tried: ld.lld, lld, lld-link" >&2
-    echo "  PATH: ${PATH}" >&2
-    exit 1
-fi
-
-echo "=== zig-cxx-shared-win ===" >&2
-echo "  output: ${_output}" >&2
-echo "  lld: ${_lld}" >&2
-echo "  args count: ${#_args[@]}" >&2
-echo "  args (first 10): ${_args[*]:0:10}" >&2
-
-# Use MinGW emulation mode for PE/COFF output
-exec "${_lld}" -m i386pep \
-    --shared \
-    -o "${_output}" \
-    "${_args[@]}"
-SHAREDWIN
-  chmod +x "${ZIG_CXX_SHARED_WIN}"
-  export ZIG_CXX_SHARED="${ZIG_CXX_SHARED_WIN}"
+  export ZIG_CXX_SHARED="${ZIG_WRAPPERS}/zig-cxx-shared.exe"
 else
   export ZIG_CC="${ZIG_WRAPPERS}/zig-cc"
   export ZIG_CXX="${ZIG_WRAPPERS}/zig-cxx"
@@ -284,140 +178,27 @@ else
   export ZIG_RC="${ZIG_WRAPPERS}/zig-rc"
 fi
 
-# HOTFIX: zig-compiler *_8 wrappers on macOS.
-# 1. Zig's Mach-O linker does NOT support -all_load, -force_load, or
-#    -exported_symbols_list. Wrapper already filters them but LLVM needs
-#    -all_load/-force_load to pull all archive members into libLLVM.dylib.
-# 2. Solution: add *_list flag filters AND create a helper script that
-#    converts -force_load/-all_load into archive extraction (ar x → .o files).
-# Remove when zig-compiler *_9 ships these fixes.
+# macOS force-load wrapper: zig _12+ provides zig-force-load-cxx which handles
+# -Wl,-all_load/-Wl,-force_load by extracting archives to .o files, in c++ mode.
+# Set as CMAKE_CXX_COMPILER so it handles both compile and link commands;
+# force-load logic only activates when those flags are present.
+#
+# TEMPORARY: if zig-force-load-cxx is not yet available (pre-_12), generate it
+# from zig-force-load-cc by switching _ZIG_MODE to c++.
+# Remove this fallback once zig _12 is live on conda-forge.
 if is_osx; then
-    echo "  Patching macOS zig-cc/zig-cxx wrappers..."
-    for _w in "${ZIG_CC}" "${ZIG_CXX}"; do
-        # Add filters for *_list flags zig doesn't support.
-        # -all_load/-force_load are already filtered by the wrapper;
-        # archive extraction is handled by zig-force-load-wrapper below.
-        sed -i '' \
-          '/-Wl,-all_load|-Wl,-force_load,\*) ;;/a\
-        -Wl,-exported_symbols_list|-Wl,-exported_symbols_list,*) ;;\
-        -Wl,-unexported_symbols_list|-Wl,-unexported_symbols_list,*) ;;\
-        -Wl,-force_symbols_not_weak_list|-Wl,-force_symbols_not_weak_list,*) ;;\
-        -Wl,-force_symbols_weak_list|-Wl,-force_symbols_weak_list,*) ;;\
-        -Wl,-reexported_symbols_list|-Wl,-reexported_symbols_list,*) ;;' "${_w}"
-        # Filter -mcpu=* from external sources. conda-build may inject -mcpu=core2
-        # for osx-64 cross-builds; zig doesn't recognize x86 CPU names like 'core2'.
-        # The wrapper's own -mcpu=baseline is in the exec line (not in $@), so
-        # this only strips external ones.  Add after the -march/-mtune filter.
-        sed -i '' '/-march=.*|-mtune=.*) ;;/a\
-        -mcpu=*) ;;' "${_w}"
-    done
-
-    # Create a CXX compiler wrapper that intercepts -force_load and -all_load,
-    # extracts the referenced archives to .o files, and passes those to zig-cxx.
-    # Zig's Mach-O linker doesn't support these flags, but LLVM's CMake uses
-    # -force_load/-all_load to pull all target initializers into libLLVM.dylib.
-    #
-    # IMPORTANT: This wrapper is set as CMAKE_CXX_COMPILER (not as
-    # CMAKE_CXX_CREATE_SHARED_LIBRARY). The latter is unreliable — CMake's
-    # Ninja generator may not apply it to all shared library targets.
-    # As CMAKE_CXX_COMPILER, it handles both compile and link commands.
-    # The force-load logic only activates when -Wl,-all_load or -Wl,-force_load
-    # is present; for plain compilations it's a transparent passthrough.
-    ZIG_CXX_FORCELOAD="${SRC_DIR}/_zig_cxx_forceload"
-    cat > "${ZIG_CXX_FORCELOAD}" << FORCELOAD
-#!/usr/bin/env bash
-set -euo pipefail
-# macOS CXX wrapper: transparent passthrough for compilation,
-# archive extraction for -Wl,-all_load/-Wl,-force_load link steps.
-_real_cxx="${ZIG_CXX}"
-
-# Quick check: if no -all_load or -force_load in args, just passthrough
-_has_forceload=0
-for _a in "\$@"; do
-    case "\$_a" in
-        -Wl,-all_load|-Wl,-force_load,*) _has_forceload=1; break ;;
-    esac
-done
-
-if [[ \$_has_forceload -eq 0 ]]; then
-    exec "\${_real_cxx}" "\$@"
-fi
-
-# Debug log: first invocation only
-_log="/tmp/_zig_force_load_debug.log"
-if [[ ! -f "\${_log}" ]]; then
-    echo "=== force-load wrapper invoked ===" > "\${_log}"
-    echo "real_cxx: \${_real_cxx}" >> "\${_log}"
-    echo "argc: \$#" >> "\${_log}"
-    for _a in "\$@"; do
-        echo "  arg: \${_a}" >> "\${_log}"
-    done
-fi
-
-_all_load=0
-_force_load_archives=()
-_other_args=()
-_archive_args=()
-
-for arg in "\$@"; do
-    case "\$arg" in
-        -Wl,-all_load)
-            _all_load=1 ;;
-        -Wl,-force_load,*)
-            _force_load_archives+=("\${arg#-Wl,-force_load,}") ;;
-        *.a)
-            if [[ \${_all_load} -eq 1 ]]; then
-                _archive_args+=("\$arg")
-            else
-                _other_args+=("\$arg")
-            fi ;;
-        *)
-            _other_args+=("\$arg") ;;
-    esac
-done
-
-# Debug: log what was intercepted
-if [[ -f "\${_log}" ]] && ! grep -q "INTERCEPTED" "\${_log}" 2>/dev/null; then
-    echo "INTERCEPTED:" >> "\${_log}"
-    echo "  all_load: \${_all_load}" >> "\${_log}"
-    echo "  force_load_archives: \${_force_load_archives[*]:-<none>}" >> "\${_log}"
-    echo "  archive_args (all_load): \${_archive_args[*]:-<none>}" >> "\${_log}"
-    echo "  other_args count: \${#_other_args[@]}" >> "\${_log}"
-fi
-
-# Extract archives to temp dir and collect .o files
-# Ninja sets CWD to the build directory, so relative paths like
-# lib/libLLVMDemangle.a are relative to it. Resolve to absolute before
-# cd-ing into the temp extraction directory.
-_cwd=\$(pwd)
-_extracted=()
-if [[ \${#_force_load_archives[@]} -gt 0 ]] || [[ \${#_archive_args[@]} -gt 0 ]]; then
-    _tmpdir=\$(mktemp -d)
-    trap 'rm -rf "\${_tmpdir}"' EXIT
-
-    _all_archives=("\${_force_load_archives[@]}" "\${_archive_args[@]}")
-    for _ar in "\${_all_archives[@]}"; do
-        # Resolve relative paths to absolute
-        [[ "\$_ar" != /* ]] && _ar="\${_cwd}/\${_ar}"
-        if [[ -f "\$_ar" ]]; then
-            # Use archive basename + hash to avoid .o name collisions
-            _ar_id=\$(basename "\$_ar" .a)_\$(echo "\$_ar" | md5 -q 2>/dev/null || md5sum <<< "\$_ar" | cut -c1-8)
-            _ar_dir="\${_tmpdir}/\${_ar_id}"
-            mkdir -p "\${_ar_dir}"
-            (cd "\${_ar_dir}" && ar x "\$_ar")
-            for _o in "\${_ar_dir}"/*.o; do
-                [[ -f "\$_o" ]] && _extracted+=("\$_o")
-            done
-        fi
-    done
-fi
-
-exec "\${_real_cxx}" "\${_other_args[@]}" "\${_extracted[@]}"
-FORCELOAD
-    chmod +x "${ZIG_CXX_FORCELOAD}"
-
-    # Override ZIG_CXX so all subsequent cmake references use the force-load wrapper
-    export ZIG_CXX="${ZIG_CXX_FORCELOAD}"
+    if [[ -x "${ZIG_WRAPPERS}/zig-force-load-cxx" ]]; then
+        export ZIG_CXX="${ZIG_WRAPPERS}/zig-force-load-cxx"
+    elif [[ -x "${ZIG_WRAPPERS}/zig-force-load-cc" ]]; then
+        echo "  zig-force-load-cxx not found, generating from zig-force-load-cc (pre-_12 fallback)"
+        _fl_cxx="${ZIG_WRAPPERS}/zig-force-load-cxx"
+        sed 's/_ZIG_MODE="cc"/_ZIG_MODE="c++"/' "${ZIG_WRAPPERS}/zig-force-load-cc" > "${_fl_cxx}"
+        chmod +x "${_fl_cxx}"
+        export ZIG_CXX="${_fl_cxx}"
+    else
+        echo "ERROR: neither zig-force-load-cxx nor zig-force-load-cc found"
+        exit 1
+    fi
 fi
 
 # Clear conda's compiler flags — zig handles optimization internally.
@@ -869,6 +650,8 @@ _CLANG=(
   -DCLANG_ENABLE_STATIC_ANALYZER=OFF
   -DCLANG_INCLUDE_DOCS=OFF
   -DCLANG_INCLUDE_TESTS=OFF
+  -DCLANG_TOOL_APINOTES_TEST_BUILD=OFF
+  -DCLANG_TOOL_CLANG_DIFF_BUILD=OFF
   -DCLANG_TOOL_CLANG_IMPORT_TEST_BUILD=OFF
   -DCLANG_TOOL_CLANG_LINKER_WRAPPER_BUILD=OFF
   -DCLANG_TOOL_C_INDEX_TEST_BUILD=OFF
@@ -1044,10 +827,10 @@ if [[ -n "${ZIG_CXX_SHARED:-}" ]] && is_linux; then
     )
 elif is_osx; then
     # macOS workarounds for zig's Mach-O linker:
-    # 1. Force-load: ZIG_CXX now points to the force-load wrapper (set above in
-    #    the HOTFIX section). It intercepts -Wl,-all_load/-Wl,-force_load, extracts
-    #    archives to .o files, and passes them to zig-cxx. For non-link commands
-    #    (compilation), it's a transparent passthrough.
+    # 1. Force-load: ZIG_CXX points to zig-force-load-cxx (set above). It
+    #    intercepts -Wl,-all_load/-Wl,-force_load, extracts archives to .o files,
+    #    and passes them to zig c++. For non-link commands (compilation), it's
+    #    a transparent passthrough.
     # 2. -fvisibility=default: zig compiles with hidden visibility by default.
     #    On Mach-O, hidden symbols are truly invisible to other dylibs.
     #    Without this, libclang-cpp.dylib can't see libLLVM.dylib's symbols.

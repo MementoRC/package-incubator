@@ -73,7 +73,7 @@ build:
         }}-zig
     
   # --- DEBUG ---
-  skip: unix or arm64
+  # skip: unix or arm64
   # --- DEBUG ---
       
 requirements:
