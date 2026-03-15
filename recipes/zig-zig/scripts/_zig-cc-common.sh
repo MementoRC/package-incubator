@@ -57,6 +57,7 @@ while [[ $i -lt $argc ]]; do
         -all_load|-force_load) ;;
         -Bsymbolic-functions|-Bsymbolic) ;;
         -march=*|-mtune=*|-mcpu=*|-ftree-vectorize) ;;
+        -arch) ((i++)) ;;  # Skip -arch and its argument (zig uses -target instead)
         -fstack-protector-strong|-fstack-protector|-fno-plt) ;;
         -fdebug-prefix-map=*) ;;
         -stdlib=*) ;;

@@ -41,7 +41,18 @@ static int is_xlinker_drop(const char *arg) {
     return str_eq(arg, "-Bsymbolic-functions") ||
            str_eq(arg, "-Bsymbolic") ||
            str_eq(arg, "--color-diagnostics") ||
-           starts_with(arg, "--dependency-file=");
+           starts_with(arg, "--dependency-file=") ||
+           /* MSVC-style linker flags (injected by CMake on Windows) */
+           starts_with(arg, "/MANIFEST") ||
+           starts_with(arg, "/manifest") ||
+           starts_with(arg, "/subsystem:") ||
+           starts_with(arg, "/SUBSYSTEM:") ||
+           starts_with(arg, "/implib:") ||
+           starts_with(arg, "/IMPLIB:") ||
+           starts_with(arg, "/pdb:") ||
+           starts_with(arg, "/PDB:") ||
+           starts_with(arg, "/version:") ||
+           starts_with(arg, "/VERSION:");
 }
 
 /* -Wl,* flags to drop (entire arg) */
@@ -77,7 +88,11 @@ static int is_drop_flag(const char *arg) {
            starts_with(arg, "-fdebug-prefix-map=") ||
            starts_with(arg, "-stdlib=") ||
            str_eq(arg, "-Bsymbolic-functions") ||
-           str_eq(arg, "-Bsymbolic");
+           str_eq(arg, "-Bsymbolic") ||
+           /* CMake MSVC-style flags that zig doesn't support */
+           starts_with(arg, "-fuse-ld=") ||
+           str_eq(arg, "-nostartfiles") ||
+           str_eq(arg, "-nostdlib");
 }
 
 /* --- Find zig binary --- */

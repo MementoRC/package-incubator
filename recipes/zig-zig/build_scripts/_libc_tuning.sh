@@ -1,6 +1,11 @@
 function modify_libc_libm_for_zig() {
   local prefix=${1:-$PREFIX}
-  
+
+  if [[ -z "${CONDA_BUILD_SYSROOT:-}" ]]; then
+    echo "  - CONDA_BUILD_SYSROOT not set, skipping libc tuning"
+    return 0
+  fi
+
   local host_arch=${CONDA_TRIPLET%%-*}
 
   # Helper: Check if file is a text/script file (linker script)

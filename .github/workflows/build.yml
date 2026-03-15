@@ -47,10 +47,10 @@ jobs:
       - name: Restore zig-llvm cache
         uses: actions/cache/restore@v4
         with:
-          path: output/${{ matrix.build }}/*.conda
-          key: zig-llvm-${{ matrix.build }}-${{ hashFiles('recipes/zig-llvm/**') }}
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: |
-            zig-llvm-${{ matrix.build }}-
+            zig-llvm-${{ matrix.target }}-
 
       - name: Build zig-llvm (skips if cached package matches)
         shell: bash
@@ -63,8 +63,8 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/${{ matrix.build }}/*.conda
-          key: zig-llvm-${{ matrix.build }}-${{ hashFiles('recipes/zig-llvm/**') }}
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
 
       - name: Build zig-zig
         shell: bash

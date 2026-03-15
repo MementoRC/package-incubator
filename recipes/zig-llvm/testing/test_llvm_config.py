@@ -24,11 +24,25 @@ def _find_llvm_config():
     return base  # return base for error reporting
 
 
+def _find_msys2_bash():
+    """Find MSYS2 bash from m2-bash package (not WSL bash.exe)."""
+    prefix = os.environ.get("CONDA_PREFIX", os.environ.get("PREFIX", ""))
+    # m2-bash installs to Library/usr/bin/bash.exe
+    msys_bash = os.path.join(prefix, "Library", "usr", "bin", "bash.exe")
+    if os.path.isfile(msys_bash):
+        return msys_bash
+    # Fallback: bare "bash" (may resolve to WSL — caller should check)
+    return "bash"
+
+
 def run_llvm_config(*args):
     llvm_config = _find_llvm_config()
-    # On Windows, llvm-config may be a bash wrapper script — invoke via bash
+    # On Windows, llvm-config may be a bash wrapper script — invoke via MSYS2 bash.
+    # IMPORTANT: bare "bash" on Windows resolves to WSL bash (C:\Windows\System32\bash.exe),
+    # not MSYS2 bash. We must use the explicit m2-bash path.
     if sys.platform == "win32" and not llvm_config.endswith(".exe"):
-        cmd = ["bash", llvm_config, *args]
+        bash = _find_msys2_bash()
+        cmd = [bash, llvm_config, *args]
     else:
         cmd = [llvm_config, *args]
     try:

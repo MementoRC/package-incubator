@@ -1,3 +1,36 @@
+fix_lld_cmake_deps() {
+  # The lld static archives (liblldELF.a, etc.) directly reference zlib/zstd
+  # symbols for section compression (lld/ELF/OutputSections.cpp). LLVM's cmake
+  # declares these only transitively through LLVMSupport, so consumers that
+  # link the .a files by path (e.g. zig) miss the dependency. Fix by appending
+  # -lz/-lzstd to all lld cmake targets' INTERFACE_LINK_LIBRARIES.
+  local lld_config="${LLVM_INSTALL}/lib/cmake/lld/LLDConfig.cmake"
+  if [[ ! -f "${lld_config}" ]]; then
+    echo "  WARNING: LLDConfig.cmake not found at ${lld_config}, skipping"
+    return
+  fi
+
+  echo "=== Fixing LLD cmake target dependencies (zlib/zstd) ==="
+  local _extra_libs="-lz"
+  if [[ "${target_platform}" == linux-* ]] || [[ "${target_platform}" == osx-* ]]; then
+    _extra_libs="-lz;-lzstd"
+  fi
+
+  {
+    echo ""
+    echo "# zig-llvm fixup: lld static archives directly reference zlib/zstd symbols"
+    echo "# (lld/ELF/OutputSections.cpp compression). Ensure consumers link them."
+    echo "foreach(_lld_target lldELF lldCOFF lldMachO lldWasm lldMinGW lldCommon)"
+    echo "  if(TARGET lld::\${_lld_target})"
+    echo "    set_property(TARGET lld::\${_lld_target} APPEND PROPERTY"
+    echo "      INTERFACE_LINK_LIBRARIES \"${_extra_libs}\")"
+    echo "  endif()"
+    echo "endforeach()"
+  } >> "${lld_config}"
+
+  echo "  Appended ${_extra_libs} to ${lld_config}"
+}
+
 post_install() {
   set +x
   

@@ -328,6 +328,7 @@ if [[ "${ZIG_LLVM_SKIP_BUILD:-0}" == "1" ]] && [[ -d "${CACHE_DIR}" ]] && \
   cp -a "${CACHE_DIR}" "${LLVM_INSTALL}"
   post_install
   remove_unneeded
+  fix_lld_cmake_deps
 
   # Create marker file
   echo "${LLVM_INSTALL}" > "$(dirname "${LLVM_INSTALL}")/zig-llvm-path.txt"
@@ -1250,6 +1251,27 @@ fi
 
 remove_unneeded
 post_install
+fix_lld_cmake_deps
+
+# Verify llvm-config --system-libs includes zlib/zstd (native builds only)
+if ! is_cross; then
+  echo "=== Verifying llvm-config --system-libs ==="
+  # Use the real binary, not the wrapper (wrapper only filters ld flags, not libs)
+  _real_config="${LLVM_INSTALL}/bin/llvm-config.real"
+  [[ -f "${_real_config}.exe" ]] && _real_config="${_real_config}.exe"
+  if [[ -x "${_real_config}" ]]; then
+    _system_libs=$("${_real_config}" --system-libs 2>/dev/null || true)
+    echo "  system-libs: ${_system_libs}"
+    if ! echo "${_system_libs}" | grep -q '\-lz'; then
+      echo "  WARNING: llvm-config --system-libs missing -lz (LLVM_ENABLE_ZLIB=ON)"
+    fi
+    if is_unix && ! echo "${_system_libs}" | grep -q '\-lzstd'; then
+      echo "  WARNING: llvm-config --system-libs missing -lzstd (LLVM_ENABLE_ZSTD=ON)"
+    fi
+  else
+    dbg "llvm-config.real not executable, skipping system-libs verification"
+  fi
+fi
 
 echo "=== zig-llvm build complete ==="
 

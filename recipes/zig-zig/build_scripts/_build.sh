@@ -10,11 +10,18 @@ function build_zig_with_zig() {
 
   if [[ -d "${build_dir}" ]]; then
     cd "${build_dir}" || return 1
+      echo "zig build command: ${zig} build --prefix ${install_dir} ${EXTRA_ZIG_ARGS[@]+"${EXTRA_ZIG_ARGS[@]}"} -Dversion-string=${PKG_VERSION}"
+      local rc=0
       "${zig}" build \
         --prefix "${install_dir}" \
         ${EXTRA_ZIG_ARGS[@]+"${EXTRA_ZIG_ARGS[@]}"} \
-        -Dversion-string="${PKG_VERSION}" || return 1
+        -Dversion-string="${PKG_VERSION}" || rc=$?
         # --search-prefix "${install_dir}" \
+      if [[ $rc -ne 0 ]]; then
+        echo "ERROR: zig build failed with exit code ${rc}" >&2
+        cd "${current_dir}" || true
+        return $rc
+      fi
     cd "${current_dir}" || return 1
   else
     echo "No build directory found" >&2

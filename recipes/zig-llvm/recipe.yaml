@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: 0
+  build_number: 1
   name: zig-llvm
   version: 20.1.8
 
@@ -117,6 +117,12 @@ requirements:
         - zstd
   run_exports:
     - ${{ pin_subpackage(name, upper_bound='x.x') }}
+    # lld static archives directly reference zlib/zstd symbols (ELF section
+    # compression). Consumers linking liblldELF.a etc. need these present.
+    - zlib
+    - if: unix
+      then:
+        - zstd
 
 tests:
   # Verify package structure (common files across all platforms)
@@ -148,57 +154,61 @@ tests:
             - Library/lib/zig-llvm/bin/libc++*.dll
         - ${{ library }}lib/zig-llvm-path.txt
         # Post-install test resources
-        - etc/conda/test-files/zig-llvm/*
-
-  # Verify llvm-config works and returns valid paths
-  - script:
-      - python testing/test_llvm_config.py
-    files:
-      recipe:
-        - testing/test_llvm_config.py
-    requirements:
-      run:
-        - python >=3.9
-        - if: not unix
+        - if: build_platform == target_platform
           then:
-            - ${{ m2 }}bash >=5.2
+            - etc/conda/test-files/zig-llvm/*
 
-  # Verify shared libraries: valid format, no libstdc++, GLIBC versions, symbols
-  - script:
-      - python testing/test_shared_libs.py
-    files:
-      recipe:
-        - testing/test_shared_libs.py
-    requirements:
-      run:
-        - python >=3.9
-        - if: linux
-          then:
-            - binutils
+  - if: build_platform == target_platform
+    then:
+      # Verify llvm-config works and returns valid paths
+      - script:
+          - python testing/test_llvm_config.py
+        files:
+          recipe:
+            - testing/test_llvm_config.py
+        requirements:
+          run:
+            - python >=3.9
+            - if: not unix
+              then:
+                - ${{ m2 }}bash >=5.2
 
-  # CRITICAL: Reproduce zig's ZigClangIsLLVMUsingSeparateLibcxx() check.
-  # Uses ctypes to dlopen the actual installed shared libraries,
-  # checks dependency entries, symbol binding, and compares runtime addresses of
-  # std::generic_category().  Separate hidden copies → FAIL.
-  - script:
-      - python testing/test_libc++_shared.py
-    files:
-      recipe:
-        - testing/test_libc++_shared.py
-    requirements:
-      run:
-        - python >=3.9
-        - if: linux
-          then:
-            - binutils
+      # Verify shared libraries: valid format, no libstdc++, GLIBC versions, symbols
+      - script:
+          - python testing/test_shared_libs.py
+        files:
+          recipe:
+            - testing/test_shared_libs.py
+        requirements:
+          run:
+            - python >=3.9
+            - if: linux
+              then:
+                - binutils
 
-  # Verify zig can use this LLVM (requires zig in test env)
-  - script:
-      - zig version
-      - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
-    requirements:
-      run:
-        - zig >=0.15.2
+      # CRITICAL: Reproduce zig's ZigClangIsLLVMUsingSeparateLibcxx() check.
+      # Uses ctypes to dlopen the actual installed shared libraries,
+      # checks dependency entries, symbol binding, and compares runtime addresses of
+      # std::generic_category().  Separate hidden copies → FAIL.
+      - script:
+          - python testing/test_libc++_shared.py
+        files:
+          recipe:
+            - testing/test_libc++_shared.py
+        requirements:
+          run:
+            - python >=3.9
+            - if: linux
+              then:
+                - binutils
+
+      # Verify zig can use this LLVM (requires zig in test env)
+      - script:
+          - zig version
+          - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
+        requirements:
+          run:
+            - zig >=0.15.2
 
 about:
   homepage: http://llvm.org/
