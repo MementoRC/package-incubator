@@ -54,8 +54,12 @@ else
   REAL_CONFIG="${SCRIPT_DIR}/llvm-config.real"
 fi
 
-# Run the real llvm-config
-output=$("${REAL_CONFIG}" "$@")
+# Run the real llvm-config — propagate exit code on failure
+if ! output=$("${REAL_CONFIG}" "$@" 2>&1); then
+  echo "llvm-config wrapper: ${REAL_CONFIG} failed (rc=$?)" >&2
+  echo "${output}" >&2
+  exit 1
+fi
 
 # Filter output for --ldflags and --system-libs which may contain unsupported flags
 for arg in "$@"; do

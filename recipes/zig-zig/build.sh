@@ -100,20 +100,23 @@ if [[ -z "${ZIG_CC:-}" ]]; then
   export ZIG_CXX="${zig} c++"
   export ZIG_AR="${zig} ar"
   export ZIG_RANLIB="${zig} ranlib"
+
+  echo "ZIG_CC: ${ZIG_CC:-NOT SET}"
+  echo "ZIG_CXX: ${ZIG_CXX:-NOT SET}"
+  echo "ZIG_AR: ${ZIG_AR:-NOT SET}"
+  echo "ZIG_RANLIB: ${ZIG_RANLIB:-NOT SET}"
 fi
 
 export CC="${ZIG_CC}"
 export CXX="${ZIG_CXX}"
 export AR="${ZIG_AR}"
 export RANLIB="${ZIG_RANLIB}"
-
 # CONDA_BUILD_SYSROOT is normally set by compiler("c") activation (gcc/clang).
 # Since we use zig as compiler, set it manually from stdlib("c") sysroot.
 if is_linux; then
   export CONDA_BUILD_SYSROOT="${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot"
 fi
 
-# Configure zig to use zig-llvm from ${PREFIX}/lib/zig-llvm (Unix) or ${PREFIX}/Library/lib/zig-llvm (Windows)
 if is_not_unix; then
   _library="Library/"
 else
@@ -121,24 +124,106 @@ else
 fi
 export ZIG_LLVM_ROOT="${PREFIX}/${_library}lib/zig-llvm"
 export PATH="${ZIG_LLVM_ROOT}/bin:${PATH}"
-# On Windows, use llvm-config.real.exe (the actual binary) not the bash wrapper
-# which CMake can't execute from cmd.exe
-export LLVM_CONFIG=$(find "${BUILD_PREFIX}/${_library}lib/zig-llvm/bin" "${ZIG_LLVM_ROOT}"/bin/ \( -name 'llvm-config.real.exe' -o -name 'llvm-config.real' -o -name 'llvm-config' -o -name 'llvm-config.exe' \) -type f 2>/dev/null | head -1)
-
-is_debug && is_linux && objdump -T "${ZIG_LLVM_ROOT}"/lib/libLLVM-20.so | grep GLIBC | awk '{print $5}' | sort -u | sort -V
+# Search for llvm-config: try BUILD_PREFIX (host layout), zig-llvm, then
+# BUILD_PREFIX (target layout). On cross-builds the host layout differs from
+# target layout (e.g. Linux host has bin/, Windows target has Library/bin/).
+_llvm_config_search=(
+  "${BUILD_PREFIX}/${_library}bin"       # target layout (native builds)
+  "${ZIG_LLVM_ROOT}/bin"                 # zig-llvm's own wrapper
+  "${BUILD_PREFIX}/${_library}lib/zig-llvm/bin"
+)
+# Cross-builds: also search host-layout paths (BUILD_PREFIX is host arch)
+if is_cross; then
+  _llvm_config_search+=("${BUILD_PREFIX}/bin")
+fi
+export LLVM_CONFIG=$(find "${_llvm_config_search[@]}" \( -name 'llvm-config.real.exe' -o -name 'llvm-config.real' -o -name 'llvm-config' -o -name 'llvm-config.exe' \) -type f 2>/dev/null | head -1)
+echo "LLVM_CONFIG: ${LLVM_CONFIG:-NOT SET}"
 
 # Verify zig-llvm is available
+# For cross-builds, llvm-config.real.exe may be the wrong architecture (e.g. ARM64
+# on x86_64 host). Detect this and fall back to extracting version from headers.
+_llvm_config_works=1
 if [[ ! -x "${LLVM_CONFIG}" ]]; then
-  echo "ERROR: zig-llvm llvm-config not found at ${LLVM_CONFIG}"
-  echo "  Ensure zig-llvm package is installed"
-  exit 1
+  # Try the cmake config files as a fallback (they're text, not executables)
+  if [[ -f "${ZIG_LLVM_ROOT}/lib/cmake/llvm/LLVMConfig.cmake" ]]; then
+    echo "WARNING: llvm-config not executable, but cmake config files found"
+    _llvm_config_works=0
+  else
+    echo "ERROR: zig-llvm llvm-config not found at ${LLVM_CONFIG}"
+    echo "  Ensure zig-llvm package is installed"
+    exit 1
+  fi
+fi
+# On cross-builds, even if llvm-config exists it may not run (wrong arch)
+if [[ ${_llvm_config_works} -eq 1 ]]; then
+  _llvm_ver=$(${LLVM_CONFIG} --version 2>/dev/null || true)
+  if [[ -z "${_llvm_ver}" ]]; then
+    echo "WARNING: llvm-config exists but cannot execute (cross-build?)"
+    _llvm_config_works=0
+  fi
+fi
+# Guard: if llvm-config runs but is NOT from zig-llvm, handle it:
+# - Native builds: ignore it (force cmake config files from zig-llvm)
+# - Cross builds: wrap it to rewrite paths from BUILD_PREFIX → ZIG_LLVM_ROOT
+#   The zig-llvm llvm-config can't run (wrong arch), but BUILD_PREFIX's can.
+#   We just need its output to point at zig-llvm's libraries instead.
+if [[ ${_llvm_config_works} -eq 1 ]] && [[ "${LLVM_CONFIG}" != *"zig-llvm"* ]]; then
+  if is_cross; then
+    echo "CROSS-BUILD: Wrapping ${LLVM_CONFIG} to redirect paths to zig-llvm"
+    _real_llvm_config="${LLVM_CONFIG}"
+    # Overwrite zig-llvm's own llvm-config wrapper IN PLACE so CMake's
+    # find_program(llvm-config) via PATH also finds our cross wrapper
+    # (not just the LLVM_CONFIG env var).
+    _wrapper="${ZIG_LLVM_ROOT}/bin/llvm-config"
+    cat > "${_wrapper}" << WRAPEOF
+#!/usr/bin/env bash
+# Cross-build llvm-config wrapper: runs the host llvm-config (BUILD_PREFIX)
+# but rewrites all paths to point at the target zig-llvm installation.
+output="\$("${_real_llvm_config}" "\$@" 2>&1)" || { echo "\$output" >&2; exit 1; }
+# Rewrite BUILD_PREFIX paths → ZIG_LLVM_ROOT
+output="\${output//${BUILD_PREFIX//\//\\/}/${ZIG_LLVM_ROOT//\//\\/}}"
+# Filter flags unsupported by zig's linker (same as zig-llvm wrapper)
+for arg in "\$@"; do
+  case "\$arg" in
+    --ldflags|--system-libs|--libs|--link-static|--link-shared)
+      output=\$(echo "\$output" | sed \
+        -e 's/-Wl,-Bsymbolic-functions//g' \
+        -e 's/-Bsymbolic-functions//g' \
+        -e 's/-Wl,-Bsymbolic//g' \
+        -e 's/-Bsymbolic//g' \
+        -e 's/-Wl,--disable-new-dtags//g' \
+        -e 's/  */ /g' -e 's/^ *//' -e 's/ *\$//')
+      break ;;
+  esac
+done
+echo "\$output"
+WRAPEOF
+    chmod +x "${_wrapper}"
+    export LLVM_CONFIG="${_wrapper}"
+    echo "  Wrapper (in-place): ${_wrapper}"
+    echo "  Real:    ${_real_llvm_config}"
+    echo "  Rewrite: ${BUILD_PREFIX} → ${ZIG_LLVM_ROOT}"
+  else
+    echo "WARNING: llvm-config at ${LLVM_CONFIG} is NOT from zig-llvm — ignoring"
+    echo "  (conda-forge LLVM is for tblgen only, not for linking)"
+    _llvm_config_works=0
+  fi
+fi
+if [[ ${_llvm_config_works} -eq 0 ]]; then
+  # Extract version from LLVM headers instead of running llvm-config
+  _llvm_ver=$(grep -m1 'LLVM_VERSION_STRING' "${ZIG_LLVM_ROOT}/include/llvm/Config/llvm-config.h" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/' || true)
+  if [[ -z "${_llvm_ver}" ]]; then
+    echo "ERROR: Cannot determine LLVM version (llvm-config won't run and headers not found)"
+    exit 1
+  fi
 fi
 echo "=== Using zig-llvm from ${ZIG_LLVM_ROOT} ==="
-echo "  LLVM version: $(${LLVM_CONFIG} --version)"
+echo "  LLVM version: ${_llvm_ver}"
 
 EXTRA_CMAKE_ARGS=(
   -DCMAKE_BUILD_TYPE=Release
   -DCMAKE_PREFIX_PATH="${ZIG_LLVM_ROOT}"
+  -DCMAKE_LIBRARY_PATH="${ZIG_LLVM_ROOT}/lib"
   -DCMAKE_AR="${ZIG_AR//\\//}"
   -DCMAKE_C_COMPILER="${ZIG_CC//\\//}"
   -DCMAKE_CXX_COMPILER="${ZIG_CXX//\\//}"
@@ -203,15 +288,31 @@ ZIGEOF
 fi
 
 # Override zig's default max_rss (7.8GB) which exceeds CI runner memory
-EXTRA_ZIG_ARGS+=(--maxrss 7000000000)
+EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
 
 
-if is_not_unix; then
-  EXTRA_CMAKE_ARGS+=(-DZIG_SHARED_LLVM=OFF)
-else
-  EXTRA_CMAKE_ARGS+=(-DZIG_SHARED_LLVM=ON)
+# zig-llvm builds a monolithic shared library on all platforms.
+# ZIG_USE_LLVM_CONFIG=ON is mandatory — the OFF path in Findllvm.cmake only
+# searches for ~191 individual static libs and doesn't support shared LLVM.
+EXTRA_CMAKE_ARGS+=(-DZIG_SHARED_LLVM=ON -DZIG_USE_LLVM_CONFIG=ON)
+if [[ ${_llvm_config_works} -ne 1 ]]; then
+  echo "ERROR: llvm-config is required (zig-llvm uses shared LLVM) but no working llvm-config found"
+  echo "  LLVM_CONFIG=${LLVM_CONFIG:-NOT SET}"
+  echo "  Ensure BUILD_PREFIX has llvm-tools or zig-llvm has a runnable llvm-config"
+  exit 1
 fi
-EXTRA_CMAKE_ARGS+=(-DZIG_USE_LLVM_CONFIG=ON)
+
+# Exclude BUILD_PREFIX and system LLVM paths from cmake search.
+# On cross-builds, BUILD_PREFIX contains host-arch (e.g. x64) LLVM libs that
+# cmake must not link into the target-arch binary — even when llvm-config works,
+# cmake's find_library() can still find stray libs in BUILD_PREFIX.
+_ignore_paths="/opt/homebrew/lib;/usr/local/lib"
+[[ -d "${BUILD_PREFIX}/lib" ]] && _ignore_paths="${_ignore_paths};${BUILD_PREFIX}/lib"
+[[ -d "${BUILD_PREFIX}/${_library}lib" ]] && _ignore_paths="${_ignore_paths};${BUILD_PREFIX}/${_library}lib"
+# Also block bin/ so cmake's find_program() doesn't find BUILD_PREFIX's llvm-config
+[[ -d "${BUILD_PREFIX}/bin" ]] && _ignore_paths="${_ignore_paths};${BUILD_PREFIX}/bin"
+[[ -d "${BUILD_PREFIX}/${_library}bin" ]] && _ignore_paths="${_ignore_paths};${BUILD_PREFIX}/${_library}bin"
+EXTRA_CMAKE_ARGS+=(-DCMAKE_IGNORE_PATH="${_ignore_paths}")
 
 if is_linux && is_cross; then
   EXTRA_ZIG_ARGS+=(
@@ -228,11 +329,18 @@ fi
 
 rm -f "${PREFIX}/${_library}bin"/llvm-config*
 if is_not_unix; then
-  # On Windows, the bash wrapper llvm-config can't be executed by CMake.
-  # Replace it with the real binary in zig-llvm's bin dir so llvm-config's
-  # prefix auto-detection still works (it computes prefix from its own location).
-  rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config"
-  cp "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
+  # On Windows native builds, replace the bash wrapper with the real exe.
+  # On Windows cross-builds, keep the bash cross-wrapper (it runs the host
+  # llvm-config and rewrites paths to zig-llvm) — cmake runs under MSYS2/bash.
+  if is_cross && [[ -f "${ZIG_LLVM_ROOT}/bin/llvm-config" ]]; then
+    echo "CROSS-BUILD: preserving llvm-config bash wrapper for cmake"
+    # Remove the target-arch .exe so cmake's find_program doesn't prefer it
+    # over the bash wrapper (the .exe is wrong-arch and can't execute)
+    rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
+  else
+    rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config"
+    cp "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
+  fi
 else
   cp "${ZIG_LLVM_ROOT}"/bin/llvm-config* "${PREFIX}/${_library}bin/"
 fi
@@ -257,8 +365,8 @@ set(CMAKE_AR "${_zig_ar_cmake}" CACHE FILEPATH "")
 set(CMAKE_RANLIB "${_zig_ranlib_cmake}" CACHE FILEPATH "")
 set(CMAKE_C_COMPILER_ID "Clang" CACHE STRING "")
 set(CMAKE_CXX_COMPILER_ID "Clang" CACHE STRING "")
-set(CMAKE_C_COMPILER_VERSION "20.1.8" CACHE STRING "")
-set(CMAKE_CXX_COMPILER_VERSION "20.1.8" CACHE STRING "")
+set(CMAKE_C_COMPILER_VERSION "${_llvm_ver}" CACHE STRING "")
+set(CMAKE_CXX_COMPILER_VERSION "${_llvm_ver}" CACHE STRING "")
 set(CMAKE_C_COMPILER_WORKS TRUE CACHE BOOL "")
 set(CMAKE_CXX_COMPILER_WORKS TRUE CACHE BOOL "")
 set(CMAKE_C_ABI_COMPILED TRUE CACHE BOOL "")
@@ -276,19 +384,35 @@ set(CMAKE_C17_STANDARD_COMPILE_OPTION "-std=c17" CACHE STRING "")
 set(CMAKE_CXX14_EXTENSION_COMPILE_OPTION "-std=gnu++14" CACHE STRING "")
 set(CMAKE_CXX17_EXTENSION_COMPILE_OPTION "-std=gnu++17" CACHE STRING "")
 set(CMAKE_CXX20_EXTENSION_COMPILE_OPTION "-std=gnu++20" CACHE STRING "")
+# Force zig-cc to target windows-gnu (not native windows-msvc).
+# Without this, zig-cc defaults to native target which defines _MSC_VER,
+# causing zig.h to use MSVC intrinsics (_InterlockedOr64 etc.) that
+# aren't available in zig-cc's Clang frontend.
+set(CMAKE_C_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
+set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
+# Pin llvm-config so cmake doesn't find BUILD_PREFIX's conda-forge copy
+set(LLVM_CONFIG "${LLVM_CONFIG//\\//}" CACHE FILEPATH "")
 TCEOF
   EXTRA_CMAKE_ARGS+=(-C "${_cache_seed}")
 fi
+
+# Diagnostic: show zig-llvm cmake config availability
+echo "=== zig-llvm cmake config check ==="
+for _cm_dir in llvm clang lld; do
+  _cm_path="${ZIG_LLVM_ROOT}/lib/cmake/${_cm_dir}"
+  if [[ -d "${_cm_path}" ]]; then
+    echo "  ${_cm_dir}: $(ls "${_cm_path}"/*.cmake 2>/dev/null | wc -l) cmake files"
+  else
+    echo "  ${_cm_dir}: MISSING (${_cm_path})"
+  fi
+done
+echo "  Libraries: $(ls "${ZIG_LLVM_ROOT}/lib/"*.a "${ZIG_LLVM_ROOT}/lib/"*.dll.a "${ZIG_LLVM_ROOT}/lib/"*.dylib "${ZIG_LLVM_ROOT}/lib/"*.so* 2>/dev/null | wc -l) files"
 
 configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}"
 
 rm -f "${PREFIX}/${_library}bin"/llvm-config*
 
 # --- Post CMake Configuration ---
-
-# Add conda separated library dependencies to config.h - This seems to be doing the same thing ... odd
-# perl -pi -e "s@(ZIG_(CLANG|CMAKE_PREFIX|LLD|LLVM)_\w+ \")${BUILD_PREFIX}/lib/zig-llvm@\$1${PREFIX}/lib/zig-llvm@" "${cmake_build_dir}"/config.h
-perl -pi -e "s@${BUILD_PREFIX}/${_library}lib/zig-llvm@${PREFIX}/${_library}lib/zig-llvm@g" "${cmake_build_dir}"/config.h
 
 # Add zig-llvm's bundled libc++ to ensure same C++ stdlib is used
 if is_linux; then
@@ -357,6 +481,27 @@ EOF
   create_pthread_atfork_stub "${CONDA_TRIPLET%%-*}" "${CC}" "${ZIG_LOCAL_CACHE_DIR}"
 fi
 
+# On Windows, zig-llvm produces MinGW-style import libs with .dll.a extension
+# (libLLVM-20.dll.a, libc++.dll.a). Zig's gnu-target linker searches for .a
+# (libLLVM-20.a) but not .dll.a. Create .a copies so zig can find them.
+# Both are ar archives; the import lib works identically with either extension.
+if is_not_unix; then
+  echo "=== Creating .a import library aliases for zig gnu-target linker ==="
+  for _implib in "${ZIG_LLVM_ROOT}/lib/"*.dll.a; do
+    [[ ! -f "${_implib}" ]] && continue
+    _base=$(basename "${_implib}")
+    _a_name="${_base%.dll.a}.a"
+    cp "${_implib}" "${ZIG_LLVM_ROOT}/lib/${_a_name}"
+    echo "  ${_a_name} <- ${_base}"
+  done
+  # Zig's link_libcpp constructs "lib" + "libc++" + ".a" = "liblibc++.a" (double
+  # lib prefix). Create alias so the linker finds it.
+  if [[ -f "${ZIG_LLVM_ROOT}/lib/libc++.a" ]]; then
+    cp "${ZIG_LLVM_ROOT}/lib/libc++.a" "${ZIG_LLVM_ROOT}/lib/liblibc++.a"
+    echo "  liblibc++.a <- libc++.a (double-prefix alias for link_libcpp)"
+  fi
+fi
+
 echo "=== Building with ZIG ==="
 if [[ "${force_cmake:-0}" != "1" ]] && build_zig_with_zig "${zig_build_dir}" "${zig}" "${PREFIX}"; then
   echo "SUCCESS: zig build completed successfully"
@@ -399,6 +544,7 @@ else
     CMAKE_PATCHES+=(
       0001-win-deprecations-zig_llvm.cpp.patch
       0001-win-deprecations-zig_llvm-ar.cpp.patch
+      0005-win-remove-libm-CMakeLists.txt.patch
     )
   fi
 
@@ -417,6 +563,61 @@ fi
 rm -f ${PREFIX}/bin/zig.pdb
 
 echo "Post-install implementation package: ${PKG_NAME}"
+
+# macOS: rewrite zig binary's dylib references to use @loader_path so it always
+# loads zig-llvm's dylibs, not conda-forge's copies that may be in $PREFIX/lib/.
+# The zig binary is in $PREFIX/bin/, zig-llvm is in $PREFIX/lib/zig-llvm/lib/,
+# so the relative path is @loader_path/../lib/zig-llvm/lib/<dylib>.
+if is_osx; then
+  _zig_bin="${PREFIX}/bin/zig"
+  _zig_llvm_rel="@loader_path/../lib/zig-llvm/lib"
+  echo "=== Fixing zig binary dylib refs to @loader_path (macOS) ==="
+  while IFS= read -r _dep_line; do
+    _dep=$(echo "${_dep_line}" | awk '{print $1}')
+    _dep_base=$(basename "${_dep}")
+    case "${_dep_base}" in
+      # Match LLVM/libc++ refs regardless of prefix (@rpath/, @loader_path/, or bare name)
+      libLLVM*|libclang*|libc++*|libunwind*)
+        _new="${_zig_llvm_rel}/${_dep_base}"
+        # Only rewrite if this dylib exists in zig-llvm and isn't already correct
+        if [[ "${_dep}" != "${_new}" ]] && { [[ -f "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]] || [[ -L "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]]; }; then
+          install_name_tool -change "${_dep}" "${_new}" "${_zig_bin}"
+          echo "  ${_dep} -> ${_new}"
+        fi
+        ;;
+    esac
+  done < <(otool -L "${_zig_bin}" 2>/dev/null | tail -n +2)
+
+  # Verify: no @rpath or bare-name refs to zig-llvm libraries remain
+  echo "=== Verifying zig binary dylib isolation (macOS) ==="
+  _bad_refs=$(otool -L "${_zig_bin}" 2>/dev/null | awk '{print $1}' | grep -E '^(@rpath/|@loader_path/[^.])?(libLLVM|libclang|libc\+\+|libunwind)' | grep -v '@loader_path/../lib/zig-llvm/lib/' || true)
+  if [[ -n "${_bad_refs}" ]]; then
+    echo "ERROR: zig binary still has non-isolated refs to zig-llvm libraries:"
+    echo "${_bad_refs}" | sed 's/^/  /'
+    echo "These must use @loader_path/../lib/zig-llvm/lib/ to survive rattler-build packaging."
+    exit 1
+  fi
+  # Show final state
+  echo "  OK: all zig-llvm refs use @loader_path"
+  otool -L "${_zig_bin}" 2>/dev/null | grep -E '(libLLVM|libclang|libc\+\+|libunwind)' | sed 's/^/  /' || true
+
+  # libc++.1.0.dylib references @rpath/libc++abi.1.dylib, but the rpath resolves
+  # to $PREFIX/lib/ (conda-forge) instead of $PREFIX/lib/zig-llvm/lib/ where it lives.
+  # Rewrite to @loader_path so it finds its sibling directly.
+  # TODO: remove once zig-llvm integrates abi into libc++ (LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON)
+  _zigllvm_lib="${PREFIX}/lib/zig-llvm/lib"
+  _libcxx="${_zigllvm_lib}/libc++.1.0.dylib"
+  if [[ -f "${_libcxx}" ]]; then
+    _abi_ref=$(otool -L "${_libcxx}" 2>/dev/null | awk '{print $1}' | grep 'libc++abi' || true)
+    if [[ -n "${_abi_ref}" ]] && [[ "${_abi_ref}" != "@loader_path/"* ]]; then
+      _abi_base=$(basename "${_abi_ref}")
+      install_name_tool -change "${_abi_ref}" \
+        "@loader_path/${_abi_base}" "${_libcxx}"
+      echo "  libc++: ${_abi_ref} -> @loader_path/${_abi_base}"
+    fi
+  fi
+fi
+
 mv "${PREFIX}"/bin/zig "${PREFIX}"/bin/"${CONDA_TRIPLET}"-zig
 
 # Windows conda convention: artifacts go under Library/

@@ -21,8 +21,8 @@ context:
       "s390x-linux-gnu." ~ c_stdlib_version        if cross_target_platform_ == "linux-s390x"           else
       "x86_64-macos-none"                          if cross_target_platform_ == "osx-64"                else
       "aarch64-macos-none"                         if cross_target_platform_ == "osx-arm64"             else
-      "x86_64-windows-msvc"                        if cross_target_platform_ == "win-64"                else
-      "aarch64-windows-msvc"                       if cross_target_platform_ == "win-arm64"             else
+      "x86_64-windows-gnu"                         if cross_target_platform_ == "win-64"                else
+      "aarch64-windows-gnu"                        if cross_target_platform_ == "win-arm64"             else
       "native"
     }}
 
@@ -159,6 +159,11 @@ outputs:
     build:
       skip: not (is_native or is_cross_target) or cross_target_platform_ == "linux-s390x"
       dynamic_linking:
+        rpath_allowlist:
+          - if: osx
+            then:
+              - "@loader_path/../lib/zig-llvm/lib"
+              - "@loader_path/../lib"
         missing_dso_allowlist:
           - if: osx
             then: /usr/lib/libSystem.B.dylib
@@ -197,6 +202,9 @@ outputs:
         - if: arm64
           then:
             - libxml2-devel
+        - if: build_platform != target_platform
+          then:
+            - llvmdev ${{ llvm_version }}.*
 
         # Self-hosting: build zig with zig
         - zig_${{ build_platform }} >=0.15.2
@@ -215,9 +223,6 @@ outputs:
             # We redirect linking to gcc/ld.bfd
             - binutils_impl_${{ target_platform }} >=2.45
             - gcc_impl_${{ target_platform }} >=14.3
-        - if: osx
-          then:
-            - libcxx ${{ llvm_version }}.*
       ignore_run_exports:
         by_name:
           - if: linux
@@ -237,7 +242,9 @@ outputs:
           strict: true
           bin:
             - ${{ conda_triplet }}-zig
-            - ${{ conda_triplet }}-zig-cc-musl
+            - if: linux
+              then:
+                - ${{ conda_triplet }}-zig-cc-musl
           files:
             - ${{ library }}doc/langref.html
             - ${{ library }}lib/zig/{c,compiler_rt,fuzzer,ubsan_rt}.zig
@@ -255,14 +262,22 @@ outputs:
             - ${{ library }}lib/zig/libunwind/*
             - ${{ library }}lib/zig/libtsan/*
             - ${{ library }}lib/zig/std/*
-            # MUSL cross-compiling resources
-            - lib/zig/musl/riscv64/ld-musl-riscv64.so.1
-            - lib/zig/musl/riscv64/libzig-musl.so
-            - lib/zig/musl/riscv64/libzig-musl.so.1
+            - if: linux
+              then:
+                # MUSL cross-compiling resources
+                - lib/zig/musl/riscv64/ld-musl-riscv64.so.1
+                - lib/zig/musl/riscv64/libzig-musl.so
+                - lib/zig/musl/riscv64/libzig-musl.so.1
             # Post-install tests (etc/ is not Library-prefixed on non-Unix)
             - etc/conda/test-files/zig*
       # Functional test using triplet-prefixed binary
       - script:
+          - if: osx
+            then:
+              # Fix zig-llvm dylib refs: test env gets a fresh zig-llvm install
+              # where @rpath refs haven't been rewritten to @loader_path yet
+              - bash testing/fix_zigllvm_dylibs.sh
+              - python testing/debug_libcxx_isolation.py
           - if: not arm64
             then:
               - ${{ conda_triplet }}-zig version
@@ -271,9 +286,19 @@ outputs:
               - ${{ conda_triplet }}-zig test zig-source/test/behavior.zig
             else:
               - echo "Skip test on arm64"
+        requirements:
+          run:
+            - if: osx
+              then:
+                - python 3.12.*
         files:
           source:
             - zig-source/test
+          recipe:
+            - if: osx
+              then:
+                - testing/fix_zigllvm_dylibs.sh
+                - testing/debug_libcxx_isolation.py
 
   # ==========================================================================
   # ACTIVATION: zig_$cross_target_platform_ (scripts)
@@ -404,12 +429,25 @@ outputs:
           strict: true
           bin:
             - zig
+          files:
+            # Post-install tests
+            - if: osx
+              then:
+                - etc/conda/test-files/zig*
       - script:
+          - if: osx
+            then:
+              - bash testing/fix_zigllvm_dylibs.sh
           - if: not arm64
             then:
               - zig version
             else:
               - echo "Skip on cross-compiled platform"
+        files:
+          recipe:
+            - if: osx
+              then:
+                - testing/fix_zigllvm_dylibs.sh
 
   # ==========================================================================
   # TOOLCHAIN META-PACKAGE: zig-compiler (toolchain metapackage)
@@ -428,12 +466,20 @@ outputs:
         - if: linux
           then:
             - binutils_impl_${{ target_platform }}
+        # NOTE: Do NOT add llvm-tools here. It installs competing libLLVM/libc++
+        # into $PREFIX/lib/ which shadows zig-llvm's isolated copies in
+        # $PREFIX/lib/zig-llvm/lib/, causing "separate copies of libc++" errors.
         - if: osx
           then:
             - lld
-            - llvm-tools
     tests:
       - script:
+          - if: osx
+            then:
+              # Simulate zig-llvm post-install: rewrite @rpath → @loader_path
+              # (Needed until zig-llvm is rebuilt with the post-install fix)
+              - bash testing/fix_zigllvm_dylibs.sh
+              - python testing/debug_libcxx_isolation.py
           - zig version
           - zig cc --version
           # Verify zig-cc activation scripts set ZIG_CC
@@ -442,6 +488,17 @@ outputs:
               - test -n "${ZIG_CC}"
               - test -x "${ZIG_CC}"
               - ${ZIG_CC} --version
+        requirements:
+          run:
+            - if: osx
+              then:
+                - python 3.12.*
+        files:
+          recipe:
+            - if: osx
+              then:
+                - testing/fix_zigllvm_dylibs.sh
+                - testing/debug_libcxx_isolation.py
 
 about:
   homepage: https://ziglang.org/

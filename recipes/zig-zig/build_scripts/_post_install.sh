@@ -158,14 +158,18 @@ post_install() {
     patchelf --set-rpath "\$ORIGIN/../lib/zig-llvm/lib:\$ORIGIN/../lib:\$ORIGIN/../" "${PREFIX}"/bin/"${CONDA_TRIPLET}"-zig
     echo "RPATH set: $(patchelf --print-rpath ${PREFIX}/bin/"${CONDA_TRIPLET}"-zig)"
   elif is_osx; then
-    echo "Setting RPATH for zig executable to find zig-llvm libraries..."
-    install_name_tool -add_rpath "@loader_path/../lib/zig-llvm/lib" "${PREFIX}"/bin/"${CONDA_TRIPLET}"-zig
-    install_name_tool -add_rpath "@loader_path/../lib" "${PREFIX}"/bin/"${CONDA_TRIPLET}"-zig
+    # NOTE: Do NOT rewrite zig binary load commands here.
+    # build.sh L545-575 already sets them to @loader_path/../lib/zig-llvm/lib/<name>
+    # which survives rattler-build packaging (rattler-build leaves @loader_path untouched).
+    # Using @rpath/ instead would BREAK because rattler-build strips rpaths not in
+    # its prefix allowlist, leaving @rpath/ refs with no rpaths to resolve them.
+    echo "macOS: zig binary load commands already set to @loader_path by build.sh"
   fi
 
   # Build musl shared libraries for cross-compilation targets
   # This enables sysroot-free cross-compilation with dynamic linking
-  if is_unix; then
+  # Only on Linux — musl ELF shared objects are not useful on macOS
+  if is_linux; then
     # Use the installed zig binary to build musl libraries
     installed_zig="${PREFIX}/bin/${CONDA_TRIPLET}-zig"
     if [[ -x "${installed_zig}" ]]; then

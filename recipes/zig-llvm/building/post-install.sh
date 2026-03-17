@@ -40,16 +40,18 @@ post_install() {
     # instead of bare sonames in NEEDED entries. Fix all .so files unconditionally
     # so the package is always correct regardless of CMake/linker behaviour.
     find "${LLVM_INSTALL}/lib" -name '*.so*' -not -type l | while read -r lib; do
-      readelf -d "${lib}" 2>/dev/null | grep NEEDED | grep -oP '(?<=\[).*(?=\])' | while read -r needed; do
+      while read -r needed; do
         if [[ "${needed}" == */* ]]; then
           bare=$(basename "${needed}")
           echo "  Fixing NEEDED in $(basename ${lib}): ${needed} -> ${bare}"
           patchelf --replace-needed "${needed}" "${bare}" "${lib}"
         fi
-      done || true
+      done < <(readelf -d "${lib}" 2>/dev/null | grep NEEDED | grep -oP '(?<=\[).*(?=\])' || true)
     done
 
-    echo "=== Adding libc++ NEEDED entries via patchelf ==="
+    echo "=== Adding libc++ NEEDED entry via patchelf ==="
+    # libc++abi is statically merged into libc++ on all platforms, so only
+    # libc++.so.1 needs to be in NEEDED (no separate libc++abi.so).
     for _lib in "${LLVM_INSTALL}/lib/libLLVM"*.so.* "${LLVM_INSTALL}/lib/libclang-cpp"*.so.*; do
       [[ -L "${_lib}" ]] && continue  # skip symlinks
       [[ ! -f "${_lib}" ]] && continue
@@ -59,12 +61,6 @@ post_install() {
         echo "    added NEEDED libc++.so.1"
       else
         echo "    already has libc++.so.1"
-      fi
-      if ! readelf -d "${_lib}" | grep NEEDED | grep -q 'libc++abi\.so'; then
-        patchelf --add-needed libc++abi.so.1 "${_lib}"
-        echo "    added NEEDED libc++abi.so.1"
-      else
-        echo "    already has libc++abi.so.1"
       fi
       echo "    NEEDED entries:"
       readelf -d "${_lib}" | grep NEEDED || true
@@ -89,6 +85,32 @@ post_install() {
       exit 1
     fi
     echo "  OK: no local generic_category — no static libc++ merge"
+  fi
+
+  if [[ "${target_platform}" == osx-* ]]; then
+    # llvm-config.real links against @rpath/libz.1.dylib, but the rpath only
+    # includes $PREFIX/lib/zig-llvm/lib/ where our LLVM libs live.  zlib is in
+    # $PREFIX/lib/ (conda zlib package).  Add it as an additional rpath.
+    echo "=== Fixing rpaths for macOS binaries ==="
+    local _conda_lib
+    if [[ -n "${PREFIX:-}" ]]; then
+      _conda_lib="${PREFIX}/lib"
+    else
+      _conda_lib="${LLVM_INSTALL}/../../../lib"
+    fi
+    for _bin in "${LLVM_INSTALL}/bin/llvm-config.real" "${LLVM_INSTALL}/bin/llvm-config.real.exe"; do
+      if [[ -f "${_bin}" ]]; then
+        echo "  Adding rpath ${_conda_lib} to $(basename "${_bin}")"
+        install_name_tool -add_rpath "${_conda_lib}" "${_bin}" 2>/dev/null || true
+      fi
+    done
+    # Also fix tblgen tools that may have the same issue
+    for _bin in "${LLVM_INSTALL}/bin/"*-tblgen; do
+      if [[ -f "${_bin}" ]] && [[ ! -L "${_bin}" ]]; then
+        echo "  Adding rpath ${_conda_lib} to $(basename "${_bin}")"
+        install_name_tool -add_rpath "${_conda_lib}" "${_bin}" 2>/dev/null || true
+      fi
+    done
   fi
 
   if [[ "${target_platform}" == linux-* ]] || [[ "${target_platform}" == osx-* ]]; then

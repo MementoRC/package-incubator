@@ -60,7 +60,14 @@ def run_llvm_config(*args):
         print(f"  stdout: {r.stdout.strip()}", file=sys.stderr)
         print(f"  cmd: {cmd}", file=sys.stderr)
         return None
-    return r.stdout.strip()
+    result = r.stdout.strip()
+    if not result:
+        print(f"  llvm-config {' '.join(args)} returned EMPTY output", file=sys.stderr)
+        if r.stderr.strip():
+            print(f"  stderr: {r.stderr.strip()}", file=sys.stderr)
+        print(f"  cmd: {cmd}", file=sys.stderr)
+        return None
+    return result
 
 
 def main():
@@ -117,6 +124,20 @@ def main():
         print("\nERRORS:")
         for e in errors:
             print(f"  - {e}")
+        # Diagnostic: try running llvm-config.real directly
+        for suffix in [".real", ".real.exe"]:
+            real = os.path.join(_zig_llvm_prefix(), "bin", f"llvm-config{suffix}")
+            if os.path.isfile(real):
+                print(f"\n  Diagnostic: trying {real} directly:")
+                try:
+                    r = subprocess.run(
+                        [real, "--version"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    print(f"    rc={r.returncode} stdout={r.stdout.strip()!r} stderr={r.stderr.strip()!r}")
+                except Exception as exc:
+                    print(f"    FAILED: {exc}")
+                break
         return 1
 
     print("PASS: llvm-config works correctly")

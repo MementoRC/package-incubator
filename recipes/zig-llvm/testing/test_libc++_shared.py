@@ -193,9 +193,16 @@ def main():
                 "private libc++ copy baked in, cannot be interposed"
             )
         elif binding == "LOCAL_DEFINED":
-            static_warnings.append(
+            # On macOS, dyld deduplicates symbols at runtime so a dlsym
+            # address comparison (step 3) would PASS even with static libc++
+            # baked in.  But zig's C++ RTTI check (ZigClangIsLLVMUsingSeparateLibcxx)
+            # is stricter: it detects separate type_info copies via RTTI,
+            # not via dlsym.  So LOCAL_DEFINED is always an error — it means
+            # the shared library has its own libc++ copy regardless of runtime
+            # address deduplication.
+            errors.append(
                 f"{name} has local (lowercase t) {SYMBOL} — "
-                "static libc++ merged in (may be OK if runtime check passes)"
+                "static libc++ merged in (zig RTTI check will detect this)"
             )
 
     if libcxx:
@@ -299,11 +306,11 @@ except Exception as e:
         errors.append(f"Runtime check failed: {e}")
 
     # --- Summary ---
-    # Runtime address comparison (step 3) is AUTHORITATIVE.
-    # On macOS, libc++ is statically merged with -fvisibility=default, so:
-    #   - libc++ won't appear in NEEDED/deps (step 1 warns)
-    #   - generic_category may be LOCAL_DEFINED (step 2 warns)
-    # But if runtime addresses match, zig's check will pass — that's what matters.
+    # Both static analysis (step 2) and runtime check (step 3) must pass.
+    # LOCAL_DEFINED is always an error: zig's RTTI check detects separate
+    # type_info copies even when macOS dyld deduplicates dlsym addresses.
+    # The runtime address check (step 3) adds confidence but cannot override
+    # a LOCAL_DEFINED finding — that indicates a real static libc++ merge.
     print(f"\n--- Summary ---")
     if static_warnings:
         if runtime_passed:

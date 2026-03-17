@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: 1
+  build_number: 7
   name: zig-llvm
   version: 20.1.8
 
@@ -56,6 +56,14 @@ source:
 
 build:
   number: ${{ build_number }}
+  # Disable rattler-build's automatic dylib relocation on macOS.
+  # Our post-install.sh rewrites all inter-library refs to @loader_path
+  # to isolate zig-llvm dylibs from conda-forge's LLVM/libc++ in $PREFIX/lib/.
+  # Without this, rattler-build's packaging step overwrites our @loader_path
+  # changes back to @rpath and adds rpaths that reach $PREFIX/lib/, causing
+  # dyld to load conda-forge's libc++ instead of zig-llvm's.
+  dynamic_linking:
+    binary_relocation: false
   script:
     env:
       LLVM_TRIPLET: ${{ llvm_triplet }}
@@ -75,14 +83,16 @@ build:
         }}-zig
     
   # --- DEBUG ---
-  # skip: unix or arm64
+  # skip: not (osx and arm64 or not unix and x86_64)
   # --- DEBUG ---
       
 requirements:
   build:
     - ${{ stdlib('c') }}
     - ${{ m2 }}bash >=5.2
-    - cmake >=3.19
+    # cmake 3.31+ ninja generator ignores CMAKE_CXX_CREATE_SHARED_LIBRARY even with
+    # CACHE FORCE — confirmed on osx-arm64 (3.31.8). Pin to <3.31 until root cause found.
+    - cmake >=3.19,<3.31
     - git
     - ninja
     - if: not osx
@@ -95,15 +105,14 @@ requirements:
     - if: build_platform != target_platform
       then:
         - libxml2
-        - zig_${{ target_platform }}
+        - zig_${{ target_platform }} >=0.15.2 *_13
         - zlib
         - zstd
         - if: osx
           then:
             - libxml2-devel
-        # - ${{ name }} ${{ version }}.*
       else:
-        - zig_${{ build_platform }}
+        - zig_${{ build_platform }} >=0.15.2 *_13
     - if: not unix
       then:
         - ${{ m2 }}coreutils
@@ -140,9 +149,7 @@ tests:
         - ${{ library }}lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
         - ${{ library }}lib/zig-llvm/lib/liblld*.a
 
-        - if: unix
-          then:
-            - ${{ library }}lib/zig-llvm/lib/libc++abi*${{ so }}*
+        # libc++abi is statically merged into libc++ on all platforms
         - ${{ library }}lib/zig-llvm/lib/libclang-cpp*${{ so }}*
         - ${{ library }}lib/zig-llvm/lib/libc++*${{ so }}*
         - ${{ library }}lib/zig-llvm/lib/libLLVM*${{ so }}*
@@ -208,7 +215,7 @@ tests:
           - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
         requirements:
           run:
-            - zig >=0.15.2
+            - zig >=0.15.2 *_13
 
 about:
   homepage: http://llvm.org/
