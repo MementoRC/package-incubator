@@ -90,9 +90,9 @@ requirements:
   build:
     - ${{ stdlib('c') }}
     - ${{ m2 }}bash >=5.2
-    # cmake 3.31+ ninja generator ignores CMAKE_CXX_CREATE_SHARED_LIBRARY even with
-    # CACHE FORCE — confirmed on osx-arm64 (3.31.8). Pin to <3.31 until root cause found.
-    - cmake >=3.19,<3.31
+    # cmake pin: belt-and-suspenders; real fix is searching CMakeFiles/rules.ninja
+    # (not build.ninja) for the template marker. <4 avoids future surprises.
+    - cmake >=3.19,<4
     - git
     - ninja
     - if: not osx

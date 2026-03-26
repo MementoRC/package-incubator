@@ -1487,9 +1487,40 @@ PYWRAP
       echo "  WARNING: uuid.c not found at ${_uuid_src}"
     fi
 
+    # === Compile MinGW DLL CRT startup object ===
+    # zig-cxx-shared.exe calls ld.lld directly, bypassing zig's driver which normally
+    # compiles CRT objects on-the-fly from libc/mingw/crt/ source.  Without dllcrt2.o,
+    # lld fails with "undefined symbol: DllMainCRTStartup".
+    # Also compile mingw_helpers.o (needed by CRT) and build a minimal libmingw_crt.a.
+    _crt_dir="${_zig_lib_dir}/libc/mingw/crt"
+    _crt_out="${_mingw_implib_dir}"
+    echo "  Compiling MinGW DLL CRT objects from ${_crt_dir}..."
+    for _crt_src in crtdll.c dll_argv.c cinitexe.c pesect.c mingw_helpers.c pseudo-reloc.c pseudo-reloc-list.c; do
+      _crt_c="${_crt_dir}/${_crt_src}"
+      _crt_o="${_crt_out}/${_crt_src%.c}.o"
+      if [[ -f "${_crt_c}" ]]; then
+        "${_zig_bin}" cc -target "${ZIG_TRIPLET}" -c "${_crt_c}" -o "${_crt_o}" 2>&1 || \
+          echo "    WARNING: failed to compile ${_crt_src}"
+      fi
+    done
+    # Bundle CRT objects into a static lib for easier inclusion in link template
+    _crt_objs=("${_crt_out}"/crtdll.o "${_crt_out}"/dll_argv.o "${_crt_out}"/cinitexe.o \
+               "${_crt_out}"/pesect.o "${_crt_out}"/mingw_helpers.o \
+               "${_crt_out}"/pseudo-reloc.o "${_crt_out}"/pseudo-reloc-list.o)
+    _existing_objs=()
+    for _o in "${_crt_objs[@]}"; do
+      [[ -f "$_o" ]] && _existing_objs+=("$_o")
+    done
+    if [[ ${#_existing_objs[@]} -gt 0 ]]; then
+      "${_zig_bin}" ar rcs "${_crt_out}/libmingw_crt.a" "${_existing_objs[@]}" 2>&1
+      echo "  libmingw_crt.a created (${#_existing_objs[@]} objects, $(wc -c < "${_crt_out}/libmingw_crt.a") bytes)"
+    else
+      echo "  WARNING: no CRT objects compiled"
+    fi
+
     # Verify critical libs exist
     _critical_ok=1
-    for _crit in kernel32 shell32 psapi advapi32 ws2_32 ole32 uuid; do
+    for _crit in kernel32 shell32 psapi advapi32 ws2_32 ole32 uuid mingw_crt; do
       if [[ ! -f "${_mingw_implib_dir}/lib${_crit}.a" ]]; then
         echo "  FATAL: lib${_crit}.a was not generated"
         _critical_ok=0
@@ -1507,7 +1538,7 @@ PYWRAP
     _mingw_implib_dir_cmake="${_SRC_DIR_}/_mingw_implibs"
     cat >> "${_cmake_project_include}" << CMINIT
 # Normal variable (original approach):
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cxx_shared_fwd} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -o <TARGET> -Wl,--out-implib,<TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES>")
+set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cxx_shared_fwd} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -L${_PREFIX_}/Library/lib/zig-llvm/lib -o <TARGET> -Wl,--out-implib,<TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES> -lmingw_crt -lucrtbase -lc++ -lkernel32")
 # CACHE FORCE (cmake 3.31+ may not propagate normal vars to ninja generator):
 set(CMAKE_CXX_CREATE_SHARED_LIBRARY "\${CMAKE_CXX_CREATE_SHARED_LIBRARY}" CACHE STRING "CXX shared library link rule" FORCE)
 message(STATUS ">>> CMAKE_CXX_CREATE_SHARED_LIBRARY set to: \${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
