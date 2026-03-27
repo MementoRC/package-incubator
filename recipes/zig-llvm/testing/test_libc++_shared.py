@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Reproduce zig's ZigClangIsLLVMUsingSeparateLibcxx() check.
+"""Validate shared libc++ linkage for zig's libcxx_shared.zig filesystem probe.
 
-Zig verifies at startup that libLLVM and libclang-cpp resolve
-std::generic_category() to the SAME address — i.e., they share one
-libc++ copy.  If each DSO has its own copy, the addresses differ
-and zig refuses to start.
+Zig _14+ verifies that libLLVM and libclang-cpp link against a shared libc++
+(not static). The libcxx_shared.zig filesystem probe checks for libc++.so.1
+or libc++.dylib at <prefix>/lib/zig-llvm/lib/. This script validates via
+nm-based checks that the shared libs do not have static libc++ merged in.
 
 Platform-aware: Linux (ELF), macOS (Mach-O), Windows (PE/COFF).
 
@@ -195,14 +195,13 @@ def main():
         elif binding == "LOCAL_DEFINED":
             # On macOS, dyld deduplicates symbols at runtime so a dlsym
             # address comparison (step 3) would PASS even with static libc++
-            # baked in.  But zig's C++ RTTI check (ZigClangIsLLVMUsingSeparateLibcxx)
-            # is stricter: it detects separate type_info copies via RTTI,
-            # not via dlsym.  So LOCAL_DEFINED is always an error — it means
-            # the shared library has its own libc++ copy regardless of runtime
-            # address deduplication.
+            # baked in.  But LOCAL_DEFINED is always an error — it means
+            # the shared library has static libc++ merged in, which zig will
+            # reject (separate libc++ copies would have different runtime addresses
+            # and break zig's runtime linking).
             errors.append(
                 f"{name} has local (lowercase t) {SYMBOL} — "
-                "static libc++ merged in (zig RTTI check will detect this)"
+                "static libc++ merged in"
             )
 
     if libcxx:
@@ -307,10 +306,11 @@ except Exception as e:
 
     # --- Summary ---
     # Both static analysis (step 2) and runtime check (step 3) must pass.
-    # LOCAL_DEFINED is always an error: zig's RTTI check detects separate
-    # type_info copies even when macOS dyld deduplicates dlsym addresses.
-    # The runtime address check (step 3) adds confidence but cannot override
-    # a LOCAL_DEFINED finding — that indicates a real static libc++ merge.
+    # LOCAL_DEFINED is always an error: it indicates static libc++ merged into
+    # the shared library. Even if macOS dyld deduplicates dlsym addresses at runtime,
+    # having separate libc++ copies causes issues with zig's libcxx_shared.zig probe
+    # and runtime linking. The runtime address check (step 3) adds confidence but
+    # cannot override a LOCAL_DEFINED finding — that indicates a real static merge.
     print(f"\n--- Summary ---")
     if static_warnings:
         if runtime_passed:

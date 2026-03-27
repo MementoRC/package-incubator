@@ -179,7 +179,7 @@ outputs:
           CONDA_ZIG_HOST: ${{ conda_triplet ~ "-zig" }}
 
           # --- DEBUGGING ---
-          DEBUG_ZIG_BUILD: "1"
+          # DEBUG_ZIG_BUILD: "1"
           # ZIG_USE_CACHE: "1"
     requirements:
       build:
@@ -207,7 +207,13 @@ outputs:
             - llvmdev ${{ llvm_version }}.*
 
         # Self-hosting: build zig with zig
-        - zig_${{ build_platform }} >=0.15.2
+        # Cross-builds need the cross-compiler activation (targets host platform);
+        # native builds use the build platform's zig directly.
+        - if: build_platform != target_platform
+          then:
+            - zig_${{ cross_target_platform_ }} >=0.15.2
+          else:
+            - zig_${{ build_platform }} >=0.15.2
       host:
         # --- Development ---
         - zig-llvm ${{ llvm_version }}.*

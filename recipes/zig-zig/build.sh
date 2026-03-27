@@ -262,29 +262,8 @@ if is_osx; then
     -DCMAKE_OSX_ARCHITECTURES="${_osx_arch}"
   )
 
-  # For cross-target macOS, the build platform's zig-cc wrapper targets the wrong
-  # architecture (e.g. arm64 when we need x86_64). Create local wrappers with the
-  # correct target triple for CMake.
-  if is_cross; then
-    mkdir -p "${SRC_DIR}/build-wrappers"
-    for _mode in cc c++; do
-      _wrapper="${SRC_DIR}/build-wrappers/zig-${_mode}"
-      cat > "${_wrapper}" << ZIGEOF
-#!/usr/bin/env bash
-exec "${zig}" ${_mode} -target ${ZIG_TRIPLET} -mcpu=baseline "\$@"
-ZIGEOF
-      chmod +x "${_wrapper}"
-    done
-    export ZIG_CC="${SRC_DIR}/build-wrappers/zig-cc"
-    export ZIG_CXX="${SRC_DIR}/build-wrappers/zig-c++"
-    export CC="${ZIG_CC}"
-    export CXX="${ZIG_CXX}"
-    # Override CMAKE_C/CXX_COMPILER (later -D wins over earlier)
-    EXTRA_CMAKE_ARGS+=(
-      -DCMAKE_C_COMPILER="${ZIG_CC}"
-      -DCMAKE_CXX_COMPILER="${ZIG_CXX}"
-    )
-  fi
+  # Cross-builds: zig_$cross_target_platform_ activation provides wrappers
+  # targeting the host platform (e.g. x86_64 for osx-64). No custom wrappers needed.
 fi
 
 # Override zig's default max_rss (7.8GB) which exceeds CI runner memory
@@ -313,6 +292,7 @@ _ignore_paths="/opt/homebrew/lib;/usr/local/lib"
 [[ -d "${BUILD_PREFIX}/bin" ]] && _ignore_paths="${_ignore_paths};${BUILD_PREFIX}/bin"
 [[ -d "${BUILD_PREFIX}/${_library}bin" ]] && _ignore_paths="${_ignore_paths};${BUILD_PREFIX}/${_library}bin"
 EXTRA_CMAKE_ARGS+=(-DCMAKE_IGNORE_PATH="${_ignore_paths}")
+
 
 if is_linux && is_cross; then
   EXTRA_ZIG_ARGS+=(

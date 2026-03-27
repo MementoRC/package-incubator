@@ -185,25 +185,16 @@ else
   export ZIG_RC="${ZIG_WRAPPERS}/zig-rc"
 fi
 
-# macOS force-load wrapper: zig _12+ provides zig-force-load-cxx which handles
+# macOS force-load wrapper: zig _14+ provides zig-force-load-cxx which handles
 # -Wl,-all_load/-Wl,-force_load by extracting archives to .o files, in c++ mode.
 # Set as CMAKE_CXX_COMPILER so it handles both compile and link commands;
 # force-load logic only activates when those flags are present.
-#
-# TEMPORARY: if zig-force-load-cxx is not yet available (pre-_12), generate it
-# from zig-force-load-cc by switching _ZIG_MODE to c++.
-# Remove this fallback once zig _12 is live on conda-forge.
+# _14 also fixes the relative-path bug (archives resolved to absolute before cd+ar x).
 if is_osx; then
     if [[ -x "${ZIG_WRAPPERS}/zig-force-load-cxx" ]]; then
         export ZIG_CXX="${ZIG_WRAPPERS}/zig-force-load-cxx"
-    elif [[ -x "${ZIG_WRAPPERS}/zig-force-load-cc" ]]; then
-        echo "  zig-force-load-cxx not found, generating from zig-force-load-cc (pre-_12 fallback)"
-        _fl_cxx="${ZIG_WRAPPERS}/zig-force-load-cxx"
-        sed 's/_ZIG_MODE="cc"/_ZIG_MODE="c++"/' "${ZIG_WRAPPERS}/zig-force-load-cc" > "${_fl_cxx}"
-        chmod +x "${_fl_cxx}"
-        export ZIG_CXX="${_fl_cxx}"
     else
-        echo "ERROR: neither zig-force-load-cxx nor zig-force-load-cc found"
+        echo "ERROR: zig-force-load-cxx not found in ${ZIG_WRAPPERS}"
         exit 1
     fi
 
@@ -226,33 +217,6 @@ if is_osx; then
         exit 1
     fi
     echo "  MACOS_LINK: ${MACOS_LINK} (arch: ${_osx_arch})"
-
-    # HOTFIX: zig-force-load-cxx has a bug where `ar x` is called after cd'ing
-    # to a temp dir, but the archive paths from cmake are RELATIVE to the build dir.
-    # `(cd "${_subdir}" && ar x "${_archive}")` — after cd, relative paths break.
-    # Result: ALL 142 archives fail to extract silently, libLLVM.dylib ends up empty.
-    # Fix: resolve archive paths to absolute before extracting.
-    # This patch should be upstreamed to zig-feedstock.
-    # NOTE: only ZIG_CXX needs patching now — MACOS_LINK (system clang) doesn't
-    # use the force-load wrapper; Apple's ld handles -all_load natively.
-    if [[ -f "${ZIG_CXX}" ]]; then
-        echo "  Patching $(basename "${ZIG_CXX}"): resolve relative archive paths to absolute"
-        python3 -c "
-import sys
-with open(sys.argv[1]) as f:
-    content = f.read()
-old = '(cd \"\${_subdir}\" && ar x \"\${_archive}\")'
-new = '_abs=\"\${_archive}\"; [[ \"\$_abs\" != /* ]] && _abs=\"\$(pwd)/\$_abs\"; (cd \"\${_subdir}\" && ar x \"\$_abs\")'
-if old in content:
-    content = content.replace(old, new)
-    with open(sys.argv[1], 'w') as f:
-        f.write(content)
-    print('    OK: patch applied')
-else:
-    print('    WARNING: target string not found in wrapper')
-    sys.exit(1)
-" "${ZIG_CXX}"
-    fi
 
     # Patch deployment target in zig wrappers to match conda's MACOSX_DEPLOYMENT_TARGET.
     # _zig-cc-common.sh contains the actual `-target aarch64-macos-none` (or versioned
@@ -808,6 +772,147 @@ DEFEOF
   rm -rf "${_stub_dir}"
 fi
 
+# === Quick-fail: reproduce libclang-cpp 8 KiB import lib and find the culprit flag ===
+# libclang-cpp.dll.a was 8 KiB (zero exports) despite --export-all-symbols × 3.
+# The DLL was 49 MiB (code IS there) but PE export table was empty.
+# The real link command has these flags we don't test above:
+#   -Wl,--gc-sections  -stdlib=libc++  -shared (twice)  @response_file  -lc++
+# This test adds each suspicious flag incrementally to find which one kills exports.
+if is_not_unix; then
+  echo "########## EXPORT-ALL-SYMBOLS TEST ##########"
+  _eas_dir="${SRC_DIR}/_export_all_test"
+  mkdir -p "${_eas_dir}"
+
+  # Mix of dllexport and non-dllexport, mirroring clang's sources.
+  # When ANY __declspec(dllexport) is present, lld switches to "selective export"
+  # mode — only dllexport symbols are exported unless --export-all-symbols overrides.
+  cat > "${_eas_dir}/funcs.c" << 'EAS_SRC'
+// funcs.c — mix of dllexport and non-dllexport (like clang's sources)
+__declspec(dllexport) int exported_func(void) { return 1; }
+int plain_alpha(void) { return 2; }
+int plain_beta(void) { return 3; }
+int plain_gamma(void) { return 4; }
+int plain_delta(void) { return 5; }
+EAS_SRC
+
+  echo "  Compiling test object..."
+  "${_native_zig}" cc -target ${ZIG_TRIPLET} -c "${_eas_dir}/funcs.c" -o "${_eas_dir}/funcs.obj"
+
+  # Helper: link a DLL with given extra flags, report plain_ symbol count in import lib.
+  # Expected: T1=0 (bug reproduced), T2/T3=4 (fix works), T4=4 (lld works directly).
+  _test_link() {
+    local _label="$1"; shift
+    local _implib="${_eas_dir}/${_label}.dll.a"
+    "${_native_zig}" cc -shared -target ${ZIG_TRIPLET} \
+        -Wl,--out-implib,"${_implib}" \
+        -o "${_eas_dir}/${_label}.dll" \
+        "$@" 2>&1 || true
+    local _syms
+    _syms=$(strings -a "${_implib}" 2>/dev/null | grep -c 'plain_' || echo 0)
+    printf "    %-40s  plain_ symbols: %2s  %s\n" "${_label}" "${_syms}" \
+        "$([ "${_syms}" -ge 4 ] 2>/dev/null && echo OK || echo BROKEN)"
+  }
+
+  echo "  ########## RESULTS ##########"
+  echo "  Counting 'plain_' symbols in import lib (expected: T1=0/BROKEN, T2/T3/T4=4/OK):"
+
+  # T1: baseline — no --export-all-symbols.
+  # With __declspec(dllexport) present, lld uses selective export mode.
+  # plain_ funcs should NOT be exported → 0 symbols → reproduces the bug.
+  _test_link "T1_baseline_no_eas" "${_eas_dir}/funcs.obj"
+
+  # T2: -Wl,--export-all-symbols via zig cc.
+  # If plain_ symbols are exported (4) → zig cc forwards the flag correctly.
+  # If still 0 → zig cc does NOT forward -Wl,--export-all-symbols to lld.
+  _test_link "T2_Wl_export_all" -Wl,--export-all-symbols "${_eas_dir}/funcs.obj"
+
+  # T3: -Xlinker --export-all-symbols — alternative flag form via zig cc.
+  # Same expectation as T2; tests whether -Xlinker path fares differently.
+  _test_link "T3_Xlinker_export_all" -Xlinker --export-all-symbols "${_eas_dir}/funcs.obj"
+
+  # T4: call ld.lld directly, bypassing zig cc entirely.
+  # If T4=OK but T2/T3=BROKEN → confirmed zig cc bug (flag not forwarded).
+  # If T4=BROKEN too → lld itself has an issue with this flag+dllexport combo.
+  _eas_lld=""
+  if [[ -f "${BUILD_PREFIX}/Library/bin/ld.lld.exe" ]]; then
+    _eas_lld="${BUILD_PREFIX}/Library/bin/ld.lld.exe"
+  else
+    # Try zig's bundled lld
+    _eas_lld_candidate=$(find "${_native_zig%/zig*}" -name "ld.lld*" 2>/dev/null | head -1 || true)
+    [[ -n "${_eas_lld_candidate}" ]] && _eas_lld="${_eas_lld_candidate}"
+  fi
+
+  if [[ -n "${_eas_lld}" ]]; then
+    _eas_implib4="${_eas_dir}/T4_lld_direct.dll.a"
+    "${_eas_lld}" -m i386pep \
+        --export-all-symbols \
+        --out-implib "${_eas_implib4}" \
+        -o "${_eas_dir}/T4_lld_direct.dll" \
+        "${_eas_dir}/funcs.obj" 2>&1 || true
+    _syms4=$(strings -a "${_eas_implib4}" 2>/dev/null | grep -c 'plain_' || echo 0)
+    printf "    %-40s  plain_ symbols: %2s  %s\n" "T4_lld_direct" "${_syms4}" \
+        "$([ "${_syms4}" -ge 4 ] 2>/dev/null && echo OK || echo BROKEN)"
+  else
+    echo "    T4_lld_direct: SKIPPED (ld.lld not found in BUILD_PREFIX or zig lib)"
+  fi
+
+  # --- T5: --exclude-symbols to remove the dllexport symbol ---
+  echo "  T5: --export-all-symbols + --exclude-symbols=exported_func..."
+  _test_link T5_exclude_dllexport \
+      -Wl,--export-all-symbols -Wl,--exclude-symbols=exported_func \
+      "${_eas_dir}/funcs.obj"
+
+  # --- T6: recompile WITHOUT dllexport, then --export-all-symbols ---
+  cat > "${_eas_dir}/funcs_nodllexport.c" << 'EAS_NODLLEXPORT'
+int exported_func(void) { return 1; }
+int plain_alpha(void) { return 2; }
+int plain_beta(void) { return 3; }
+int plain_gamma(void) { return 4; }
+int plain_delta(void) { return 5; }
+EAS_NODLLEXPORT
+  echo "  T6: same code WITHOUT __declspec(dllexport) + --export-all-symbols..."
+  "${_native_zig}" cc -target ${ZIG_TRIPLET} -c "${_eas_dir}/funcs_nodllexport.c" \
+      -o "${_eas_dir}/funcs_nodllexport.obj" 2>&1
+  _test_link T6_no_dllexport \
+      -Wl,--export-all-symbols \
+      "${_eas_dir}/funcs_nodllexport.obj"
+
+  # --- T7: system lld (from conda lld package) instead of zig's bundled lld ---
+  _sys_lld=""
+  for _candidate in "${BUILD_PREFIX}/Library/bin/ld.lld.exe" "${BUILD_PREFIX}/bin/ld.lld" \
+                     "${BUILD_PREFIX}/Library/bin/lld-link.exe"; do
+    [[ -x "${_candidate}" ]] && _sys_lld="${_candidate}" && break
+  done
+  if [[ -n "${_sys_lld}" ]]; then
+    echo "  T7: system lld (${_sys_lld}) + --export-all-symbols..."
+    _eas_implib7="${_eas_dir}/T7_sys_lld.dll.a"
+    "${_sys_lld}" -m i386pep \
+        --export-all-symbols \
+        --out-implib "${_eas_implib7}" \
+        -o "${_eas_dir}/T7_sys_lld.dll" \
+        "${_eas_dir}/funcs.obj" 2>&1 || true
+    _syms7=$(strings -a "${_eas_implib7}" 2>/dev/null | grep -c 'plain_' || echo 0)
+    printf "    %-40s  plain_ symbols: %2s  %s\n" "T7_sys_lld" "${_syms7}" \
+        "$([ "${_syms7}" -ge 4 ] 2>/dev/null && echo OK || echo BROKEN)"
+    echo "    system lld version: $("${_sys_lld}" --version 2>&1 | head -1 || echo unknown)"
+    echo "    zig lld version: $("${_eas_lld:-echo}" --version 2>&1 | head -1 || echo unknown)"
+  else
+    echo "    T7_sys_lld: SKIPPED (system ld.lld not found)"
+  fi
+
+  echo ""
+  echo "  Diagnosis:"
+  echo "    T1=0/BROKEN → selective-export mode confirmed (bug reproduced)"
+  echo "    T2=4/OK or T3=4/OK → zig cc forwards --export-all-symbols correctly"
+  echo "    T2=BROKEN + T3=BROKEN + T4=OK → zig cc does NOT forward the flag (zig cc bug)"
+  echo "    T4=BROKEN → lld itself ignores --export-all-symbols with dllexport present"
+  echo "    T5=OK → --exclude-symbols workaround works (remove dllexport symbols from auto-export)"
+  echo "    T6=OK → removing __declspec(dllexport) from source fixes it (cmake patch needed)"
+  echo "    T7=OK → system lld works, zig's bundled lld is broken/old (use -DCMAKE_LINKER=...)"
+
+  mv "${_eas_dir}" /tmp/_export_all_test_done 2>/dev/null || true
+fi
+
 mkdir -p "${LLVM_BUILD}"
 
 if is_unix || is_not_unix; then
@@ -906,6 +1011,28 @@ if is_unix || is_not_unix; then
     # Windows: expect .dll + .dll.a (import library)
     ls -la "${LLVM_INSTALL}/bin/"libc++* 2>/dev/null || true
   fi
+
+  # === zig _14 libc++ probe: make shared libc++ visible at BUILD_PREFIX ===
+  # zig _14's libcxx_shared.zig probes for shared libc++ relative to zig_lib_dir:
+  #   <zig_lib_dir>/../../lib/zig-llvm/lib/libc++{.so.1,.1.dylib,.dll.a}
+  # zig_lib_dir is $BUILD_PREFIX/lib/zig/ (Linux/macOS) or $BUILD_PREFIX/Library/lib/zig/ (Windows).
+  # Phase 1 installs libc++ to $PREFIX/lib/zig-llvm/lib/ — different from BUILD_PREFIX.
+  # Symlink so zig _14 finds it during Phase 2 AND when downstream packages build.
+  if is_not_unix; then
+    _probe_dir="${BUILD_PREFIX}/Library/lib/zig-llvm/lib"
+  else
+    _probe_dir="${BUILD_PREFIX}/lib/zig-llvm/lib"
+  fi
+  mkdir -p "${_probe_dir}"
+  echo "  Creating zig _14 libc++ probe copies at ${_probe_dir}"
+  for _libcxx in "${LLVM_INSTALL}/lib/"libc++*; do
+    [[ -f "${_libcxx}" ]] || continue
+    _name=$(basename "${_libcxx}")
+    # Use cp instead of ln -sf: Windows native zig binary may not follow
+    # MSYS2 Unix symlinks when probing for libc++.dll.a
+    cp -f "${_libcxx}" "${_probe_dir}/${_name}"
+    echo "    ${_name} ($(wc -c < "${_probe_dir}/${_name}") bytes)"
+  done
 
 fi
 
@@ -1443,7 +1570,7 @@ elif is_not_unix; then
     _mingw_implib_dir_cmake="${_SRC_DIR_}/_mingw_implibs"
     cat >> "${_cmake_project_include}" << CMINIT
 # Normal variable (original approach):
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cc_exe} cc -shared -target x86_64-windows-gnu <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -o <TARGET> -Wl,--out-implib,<TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES>")
+set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cc_exe} cc -shared -target ${ZIG_TRIPLET} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -L${_PREFIX_}/Library/lib/zig-llvm/lib -o <TARGET> -Xlinker --out-implib -Xlinker <TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES> -lc++")
 # CACHE FORCE (cmake 3.31+ may not propagate normal vars to ninja generator):
 set(CMAKE_CXX_CREATE_SHARED_LIBRARY "\${CMAKE_CXX_CREATE_SHARED_LIBRARY}" CACHE STRING "CXX shared library link rule" FORCE)
 message(STATUS ">>> CMAKE_CXX_CREATE_SHARED_LIBRARY set to: \${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
@@ -1490,69 +1617,104 @@ if is_osx; then
   _template_marker="macos-link-wrapper"
   _template_label="macos-link-wrapper.sh"
 elif is_not_unix; then
-  _template_marker="x86_64-windows-gnu"
-  _template_label="zig cc -shared -target x86_64-windows-gnu"
+  _template_marker="${ZIG_TRIPLET}"
+  _template_label="zig cc -shared -target ${ZIG_TRIPLET}"
 else
   _template_marker="zig-cxx-shared"
   _template_label="zig-cxx-shared"
 fi
 
-# Diagnostic: check if cmake printed our project include messages
-echo "  Checking cmake output for PROJECT_INCLUDE diagnostics..."
-echo "  cmake version:"
-cmake --version 2>&1 | head -1 | sed 's/^/    /'
-
-# cmake's ninja generator puts rules in CMakeFiles/rules.ninja (included by build.ninja),
-# NOT in build.ninja itself.  Explicitly search CMakeFiles/rules.ninja.
-# NOTE: "${LLVM_BUILD}"/*.ninja glob ONLY finds top-level build.ninja — it MISSES
-# CMakeFiles/rules.ninja which is in a subdirectory.  Always pass the explicit paths.
+# cmake's ninja generator puts rules in CMakeFiles/rules.ninja (included by build.ninja).
 _rules_ninja="${LLVM_BUILD}/CMakeFiles/rules.ninja"
 _build_ninja="${LLVM_BUILD}/build.ninja"
-{ set +x; } 2>/dev/null
-echo "  Ninja files:"
-echo "    build.ninja: $( [[ -f "${_build_ninja}" ]] && echo found || echo NOT FOUND )"
-echo "    CMakeFiles/rules.ninja: $( [[ -f "${_rules_ninja}" ]] && echo found || echo NOT FOUND )"
-
-echo "  CMAKE_CXX_CREATE_SHARED_LIBRARY in CMakeCache.txt:"
-grep 'CMAKE_CXX_CREATE_SHARED_LIBRARY' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null | sed 's/^/    /' || echo "    <not found>"
-
-# Show all 'rule ' entries from rules.ninja for diagnostic purposes
-echo "  All link rules in CMakeFiles/rules.ninja (rule lines):"
-grep '^rule ' "${_rules_ninja}" 2>/dev/null | grep -i 'CXX\|LINK\|SHARED' | sed 's/^/    /' || echo "    <none found>"
-
-echo "  Searching for template marker '${_template_marker}' in CMakeFiles/rules.ninja..."
-set -x
 
 if grep -q "${_template_marker}" "${_rules_ninja}" 2>/dev/null; then
   echo "  OK: ${_template_label} found in CMakeFiles/rules.ninja"
-  { set +x; } 2>/dev/null
-  grep -B2 -A5 "${_template_marker}" "${_rules_ninja}" 2>/dev/null | head -20 | sed 's/^/    /' || true
-  set -x
 else
   echo "  FATAL: ${_template_label} NOT FOUND in CMakeFiles/rules.ninja!"
   echo "  CMAKE_PROJECT_INCLUDE set the variable (confirmed in cache) but ninja generator did not use it."
   { set +x; } 2>/dev/null
   echo "  All CXX_SHARED rules in CMakeFiles/rules.ninja:"
   grep -A3 'CXX_SHARED\|CREATE_SHARED\|SHARED_LIBRARY_LINKER' "${_rules_ninja}" 2>/dev/null | head -30 | sed 's/^/    /' || echo "    <none>"
-  echo "  First 10 rule entries in CMakeFiles/rules.ninja:"
-  grep '^rule ' "${_rules_ninja}" 2>/dev/null | head -10 | sed 's/^/    /' || echo "    <none>"
   set -x
   echo "  Aborting to avoid wasting 90+ minutes on a build that will fail at link time."
   exit 1
 fi
 
-# Platform-specific diagnostics (non-fatal, informational only)
-if is_osx; then
-  _implicit=$(grep 'CMAKE_CXX_IMPLICIT_LINK_LIBRARIES' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true)
-  echo "  CMAKE_CXX_IMPLICIT_LINK_LIBRARIES: ${_implicit:-<not found>}"
-fi
+# === Quick-fail: verify --export-all-symbols in ALL shared library link rules ===
+# libLLVM and libclang-cpp each get their own CXX_SHARED_LIBRARY_LINKER rule in
+# rules.ninja.  If --export-all-symbols is missing from either, the import lib
+# will be 8 KiB instead of 100+ KiB — but we'd only discover that AFTER 2+ hours.
 if is_not_unix; then
-  # Show the build statement for libclang-cpp.dll to see actual LINK_FLAGS expansion
-  echo "  build.ninja entry for libclang-cpp.dll (first 20 lines):"
-  grep -A20 'build.*libclang-cpp.*\.dll' "${LLVM_BUILD}/build.ninja" 2>/dev/null | head -20 | sed 's/^/    /' || echo "    <no libclang-cpp.dll entry found>"
-  echo "  build.ninja entry for libLLVM (first 20 lines):"
-  grep -A20 'build.*libLLVM.*\.dll[^.]' "${LLVM_BUILD}/build.ninja" 2>/dev/null | head -20 | sed 's/^/    /' || echo "    <no libLLVM.dll entry found>"
+  { set +x; } 2>/dev/null
+  echo "=== Quick-fail: verifying --export-all-symbols in ALL shared library rules ==="
+  _export_fail=0
+  while IFS= read -r _rule_name; do
+    # Extract the command line for this rule (next 8 lines after the rule declaration)
+    _rule_cmd=$(grep -A8 "^rule ${_rule_name}$" "${_rules_ninja}" 2>/dev/null | grep 'command =' || true)
+    echo "  ${_rule_name}:"
+    if echo "${_rule_cmd}" | grep -q 'export-all-symbols'; then
+      echo "    OK: --export-all-symbols present"
+    else
+      echo "    FAIL: --export-all-symbols NOT in command line!"
+      echo "    command = ${_rule_cmd}"
+      _export_fail=1
+    fi
+  done < <(grep '^rule CXX_SHARED_LIBRARY_LINKER' "${_rules_ninja}" 2>/dev/null | sed 's/^rule //')
+  if [[ ${_export_fail} -ne 0 ]]; then
+    echo "  FATAL: --export-all-symbols missing from one or more shared library link rules."
+    echo "  libclang-cpp.dll.a will be ~8 KiB instead of 100+ KiB."
+    echo "  Aborting to avoid wasting 2+ hours on a build that will fail."
+    set -x
+    exit 1
+  fi
+  echo "  All shared library rules have --export-all-symbols"
+  set -x
 fi
+
+# === Windows quick-fail: verify zig cc -shared can link libc++ ===
+# The real LLVM build takes 2+ hours and fails at the very end linking
+# libLLVM-20.dll if libc++ isn't properly linked.  This ~10-second test
+# catches that failure mode immediately after cmake configure.
+if is_not_unix; then
+  echo "=== Quick-fail: zig cc -shared libc++ link test ==="
+  _libcxx_stub_dir="${SRC_DIR}/_libcxx_stub_test"
+  mkdir -p "${_libcxx_stub_dir}"
+
+  # Pure C stub — avoids needing C++ headers. Only tests the LINK step:
+  # can zig cc -shared find and link libc++.dll.a from LLVM_INSTALL/lib?
+  cat > "${_libcxx_stub_dir}/stub.c" << 'LIBCXXSTUB'
+__declspec(dllexport) int stub_func(void) { return 42; }
+LIBCXXSTUB
+
+  echo "  Compiling stub.c..."
+  if ! "${_native_zig}" cc -target ${ZIG_TRIPLET} \
+      -c "${_libcxx_stub_dir}/stub.c" \
+      -o "${_libcxx_stub_dir}/stub.obj"; then
+    echo "FATAL: zig cc cannot compile a trivial C file"
+    exit 1
+  fi
+
+  echo "  Linking stub.dll with -lc++ (verifying libc++ import lib is findable)..."
+  echo "  -L${LLVM_INSTALL}/lib"
+  ls -la "${LLVM_INSTALL}/lib/"libc++* 2>/dev/null | sed 's/^/    /' || echo "    <none>"
+  if ! "${_native_zig}" cc -shared -target ${ZIG_TRIPLET} \
+      -L"${LLVM_INSTALL}/lib" -lc++ \
+      -o "${_libcxx_stub_dir}/stub.dll" \
+      "${_libcxx_stub_dir}/stub.obj" 2>&1; then
+    echo "FATAL: zig cc -shared cannot link libc++ — aborting before 2hr build"
+    echo "  libc++.dll.a must be at ${LLVM_INSTALL}/lib/"
+    exit 1
+  fi
+
+  if [[ ! -f "${_libcxx_stub_dir}/stub.dll" ]]; then
+    echo "FATAL: link exited 0 but stub.dll not created"
+    exit 1
+  fi
+  echo "  OK: stub.dll + libc++ link works"
+  mv "${_libcxx_stub_dir}" /tmp/_libcxx_stub_test_done 2>/dev/null || true
+fi
+
 
 # === Fast stub shared library test ===
 # Before spending hours on the real LLVM build, create a tiny shared lib that
@@ -1799,8 +1961,11 @@ if is_not_unix; then
   #   errors in Phase 2 when libclang-cpp links against the cleaned import lib.
   # Phase 2: Build everything else (libclang-cpp links against cleaned import lib)
 
-  # Enable zig-cxx-shared verbose logging for shared library links
-  export ZIG_CXX_SHARED_VERBOSE=1
+  # Add libc++ DLL location to PATH so build-time executables (llvm-min-tblgen etc.)
+  # can find libc++.dll at runtime.  With zig _14's libc++ probe, zig links
+  # executables against shared libc++ — but the DLL must be discoverable via PATH.
+  export PATH="${LLVM_INSTALL}/bin:${LLVM_INSTALL}/lib:${PATH}"
+  echo "  Added ${LLVM_INSTALL}/bin and lib to PATH for runtime DLL discovery"
 
   # Phase 1: Build libLLVM DLL only
   echo "  Phase 1: Building LLVM shared library..."
@@ -1868,6 +2033,7 @@ if is_not_unix; then
   echo "  Phase 2: Building remaining targets..."
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
 
+
   # Phase 2.5: Strip atexit from libclang-cpp import lib + verify exports.
   # --export-all-symbols is baked into CMAKE_CXX_CREATE_SHARED_LIBRARY template,
   # which also leaks atexit from dllcrt2.obj — same issue as libLLVM.
@@ -1893,8 +2059,15 @@ if is_not_unix; then
     echo "    Import lib size: ${_clang_implib_size} bytes ($(( _clang_implib_size / 1024 )) KiB)"
     if [[ "${_clang_implib_size}" -lt 100000 ]]; then
       echo "    FAIL: libclang-cpp.dll.a is only ${_clang_implib_size} bytes!"
-      echo "    Expected 100+ KiB — --export-all-symbols likely missing from link command."
-      echo "    Compare: libLLVM-20.dll.a should be ~24 MiB."
+      echo "    Expected 100+ KiB — --export-all-symbols not effective for libclang-cpp."
+      # Print DLL size for quick diagnosis (large DLL + tiny implib = --out-implib problem)
+      _clang_dll_fail=$(find "${LLVM_BUILD}" -name 'libclang-cpp*.dll' -o -name 'clang-cpp*.dll' 2>/dev/null | head -1)
+      if [[ -n "${_clang_dll_fail}" ]]; then
+        _clang_dll_fail_sz=$(stat -c%s "${_clang_dll_fail}" 2>/dev/null || stat -f%z "${_clang_dll_fail}" 2>/dev/null || echo 0)
+        echo "    libclang-cpp.dll size: ${_clang_dll_fail_sz} bytes ($(( _clang_dll_fail_sz / 1048576 )) MiB)"
+      else
+        echo "    libclang-cpp.dll: NOT FOUND"
+      fi
       exit 1
     fi
     # Use direct pipe (strings | grep -q) to avoid storing large symbol sets in bash
@@ -1925,6 +2098,16 @@ if is_not_unix; then
     if [[ "${_clang_fail}" -ne 0 ]]; then
       echo "  ERROR: libclang-cpp.dll.a is missing critical symbols!"
       echo "  This would cause 104+ undefined symbol errors in zig-zig_impl build."
+      # Show DLL size for diagnosis
+      _clang_dll_sym=$(find "${LLVM_BUILD}" -name 'libclang-cpp*.dll' -o -name 'clang-cpp*.dll' 2>/dev/null | head -1)
+      if [[ -n "${_clang_dll_sym}" ]]; then
+        _clang_dll_sym_sz=$(stat -c%s "${_clang_dll_sym}" 2>/dev/null || stat -f%z "${_clang_dll_sym}" 2>/dev/null || echo 0)
+        echo "  libclang-cpp.dll size: ${_clang_dll_sym_sz} bytes ($(( _clang_dll_sym_sz / 1048576 )) MiB)"
+        _clang_dll_sym_nsyms=$( ("${_zig_bin}" nm "${_clang_dll_sym}" 2>/dev/null || nm "${_clang_dll_sym}" 2>/dev/null) \
+          | grep -c ' [TDBCV] ' || echo 0)
+        echo "  libclang-cpp.dll exported symbols (nm): ${_clang_dll_sym_nsyms}"
+      fi
+      echo "  libclang-cpp.dll.a size: ${_clang_implib_size} bytes, symbols: ${_clang_nsyms}"
       echo "  Likely causes:"
       echo "    - -fvisibility=default not reaching clang compilation"
       echo "    - --export-all-symbols not in libclang-cpp link command"
@@ -1943,53 +2126,8 @@ elif is_osx; then
   # Quick-fail: verify key symbols are exported from libLLVM.dylib.
   # If zig cc's visibility handling is broken, we find out here (~50% through build)
   # instead of at the end when libclang-cpp.dylib tries to link.
-  # === macOS diagnostic: dump link wrapper log ===
-  # ninja eats stderr on success, so all wrapper output went to MACOS_LINK_LOG.
-  # Show only the libLLVM / libclang entries (wrapper is only called for .dylib links).
-  if [[ -f "${MACOS_LINK_LOG}" ]]; then
-    echo "  === macOS link wrapper log (libLLVM/libclang entries) ==="
-    grep -A5 'libLLVM\|libclang' "${MACOS_LINK_LOG}" | head -60 | sed 's/^/  /' || echo "  (no libLLVM/libclang entries found)"
-    echo "  --- link wrapper summary ---"
-    echo "  Total link invocations: $(grep -c '^ARGS:' "${MACOS_LINK_LOG}" 2>/dev/null || echo 0)"
-    echo "  Total skipped static libc++: $(grep -c '^SKIPPED:' "${MACOS_LINK_LOG}" 2>/dev/null || echo 0)"
-    echo "  Log saved at: ${MACOS_LINK_LOG}"
-  else
-    echo "  WARNING: ${MACOS_LINK_LOG} not found — wrapper may not have been invoked"
-  fi
-
-  # === macOS diagnostic: check ninja .rsp response files ===
-  # For large link commands ninja writes arguments to a .rsp file.
-  # These survive the build and let us see the ACTUAL arguments passed to the wrapper.
-  echo "  === macOS: checking ninja response files for libLLVM link ==="
-  _rsp=$(find "${LLVM_BUILD}" -name '*.rsp' -path '*LLVM*' 2>/dev/null | head -1)
-  if [[ -n "${_rsp}" ]]; then
-    echo "  Found: ${_rsp}"
-    echo "  Content (first 30 lines):"
-    head -30 "${_rsp}" | sed 's/^/    /'
-    echo "  libc++ references in .rsp:"
-    grep -i 'libc++' "${_rsp}" | sed 's/^/    /' || echo "    <none>"
-  else
-    echo "  No LLVM .rsp files found (arguments may be inline or files cleaned up)"
-    # Fall back: show any recent .rsp files at all
-    echo "  Any .rsp files in build dir:"
-    find "${LLVM_BUILD}" -name '*.rsp' -newer "${LLVM_BUILD}/build.ninja" 2>/dev/null | head -5 | sed 's/^/    /' || echo "    <none>"
-  fi
-
   _llvm_dylib=$(find "${LLVM_BUILD}" -name 'libLLVM*.dylib' -not -name '*.dSYM' 2>/dev/null | awk 'NR==1')
   if [[ -n "${_llvm_dylib}" ]]; then
-    # === macOS diagnostic: immediate libLLVM.dylib inspection ===
-    echo "  === macOS: immediate libLLVM.dylib check ==="
-    echo "  File: ${_llvm_dylib}"
-    echo "  Size: $(ls -lh "${_llvm_dylib}" | awk '{print $5}')"
-    echo "  otool -L (first 10 lines):"
-    otool -L "${_llvm_dylib}" 2>/dev/null | head -10 | sed 's/^/    /'
-    echo "  nm generic_category (all types):"
-    nm -a "${_llvm_dylib}" 2>/dev/null | grep 'generic_category' | head -5 | sed 's/^/    /' || echo "    <none>"
-    echo "  nm libc++ undefined refs:"
-    nm -u "${_llvm_dylib}" 2>/dev/null | grep 'libc++\|cxx' | head -5 | sed 's/^/    /' || echo "    <none>"
-
-    echo "  Checking libLLVM.dylib symbol exports: ${_llvm_dylib}"
-
     # Check for a known externally-consumed symbol (LLVMInitialize* functions).
     # IMPORTANT: use "grep ... >/dev/null" NOT "grep -q" here.
     # grep -q exits on first match, closing the pipe while nm is still writing
@@ -1997,7 +2135,7 @@ elif is_osx; then
     # pipeline fail even though the symbol was found.
     _test_sym="LLVMInitializeAArch64AsmParser"
     if nm -g "${_llvm_dylib}" 2>/dev/null | grep "${_test_sym}" >/dev/null 2>&1; then
-      echo "  OK: ${_test_sym} exported (global)"
+      echo "  OK: ${_test_sym} exported from libLLVM.dylib"
     else
       echo "  FAIL: ${_test_sym} NOT exported from libLLVM.dylib"
       if _debug && [[ -f "${RECIPE_DIR}/building/debug-macos-dylib.sh" ]]; then
