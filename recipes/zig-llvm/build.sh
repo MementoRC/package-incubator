@@ -1317,11 +1317,10 @@ CMINIT
       -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++"
     )
 elif is_not_unix; then
-    # Windows: override shared library link rule to use zig-cxx-shared.exe (ld.lld directly).
-    # This bypasses zig's c++ driver which has issues with aarch64-windows-gnu
-    # shared library linking. zig-cxx-shared.exe calls ld.lld in MinGW PE mode
-    # (-m arm64pe or -m i386pep), handles -Wl, flag stripping, and passes
-    # --export-all-symbols / --out-implib through correctly.
+    # Windows: override shared library link rule to use `zig cc -shared`.
+    # zig cc handles @response files and -Wl, prefixes natively, so no
+    # wrapper script is needed. zig _14+ probes for libc++ at the install
+    # path set up after Phase 1 and links it dynamically when found.
     #
     # -fvisibility=default: CRITICAL — zig cc compiles with -fvisibility=hidden
     # by default. lld's --export-all-symbols does NOT export hidden symbols.
@@ -1343,59 +1342,16 @@ elif is_not_unix; then
     # NOT _BUILD_PREFIX (/d/a/...) — ninja runs commands via cmd.exe which doesn't
     # understand MSYS2 unix paths.  NOT BUILD_PREFIX (D:\a\...) — cmake treats
     # backslashes as escape characters in set() strings.
-    _zig_cxx_shared_exe="${_BUILD_PREFIX_}/Library/share/zig/wrappers/zig-cxx-shared.exe"
-    # Create win-link-wrapper.py: expands @response files and strips -Wl, prefixes.
-    # zig-cxx-shared.exe strips -Wl, from direct args but NOT from @response files.
-    # LLVM's cmake puts -Wl,--whole-archive etc. in response files.
-    cat > "${SRC_DIR}/win-link-wrapper.py" << PYWRAP
-import sys, os, subprocess
-
-def expand_args(argv):
-    """Expand @response_file arguments inline."""
-    result = []
-    for arg in argv:
-        if arg.startswith('@') and os.path.isfile(arg[1:]):
-            with open(arg[1:]) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        # Response files may have multiple space-separated args per line
-                        result.extend(line.split())
-        else:
-            result.append(arg)
-    return result
-
-def strip_wl(args):
-    """Strip -Wl, prefix and split comma-separated linker flags."""
-    result = []
-    for arg in args:
-        if arg.startswith('-Wl,'):
-            # -Wl,--whole-archive → --whole-archive (1 arg)
-            # -Wl,--out-implib,foo.a → --out-implib foo.a (2 args, split on commas)
-            # -Wl,-L,/some/path → -L /some/path (2 args)
-            parts = arg[4:].split(',')
-            result.extend(parts)
-        else:
-            result.append(arg)
-    return result
-
-if __name__ == '__main__':
-    exe = sys.argv[1]
-    raw_args = sys.argv[2:]
-    expanded = expand_args(raw_args)
-    cleaned = strip_wl(expanded)
-    sys.exit(subprocess.call([exe] + cleaned))
-PYWRAP
-    echo "  Created win-link-wrapper.py"
-    # Link template calls: python win-link-wrapper.py zig-cxx-shared.exe <args...>
-    _zig_cxx_shared_fwd="python ${_SRC_DIR_}/win-link-wrapper.py ${_zig_cxx_shared_exe}"
-    # zig-cxx-shared.exe calls ld.lld directly, bypassing zig's driver which
-    # normally generates MinGW import libraries on-demand from .def files and
-    # passes full paths to lld. zig ships .def files (not pre-built .a/.lib)
-    # in lib/zig/libc/mingw/{lib-common,lib64,libarm64}/.
+    _zig_cc_exe="${_BUILD_PREFIX_}/Library/bin/x86_64-w64-mingw32-zig.exe"
+    # zig cc -shared handles CRT, compiler-rt, and system import libs automatically.
+    # zig _14 probes for a shared libc++ at $BUILD_PREFIX/lib/zig-llvm/lib/libc++.dll.a
+    # (symlinked after Phase 1 runtimes build) and links it dynamically when found.
+    # Pre-generate MinGW import libraries from .def files as belt-and-suspenders;
+    # having them in -L won't conflict with zig's own auto-generated imports.
     #
-    # Fix: pre-generate the required import libraries using zig dlltool before
-    # the LLVM build, into a known directory. Then pass -L to the link template.
+    # zig cc -shared is only confirmed working on x86_64-windows-gnu.
+    # aarch64 hangs for 100+ seconds and produces an empty implib; that path
+    # still needs a different approach and is handled separately.
     _mingw_implib_dir="${SRC_DIR}/_mingw_implibs"
     mkdir -p "${_mingw_implib_dir}"
     _zig_lib_dir="${_BUILD_PREFIX}/Library/lib/zig"
@@ -1466,61 +1422,10 @@ PYWRAP
     echo "  Preprocessed ${_cpp_count} .def.in files"
     echo "  Generated ${_gen_count} import libraries (${_gen_fail} failures)"
 
-    # uuid is NOT a .def-based import lib — it's a static lib compiled from
-    # libc/mingw/libsrc/uuid.c (300+ GUID definitions).  zig's frontend compiles
-    # it on-the-fly when invoked as 'zig cc', but zig-cxx-shared.exe calls LLD
-    # directly and cannot auto-compile source libs.  Build it explicitly.
-    _uuid_src="${_zig_lib_dir}/libc/mingw/libsrc/uuid.c"
-    _uuid_out="${_mingw_implib_dir}/libuuid.a"
-    if [[ -f "${_uuid_src}" ]]; then
-      echo "  Compiling libuuid.a from ${_uuid_src}..."
-      _uuid_obj="${_mingw_implib_dir}/uuid.o"
-      if "${_zig_bin}" cc -target "${ZIG_TRIPLET}" -c \
-          -DINITGUID \
-          "${_uuid_src}" -o "${_uuid_obj}" 2>&1; then
-        "${_zig_bin}" ar rcs "${_uuid_out}" "${_uuid_obj}" 2>&1
-        echo "  libuuid.a created ($(wc -c < "${_uuid_out}") bytes)"
-      else
-        echo "  WARNING: failed to compile uuid.c"
-      fi
-    else
-      echo "  WARNING: uuid.c not found at ${_uuid_src}"
-    fi
-
-    # === Compile MinGW DLL CRT startup object ===
-    # zig-cxx-shared.exe calls ld.lld directly, bypassing zig's driver which normally
-    # compiles CRT objects on-the-fly from libc/mingw/crt/ source.  Without dllcrt2.o,
-    # lld fails with "undefined symbol: DllMainCRTStartup".
-    # Also compile mingw_helpers.o (needed by CRT) and build a minimal libmingw_crt.a.
-    _crt_dir="${_zig_lib_dir}/libc/mingw/crt"
-    _crt_out="${_mingw_implib_dir}"
-    echo "  Compiling MinGW DLL CRT objects from ${_crt_dir}..."
-    for _crt_src in crtdll.c dll_argv.c cinitexe.c pesect.c mingw_helpers.c pseudo-reloc.c pseudo-reloc-list.c; do
-      _crt_c="${_crt_dir}/${_crt_src}"
-      _crt_o="${_crt_out}/${_crt_src%.c}.o"
-      if [[ -f "${_crt_c}" ]]; then
-        "${_zig_bin}" cc -target "${ZIG_TRIPLET}" -c "${_crt_c}" -o "${_crt_o}" 2>&1 || \
-          echo "    WARNING: failed to compile ${_crt_src}"
-      fi
-    done
-    # Bundle CRT objects into a static lib for easier inclusion in link template
-    _crt_objs=("${_crt_out}"/crtdll.o "${_crt_out}"/dll_argv.o "${_crt_out}"/cinitexe.o \
-               "${_crt_out}"/pesect.o "${_crt_out}"/mingw_helpers.o \
-               "${_crt_out}"/pseudo-reloc.o "${_crt_out}"/pseudo-reloc-list.o)
-    _existing_objs=()
-    for _o in "${_crt_objs[@]}"; do
-      [[ -f "$_o" ]] && _existing_objs+=("$_o")
-    done
-    if [[ ${#_existing_objs[@]} -gt 0 ]]; then
-      "${_zig_bin}" ar rcs "${_crt_out}/libmingw_crt.a" "${_existing_objs[@]}" 2>&1
-      echo "  libmingw_crt.a created (${#_existing_objs[@]} objects, $(wc -c < "${_crt_out}/libmingw_crt.a") bytes)"
-    else
-      echo "  WARNING: no CRT objects compiled"
-    fi
-
     # Verify critical libs exist
+    # uuid and mingw_crt are omitted: zig cc -shared compiles these automatically.
     _critical_ok=1
-    for _crit in kernel32 shell32 psapi advapi32 ws2_32 ole32 uuid mingw_crt; do
+    for _crit in kernel32 shell32 psapi advapi32 ws2_32 ole32; do
       if [[ ! -f "${_mingw_implib_dir}/lib${_crit}.a" ]]; then
         echo "  FATAL: lib${_crit}.a was not generated"
         _critical_ok=0
@@ -1538,7 +1443,7 @@ PYWRAP
     _mingw_implib_dir_cmake="${_SRC_DIR_}/_mingw_implibs"
     cat >> "${_cmake_project_include}" << CMINIT
 # Normal variable (original approach):
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cxx_shared_fwd} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -L${_PREFIX_}/Library/lib/zig-llvm/lib -o <TARGET> -Wl,--out-implib,<TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES> -lmingw_crt -lucrtbase -lc++ -lkernel32")
+set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cc_exe} cc -shared -target x86_64-windows-gnu <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -o <TARGET> -Wl,--out-implib,<TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES>")
 # CACHE FORCE (cmake 3.31+ may not propagate normal vars to ninja generator):
 set(CMAKE_CXX_CREATE_SHARED_LIBRARY "\${CMAKE_CXX_CREATE_SHARED_LIBRARY}" CACHE STRING "CXX shared library link rule" FORCE)
 message(STATUS ">>> CMAKE_CXX_CREATE_SHARED_LIBRARY set to: \${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
@@ -1585,8 +1490,8 @@ if is_osx; then
   _template_marker="macos-link-wrapper"
   _template_label="macos-link-wrapper.sh"
 elif is_not_unix; then
-  _template_marker="zig-cxx-shared"
-  _template_label="zig-cxx-shared.exe"
+  _template_marker="x86_64-windows-gnu"
+  _template_label="zig cc -shared -target x86_64-windows-gnu"
 else
   _template_marker="zig-cxx-shared"
   _template_label="zig-cxx-shared"
