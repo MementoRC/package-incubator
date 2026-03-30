@@ -399,6 +399,19 @@ if is_linux; then
   perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;-lzstd;-lxml2;-lz;-L${PREFIX}/lib/zig-llvm/lib;-lc++;-lc++abi;-lunwind\"@" "${cmake_build_dir}"/config.h
 elif is_osx; then
   perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-lxml2;-lz;-L${PREFIX}/lib/zig-llvm/lib;${PREFIX}/lib/zig-llvm/lib/libc++.dylib\"@" "${cmake_build_dir}"/config.h
+elif is_not_unix; then
+  # cmake finds libLLVM-20.dll in bin/ and records "zig-llvm/bin/libLLVM-20" (no
+  # extension). Zig needs the import lib in lib/ with proper extension. Fix the
+  # path and add libc++ + dependencies.
+  _zig_llvm_lib="${ZIG_LLVM_ROOT//\\//}/lib"
+  echo "=== Windows config.h patching ==="
+  echo "  BEFORE ZIG_LLVM_LIBRARIES:"
+  grep 'ZIG_LLVM_LIBRARIES' "${cmake_build_dir}"/config.h | head -1
+  # bin/libLLVM-20 → lib/libLLVM-20.dll.a (handle both / and \ separators)
+  perl -pi -e 's@zig-llvm[/\\\\]bin[/\\\\](libLLVM-\d+)@zig-llvm/lib/$1.dll.a@g' "${cmake_build_dir}"/config.h
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-lxml2;-lz;-L${_zig_llvm_lib};-lc++\"@" "${cmake_build_dir}"/config.h
+  echo "  AFTER ZIG_LLVM_LIBRARIES:"
+  grep 'ZIG_LLVM_LIBRARIES' "${cmake_build_dir}"/config.h | head -1
 fi
 
 # Create a C++ compiler wrapper that responds to -print-file-name queries.

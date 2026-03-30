@@ -900,15 +900,37 @@ EAS_NODLLEXPORT
     echo "    T7_sys_lld: SKIPPED (system ld.lld not found)"
   fi
 
+  # --- T8: dump .drectve section — check for hidden -exclude-symbols: entries ---
+  echo "  T8: .drectve section of funcs.obj (dllexport version):"
+  "${_native_zig}" objdump -s -j .drectve "${_eas_dir}/funcs.obj" 2>&1 | sed 's/^/    /' || echo "    <objdump failed>"
+  echo "  T8b: .drectve section of funcs_nodllexport.obj (no dllexport):"
+  "${_native_zig}" objdump -s -j .drectve "${_eas_dir}/funcs_nodllexport.obj" 2>&1 | sed 's/^/    /' || echo "    <no .drectve section>"
+
+  # --- T9: -lldmingw explicit — does zig cc skip the MinGW driver? ---
+  echo "  T9: zig cc + -Wl,-lldmingw + --export-all-symbols (force MinGW driver)..."
+  _test_link T9_lldmingw_explicit \
+      -Wl,-lldmingw -Wl,--export-all-symbols \
+      "${_eas_dir}/funcs.obj"
+
+  # --- T10: zig cc -### to show actual lld invocation ---
+  echo "  T10: zig cc -### (showing actual linker command zig constructs):"
+  "${_native_zig}" cc -### -target ${ZIG_TRIPLET} -shared \
+      -Wl,--export-all-symbols \
+      -o /dev/null "${_eas_dir}/funcs.obj" 2>&1 | grep -i 'lld\|mingw\|export\|coff' | head -10 | sed 's/^/    /' \
+      || echo "    <zig cc -### failed or no matching output>"
+
   echo ""
   echo "  Diagnosis:"
   echo "    T1=0/BROKEN → selective-export mode confirmed (bug reproduced)"
   echo "    T2=4/OK or T3=4/OK → zig cc forwards --export-all-symbols correctly"
   echo "    T2=BROKEN + T3=BROKEN + T4=OK → zig cc does NOT forward the flag (zig cc bug)"
   echo "    T4=BROKEN → lld itself ignores --export-all-symbols with dllexport present"
-  echo "    T5=OK → --exclude-symbols workaround works (remove dllexport symbols from auto-export)"
-  echo "    T6=OK → removing __declspec(dllexport) from source fixes it (cmake patch needed)"
-  echo "    T7=OK → system lld works, zig's bundled lld is broken/old (use -DCMAKE_LINKER=...)"
+  echo "    T5=OK → --exclude-symbols workaround works"
+  echo "    T6=OK → removing __declspec(dllexport) from source fixes it (Patch 0005)"
+  echo "    T7=OK → system lld works, zig's bundled lld is broken/old"
+  echo "    T8: check for -exclude-symbols: in .drectve (hidden visibility auto-exclusion)"
+  echo "    T9=OK → zig cc was missing -lldmingw (MinGW driver not activated)"
+  echo "    T10: shows zig's actual lld invocation (check for -lldmingw flag)"
 
   mv "${_eas_dir}" /tmp/_export_all_test_done 2>/dev/null || true
 fi
@@ -1513,6 +1535,7 @@ elif is_not_unix; then
     _gen_count=0
     _gen_fail=0
     _cpp_count=0
+    { set +x; } 2>/dev/null  # suppress trace for ~400 dlltool iterations
     for _def_dir in "${_zig_mingw_def}/lib-common" "${_zig_mingw_arch_def}"; do
       if [[ ! -d "${_def_dir}" ]]; then
         echo "  WARNING: .def directory not found: ${_def_dir}"
@@ -1546,6 +1569,7 @@ elif is_not_unix; then
         fi
       done
     done
+    set -x
     echo "  Preprocessed ${_cpp_count} .def.in files"
     echo "  Generated ${_gen_count} import libraries (${_gen_fail} failures)"
 
