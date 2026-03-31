@@ -20,7 +20,7 @@ jobs:
         include:
           - { target: linux-64, os: ubuntu-latest, build: linux-64 }
           - { target: win-64, os: windows-latest, build: win-64 }
-          - { target: win-arm64, os: windows-latest, build: win-64 }
+          # - { target: win-arm64, os: windows-latest, build: win-64 }
           # - { target: win-64, os: windows-11-arm, build: win-arm64 }
           # - { target: win-arm64, os: windows-11-arm, build: win-arm64 }
           # - { target: osx-64, os: macos-15-intel, build: osx-arm64 }

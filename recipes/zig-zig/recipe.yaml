@@ -98,51 +98,63 @@ source:
   - url: https://github.com/ziglang/zig/archive/refs/tags/${{ version }}.tar.gz
     sha256: ebe6eb7006f6bbb72e54bd25d0675f2794084909d63a95aa315f2dcf2af5fd99
     patches:
-      # Reduce max_rss from 7.8GB to 7.0GB (CI runners have limited memory)
-      - patches/0001-maxrss-build.zig.patch
       # Relax LLVM target requirements to match zig-llvm package
-      - patches/0001-relax-llvm-required-targets.patch
+      - patches/relax-llvm-required-targets.patch
       # Disable unsupported LLVM target initialization in zig source
-      - patches/0003-disable-unsupported-llvm-targets.patch
+      - patches/disable-unsupported-llvm-targets.patch
       # Comment out unsupported LLVM target extern declarations in bindings.zig
-      - patches/0006-comment-unsupported-llvm-target-bindings.patch
-      # Remove glibc version from LLVM target triple — clang rejects ".2.17" suffix
-      - patches/0007-llvm-triple-no-glibc-version.patch
+      - patches/comment-unsupported-llvm-target-bindings.patch
+      # Prefer shared libc++ in lld (ported from feedstock-2)
+      - patches/Lld.zig-prefer-shared-libcxx.patch
+      - if: unix
+        then:
+          # Reduce max_rss from 7.8GB to 7.0GB (CI runners have limited memory)
+          - patches/linux/build.zig-01-maxrss.patch
       - if: linux
         then:
+          # Remove glibc version from LLVM target triple - clang rejects ".2.17" suffix
+          - patches/linux/llvm.zig-triple-no-glibc-version.patch
           # Allow undefined symbols in zig-llvm's libc++/libc++abi shared libs
           # (they reference glibc symbols newer than the target 2.17)
-          - patches/0003-linux-allow-shlib-undefined-build.zig.patch
-          - patches/0004-linux-link-pthread-dl-build.zig.patch
+          - patches/linux/build.zig-03-allow-shlib-undefined.patch
+          - patches/linux/build.zig-04-link-pthread-dl.patch
           # Fix segfault: zig LLD defaults image_base=0xfff000 for non-PIE, causing
           # DYNAMIC segment to fall outside LOAD segments with shared LLVM linking
-          - patches/0005-linux-image-base-build.zig.patch
+          - patches/linux/build.zig-05-image-base.patch
+          # Ported from feedstock-2: linker, sysroot, and runtime fixes
+          - patches/linux/posix.zig-glibc-2.17-fstat.patch
+          - patches/linux/Object.zig-elf-zstd-decompression.patch
+          - patches/linux/Elf.zig-debug-tag-bare-TODO-panics.patch
+          - patches/linux/link.zig-01-ldscript-relpath-and-l-flags.patch
+          - patches/linux/link.zig-02-default-allow-so-scripts.patch
+          - patches/linux/build.zig-02-doctest-forward-target.patch
       - if: linux and (x86_64 or ppc64le)
         then:
           # Phase 0001: Architecture Support (add PowerPC64LE to CPU arch switches)
-          - patches/0001-ppc64le-arch-support-relocation.zig.patch
-          - patches/0001-ppc64le-arch-support-LdScript.zig.patch
-          - patches/0001-ppc64le-arch-support-Elf.zig.patch
-          - patches/0001-ppc64le-arch-support-Atom.zig.patch
-          - patches/0001-ppc64le-arch-support-LinkerDefined.zig.patch
-          - patches/0001-ppc64le-arch-support-ZigObject.zig.patch
-          - patches/0001-ppc64le-arch-support-synthetic_sections.zig.patch
-          - patches/0001-ppc64le-arch-support-eh_frame.zig.patch
-          - patches/0001-ppc64le-arch-support-Thunk.zig.patch
-          - patches/0001-ppc64le-arch-support-st-other-Object.zig.patch
-          - patches/0001-ppc64le-arch-support-st-other-SharedObject.zig.patch
+          - patches/ppc64le/0001-arch-support-relocation.zig.patch
+          - patches/ppc64le/0001-arch-support-LdScript.zig.patch
+          - patches/ppc64le/0001-arch-support-Elf.zig.patch
+          - patches/ppc64le/0001-arch-support-Atom.zig.patch
+          - patches/ppc64le/0001-arch-support-LinkerDefined.zig.patch
+          - patches/ppc64le/0001-arch-support-ZigObject.zig.patch
+          - patches/ppc64le/0001-arch-support-synthetic_sections.zig.patch
+          - patches/ppc64le/0001-arch-support-eh_frame.zig.patch
+          - patches/ppc64le/0001-arch-support-Thunk.zig.patch
+          - patches/ppc64le/0001-arch-support-st-other-Object.zig.patch
+          - patches/ppc64le/0001-arch-support-st-other-SharedObject.zig.patch
+          - patches/ppc64le/0001-no-lld-build.zig.patch
           # Phase 0002: Build Configuration (LLVM backend, library paths)
-          - patches/0002-ppc64le-build-config-build.zig.patch
+          - patches/ppc64le/0002-build-config-build.zig.patch
           # Phase 0003: Linker Redirection (comprehensive GCC linker with full flag translation)
-          - patches/0003-ppc64le-linker-redirect-link.zig.patch
-          - patches/0003-ppc64le-ldscript-output-format.patch
-          - patches/0003-ppc64le-gcc-linker-comprehensive-Lld.zig.patch
+          - patches/ppc64le/0003-linker-redirect-link.zig.patch
+          - patches/ppc64le/0003-ldscript-output-format.patch
+          - patches/ppc64le/0003-gcc-linker-comprehensive-Lld.zig.patch
       - if: not unix
         then:
-          - patches/0001-win-maxrss-search-prefix-build.zig.patch
-          - patches/0001-win-correct-LLVM_LIBRARIES-CMakeLists.txt.patch
-          - patches/0001-win-remove-ucrt-Lld.zig.patch
-          - patches/0002-win-MD-libzigcpp-CMakeLists.txt.patch
+          - patches/non_unix/build.zig-maxrss-search-prefix.patch
+          - patches/non_unix/CMakeLists.txt-01-correct-LLVM_LIBRARIES.patch
+          - patches/non_unix/Lld.zig-remove-ucrt.patch
+          - patches/non_unix/CMakeLists.txt-02-MD-libzigcpp.patch
     target_directory: zig-source
 
 build:
@@ -240,14 +252,21 @@ outputs:
               - libxml2-16
           - if: not unix
             then:
+              - libxml2
+              - libxml2-16
               - ucrt
               - vc14_runtime
+              - zstd
     tests:
       # Package contents verification - impl has triplet-prefixed binary
       - package_contents:
           strict: true
           bin:
             - ${{ conda_triplet }}-zig
+            - if: not unix
+              then:
+                # DLL isolation: .exe is a shim prepending zig-llvm/bin to PATH
+                - ${{ conda_triplet }}-zig.real
             - if: linux
               then:
                 - ${{ conda_triplet }}-zig-cc-musl

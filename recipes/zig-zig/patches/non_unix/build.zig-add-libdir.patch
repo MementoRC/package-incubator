@@ -6,7 +6,7 @@
 
 --- a/build.zig
 +++ b/build.zig
-@@ -790,7 +790,11 @@
+@@ -793,7 +793,11 @@
      assert(cfg.lld_include_dir.len != 0);
      mod.addIncludePath(.{ .cwd_relative = cfg.lld_include_dir });
      mod.addIncludePath(.{ .cwd_relative = cfg.llvm_include_dir });
