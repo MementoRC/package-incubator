@@ -73,6 +73,13 @@ jobs:
             --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
 
+      - name: Build QEMU user
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-qemu \
+            --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+
       - name: Upload all packages
         shell: bash
         # do not upload on PR

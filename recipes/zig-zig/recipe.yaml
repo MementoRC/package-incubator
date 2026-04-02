@@ -41,6 +41,16 @@ context:
       "unknown"
     }}
 
+  # QEMU architecture name for cross-compiled Linux targets (used in tests)
+  qemu_arch: >-
+    ${{
+      "aarch64"                                      if cross_target_platform_ == "linux-aarch64"         else
+      "ppc64le"                                      if cross_target_platform_ == "linux-ppc64le"         else
+      "riscv64"                                      if cross_target_platform_ == "linux-riscv64"         else
+      "s390x"                                        if cross_target_platform_ == "linux-s390x"           else
+      ""
+    }}
+
   # Build mode detection helpers
   # Which platform builds cross-compilers for each target
   cross_build_platform: >-
@@ -324,6 +334,20 @@ outputs:
               then:
                 - testing/fix_zigllvm_dylibs.sh
                 - testing/debug_libcxx_isolation.py
+
+      # Cross-compilation + QEMU execution test (Linux cross-targets only)
+      - if: linux and qemu_arch != ""
+        then:
+          - script:
+              # Verify zig cross-compiles and qemu-zig runs the result
+              - ${{ conda_triplet }}-zig cc -target ${{ zig_triplet }} -static -o hello_qemu testing/hello_qemu.c
+              - $PREFIX/lib/zig-qemu/qemu-${{ qemu_arch }} ./hello_qemu
+            files:
+              recipe:
+                - testing/hello_qemu.c
+            requirements:
+              run:
+                - qemu-zig-${{ qemu_arch }}
 
   # ==========================================================================
   # ACTIVATION: zig_$cross_target_platform_ (scripts)
