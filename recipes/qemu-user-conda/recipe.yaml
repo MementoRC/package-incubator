@@ -1,0 +1,262 @@
+# =============================================================================
+# qemu-user-patched - Unified QEMU linux-user packages
+# =============================================================================
+# Produces three package variants per target architecture:
+#   - qemu-user-{arch}:    Base with stability patches
+#   - qemu-execve-{arch}:  Base + execve interception (for conda cross-compile)
+#   - qemu-zig-{arch}:     Base + PROT_WRITE (for Zig incremental compilation)
+# =============================================================================
+
+context:
+  build_number: 0
+  version: "10.2.1"
+
+  library: ${{ "Library/" if not unix }}
+  m2: ${{ "m2-" if not unix }}
+  xt: ${{ ".exe" if not unix }}
+
+  # Computed from tg_ variant (target architecture)
+  qemu_user_cpu: ${{ "power9" if tg_ == "ppc64le" else "max" }}
+  qemu_user_sysroot: ${{ "powerpc64le" if tg_ == "ppc64le" else tg_ }}
+  qemu_user_gcc: ${{ qemu_user_sysroot }}-conda-linux-gnu-gcc
+  qemu_user_sysroot_version: ${{ "2.39" if tg_ == "riscv64" else "2.28" }}
+
+recipe:
+  name: qemu-user-patched
+  version: ${{ version }}
+
+source:
+  url: https://gitlab.com/qemu-project/qemu/-/archive/v${{ version }}/qemu-v${{ version }}.tar.gz
+  sha256: 93878bb2a9dcbe8dbcb818ae582396d5145bb8b1a25986126613d9f4360b9098
+  target_directory: qemu_source
+  patches:
+    # Base patches applied to ALL variants (Layer 0 - stability)
+    - patches/base/missing-RESOLVE_CACHED.patch
+    # glibc 2.17 compat defines passed via --extra-cflags in functions.sh
+    # Zig stability patches (from codeberg.org/ziglang/qemu)
+    # Note: mremap/reserved_va fixes (0003-0005) already in upstream QEMU 10.2.1
+    - patches/base/0001-linux-user-signal-fixes.patch
+    - patches/base/0002-linux-user-syscall-fixes.patch
+
+build:
+  number: ${{ build_number }}
+  skip: not linux
+
+outputs:
+  # ===========================================================================
+  # Output 1: qemu-user-{arch} (Base stability package)
+  # ===========================================================================
+  # Use case: General linux-user emulation with stability patches
+  # Patches: Layer 0 only (base stability)
+  # Binary: qemu-{arch}
+  # ===========================================================================
+  - package:
+      name: qemu-user-${{ tg_ }}
+    build:
+      skip: not linux
+      script:
+        env:
+          CONDA_QEMU_TARGET: "${{ tg_ }}"
+          CONDA_QEMU_VARIANT: "user"
+      files:
+        include:
+          - bin/qemu-${{ tg_ }}
+    requirements:
+      ignore_run_exports:
+        by_name:
+          - libslirp
+          - libzlib
+      build:
+        - ${{ compiler('c') }}
+        - ${{ stdlib('c') }}
+        - bash >=5.2
+        - git
+        - meson
+        - ninja
+        - pkg-config
+        - python 3.12.*
+      host:
+        - glib
+        - libcapstone
+        - libslirp
+        - zlib
+      run:
+        - libcapstone
+        - libglib
+    tests:
+      - package_contents:
+          bin:
+            - qemu-${{ tg_ }}
+      - script:
+          - qemu-${{ tg_ }} --version | grep ${{ version }}
+
+  # ===========================================================================
+  # Output 2: qemu-execve-{arch} (Conda cross-compile support)
+  # ===========================================================================
+  # Use case: Run foreign binaries in conda environments without binfmt_misc
+  # Patches: Layer 0 + Layer 1 (base + execve interception)
+  # Binary: qemu-execve-{arch}
+  # ===========================================================================
+  - package:
+      name: qemu-execve-${{ tg_ }}
+    build:
+      skip: not linux
+      script:
+        env:
+          CONDA_QEMU_TARGET: "${{ tg_ }}"
+          CONDA_QEMU_VARIANT: "execve"
+      files:
+        include:
+          - bin/qemu-execve-${{ tg_ }}
+          - etc/conda/activate.d/qemu-execve-${{ tg_ }}-activate.sh
+          - etc/conda/deactivate.d/qemu-execve-${{ tg_ }}-deactivate.sh
+    requirements:
+      ignore_run_exports:
+        by_name:
+          - libslirp
+          - libzlib
+      build:
+        - ${{ compiler('c') }}
+        - ${{ stdlib('c') }}
+        - bash >=5.2
+        - git
+        - meson
+        - ninja
+        - pkg-config
+        - python 3.12.*
+      host:
+        - glib
+        - libcapstone
+        - libslirp
+        - zlib
+      run:
+        - libcapstone
+        - libglib
+    tests:
+      - package_contents:
+          bin:
+            - qemu-execve-${{ tg_ }}
+          files:
+            - etc/conda/activate.d/qemu-execve-${{ tg_ }}-activate.sh
+            - etc/conda/deactivate.d/qemu-execve-${{ tg_ }}-deactivate.sh
+      - script:
+          - qemu-execve-${{ tg_ }} --version | grep ${{ version }}
+          - if: tg_ != "riscv64"
+            then:
+              # Cross-compile test binaries
+              - export QEMU_LD_PREFIX="${PREFIX}/${{ qemu_user_sysroot }}-conda-linux-gnu/sysroot"
+              - export QEMU_CPU=${{ qemu_user_cpu }}
+              - ${{ qemu_user_gcc }} -Wl,-rpath,${QEMU_LD_PREFIX}/lib -Wl,-rpath,${QEMU_LD_PREFIX}/lib64 -L${QEMU_LD_PREFIX}/lib64 -L${QEMU_LD_PREFIX}/lib -Wl,--dynamic-linker=${QEMU_LD_PREFIX}/lib/ld-${{ qemu_user_sysroot_version }}.so -o hello_from tests/hello_from.c
+              - ${{ qemu_user_gcc }} -Wl,-rpath,${QEMU_LD_PREFIX}/lib -Wl,-rpath,${QEMU_LD_PREFIX}/lib64 -L${QEMU_LD_PREFIX}/lib64 -L${QEMU_LD_PREFIX}/lib -Wl,--dynamic-linker=${QEMU_LD_PREFIX}/lib/ld-${{ qemu_user_sysroot_version }}.so -o execve_call tests/execve_call.c
+              # Test 1: Normal execution of cross-compiled binary
+              - qemu-execve-${{ tg_ }} ./hello_from ${{ tg_ }} > output.txt
+              - grep ${{ tg_ }} output.txt
+              # Test 2: execve() of host binary (should work - runs on host)
+              - qemu-execve-${{ tg_ }} ./execve_call /bin/ls > ls_host.txt 2>&1 || true
+              - grep "hello_from" ls_host.txt
+              # Test 3: Redirected execve() of host binary (should fail - wrong ELF)
+              - QEMU_EXECVE=${PREFIX}/bin/qemu-execve-${{ tg_ }} qemu-execve-${{ tg_ }} ./execve_call /bin/ls > ls_redirect.txt 2>&1 || true
+              - grep "Invalid ELF image" ls_redirect.txt || exit 1
+              # Test 4: Redirected execve() of cross-compiled binary (should work via qemu)
+              - QEMU_EXECVE=${PREFIX}/bin/qemu-execve-${{ tg_ }} qemu-execve-${{ tg_ }} ./execve_call ./hello_from EXECVE > execve_test.txt 2>&1 || true
+              - grep "EXECVE" execve_test.txt || exit 1
+            else:
+              - echo "No gcc/sysroot for riscv64"
+        requirements:
+          run:
+            - if: tg_ != "riscv64"
+              then:
+                - gcc_impl_linux-${{ tg_ }}
+                - sysroot_linux-${{ tg_ }} ==${{ qemu_user_sysroot_version }}
+        files:
+          recipe:
+            - tests/hello_from.c
+            - tests/execve_call.c
+
+  # ===========================================================================
+  # Output 3: qemu-zig-{arch} (Zig incremental compilation support)
+  # ===========================================================================
+  # Use case: Run Zig-compiled binaries that use incremental linking
+  # Patches: Layer 0 + Layer 2 (base + PROT_WRITE for code modification)
+  # Binary: qemu-zig-{arch}
+  # Security note: PROT_WRITE on .text segments has security implications
+  # ===========================================================================
+  - package:
+      name: qemu-zig-${{ tg_ }}
+    build:
+      skip: not linux
+      script:
+        env:
+          CONDA_QEMU_TARGET: "${{ tg_ }}"
+          CONDA_QEMU_VARIANT: "zig"
+      files:
+        include:
+          # Isolated under lib/zig-qemu/ to avoid PATH conflicts with qemu-user/qemu-execve
+          - lib/zig-qemu/qemu-zig-${{ tg_ }}
+          - lib/zig-qemu/qemu-${{ tg_ }}
+    requirements:
+      ignore_run_exports:
+        by_name:
+          - libslirp
+          - libzlib
+      build:
+        - ${{ compiler('c') }}
+        - ${{ stdlib('c') }}
+        - bash >=5.2
+        - git
+        - meson
+        - ninja
+        - pkg-config
+        - python 3.12.*
+      host:
+        - glib
+        - libcapstone
+        - libslirp
+        - zlib
+      run:
+        - libcapstone
+        - libglib
+    tests:
+      - package_contents:
+          files:
+            - lib/zig-qemu/qemu-zig-${{ tg_ }}
+            - lib/zig-qemu/qemu-${{ tg_ }}
+      - script:
+          - $PREFIX/lib/zig-qemu/qemu-zig-${{ tg_ }} --version | grep ${{ version }}
+          # Verify symlink works (zig uses qemu-{arch} name via -fqemu)
+          - $PREFIX/lib/zig-qemu/qemu-${{ tg_ }} --version | grep ${{ version }}
+      - if: tg_ == "aarch64" or tg_ == "riscv64"
+        then:
+          - script:
+              # Cross-compile with zig cc targeting musl and verify PROT_WRITE works
+              # ppc64le/s390x skipped: zig lacks self-hosted linker, falls back to GCC
+              - zig cc -target ${{ qemu_user_sysroot }}-linux-musl -static -o test_prot_write testing/test_prot_write.c
+              - $PREFIX/lib/zig-qemu/qemu-zig-${{ tg_ }} ./test_prot_write
+            files:
+              recipe:
+                - testing/test_prot_write.c
+            requirements:
+              run:
+                - zig
+
+about:
+  homepage: https://gitlab.com/qemu-project/qemu
+  summary: 'QEMU linux-user emulator with stability patches and variant support'
+  description: |
+    Unified QEMU linux-user packages with layered patches:
+
+    - qemu-user-{arch}: Base stability patches (mremap, signal fixes from Zig)
+    - qemu-execve-{arch}: execve interception for conda cross-compilation
+    - qemu-zig-{arch}: PROT_WRITE support for Zig incremental compilation
+
+    Based on QEMU with patches from:
+    - Joel Holdsworth (execve interception)
+    - Zig Software Foundation (stability and incremental compilation)
+  license: GPL-2.0-only
+  license_file:
+    - qemu_source/LICENSE
+
+extra:
+  recipe-maintainers:
+    - MementoRC
+  feedstock-name: qemu-user-patched
