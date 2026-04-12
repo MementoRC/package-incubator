@@ -2144,6 +2144,8 @@ elif is_osx; then
   # Two-phase build on macOS: build libLLVM.dylib first, check symbol exports,
   # then build the rest. Without this, a visibility bug wastes the full 2-hour build
   # only to fail at the very end when libclang-cpp.dylib links against libLLVM.dylib.
+  # Same rpath issue as Linux: llvm-min-tblgen needs to find libunwind from LLVM_INSTALL.
+  export DYLD_LIBRARY_PATH="${LLVM_INSTALL}/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
   echo "  Phase 1: Building LLVM shared library..."
   cmake --build "${LLVM_BUILD}" --target LLVM -j"${CPU_COUNT}"
 
@@ -2177,6 +2179,11 @@ elif is_osx; then
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
 else
   # Linux: single-phase build (no known symbol visibility issues with ELF)
+  # llvm-min-tblgen links against libunwind.so.1 (from zig-llvm's shared runtimes).
+  # LLVM's llvm_setup_rpath() sets BUILD_WITH_INSTALL_RPATH=ON which bypasses
+  # CMAKE_BUILD_RPATH. The binary's $ORIGIN/../lib resolves to LLVM_BUILD/lib/
+  # but libunwind.so.1 is in LLVM_INSTALL/lib/. LD_LIBRARY_PATH bridges the gap.
+  export LD_LIBRARY_PATH="${LLVM_INSTALL}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
 fi
 

@@ -113,6 +113,21 @@ post_install() {
     done
   fi
 
+  if [[ "${target_platform}" == linux-* ]]; then
+    # llvm-config.real and tblgen tools link against libunwind.so.1 from
+    # the zig-llvm runtimes. LLVM's llvm_setup_rpath() sets BUILD_WITH_INSTALL_RPATH
+    # which may not embed the correct RPATH for the installed location.
+    # Use $ORIGIN-relative RPATH so it works in any prefix (build, test, install).
+    # Binaries are in lib/zig-llvm/bin/, libs in lib/zig-llvm/lib/.
+    echo "=== Fixing RPATH for Linux binaries ==="
+    for _bin in "${LLVM_INSTALL}/bin/"*; do
+      if [[ -f "${_bin}" ]] && [[ ! -L "${_bin}" ]] && file "${_bin}" | grep -q 'ELF'; then
+        echo "  Setting RPATH on $(basename "${_bin}")"
+        patchelf --set-rpath '$ORIGIN/../lib' "${_bin}" 2>/dev/null || true
+      fi
+    done
+  fi
+
   if [[ "${target_platform}" == linux-* ]] || [[ "${target_platform}" == osx-* ]]; then
     echo "=== Stripping debug info from shared libraries ==="
     find "${LLVM_INSTALL}/lib" -name '*.so*' -not -type l | while read -r lib; do
