@@ -47,6 +47,8 @@ function remove_unneeded() {
 #!/usr/bin/env bash
 # Wrapper for llvm-config that filters out flags unsupported by zig's linker
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Ensure llvm-config.real can find libunwind.so.1 and libc++.so from zig-llvm runtimes
+export LD_LIBRARY_PATH="${SCRIPT_DIR}/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # Find llvm-config.real: try .exe first (Windows), then without
 if [[ -f "${SCRIPT_DIR}/llvm-config.real.exe" ]]; then
   REAL_CONFIG="${SCRIPT_DIR}/llvm-config.real.exe"
