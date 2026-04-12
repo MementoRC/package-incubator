@@ -141,6 +141,8 @@ export LLVM_CONFIG=$(find "${_llvm_config_search[@]}" \( -name 'llvm-config.real
 echo "LLVM_CONFIG: ${LLVM_CONFIG:-NOT SET}"
 
 # Verify zig-llvm is available
+# Ensure llvm-config.real can find libunwind.so.1 and libc++ from zig-llvm runtimes
+export LD_LIBRARY_PATH="${ZIG_LLVM_ROOT}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # For cross-builds, llvm-config.real.exe may be the wrong architecture (e.g. ARM64
 # on x86_64 host). Detect this and fall back to extracting version from headers.
 _llvm_config_works=1
