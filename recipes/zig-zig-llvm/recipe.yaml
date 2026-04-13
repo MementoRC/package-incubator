@@ -1,0 +1,115 @@
+schema_version: 1
+
+context:
+  build_number: 7
+  name: zig-llvm
+  version: 20.1.8
+
+  # Zig triplet mapping (for zig -target flag)
+  zig_triplet: >-
+    ${{
+      "riscv64-linux-gnu." ~ c_stdlib_version      if target_platform == "linux-riscv64"  else
+      "s390x-linux-gnu." ~ c_stdlib_version        if target_platform == "linux-s390x"    else
+      "native"
+    }}
+  # LLVM target triple (standard format, no glibc version suffix)
+  llvm_triplet: >-
+    ${{
+      "riscv64-unknown-linux-gnu"                  if target_platform == "linux-riscv64"  else
+      "s390x-unknown-linux-gnu"                    if target_platform == "linux-s390x"    else
+      "native"
+    }}
+
+package:
+  name: ${{ name }}
+  version: ${{ version }}
+
+source:
+  - url: https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-${{ version }}.tar.gz
+    sha256: a6cbad9b2243b17e87795817cfff2107d113543a12486586f8a055a2bb044963
+    patches:
+      - patches/0001-pass-through-QEMU_LD_PREFIX-SDKROOT.patch
+      - patches/0002-fix-non-unix-zstd-shared-lib-finding.patch
+
+build:
+  number: ${{ build_number }}
+  # Only for sysroot-less Linux targets, always cross-compiled from linux-64
+  skip: not (target_platform in ["linux-riscv64", "linux-s390x"])
+  dynamic_linking:
+    binary_relocation: false
+  script:
+    env:
+      LLVM_TRIPLET: ${{ llvm_triplet }}
+      ZIG_TRIPLET: ${{ zig_triplet }}
+      ZIG_LLVM_DEBUG: 1
+
+      # --- BOOTSTRAPPING ---
+      # Always use the native (build platform) zig — no target sysroot needed
+      CONDA_BUILD_ZIG: >-
+        ${{
+          "x86_64-conda-linux-gnu"                 if build_platform == "linux-64"    else
+          "unknown"
+        }}-zig
+
+requirements:
+  build:
+    # No ${{ stdlib('c') }} — zig provides the sysroot via built-in libc headers
+    - bash >=5.2
+    - cmake >=3.19,<4
+    - git
+    - ninja
+    - lld
+    - patchelf
+    # Always use the native (build-platform) zig — it cross-compiles via -target
+    - zig_${{ build_platform }} >=0.15.2 *_15
+    # Cross-compilation: need host tablegen tools
+    - if: build_platform != target_platform
+      then:
+        - libxml2
+        - zlib
+        - zstd
+  host:
+    - zlib
+    - libxml2
+    - zstd
+  run_exports:
+    - ${{ pin_subpackage(name, upper_bound='x.x') }}
+    # lld static archives directly reference zlib/zstd symbols (ELF section
+    # compression). Consumers linking liblldELF.a etc. need these present.
+    - zlib
+    - zstd
+
+tests:
+  # Verify package structure (Linux-only, cross-compiled)
+  - package_contents:
+      files:
+        - lib/zig-llvm/bin/llvm-config
+        - lib/zig-llvm/bin/llvm-config.real
+        - lib/zig-llvm/bin/llvm-dlltool
+        - lib/zig-llvm/include/c++/*
+        - lib/zig-llvm/include/clang/*
+        - lib/zig-llvm/include/clang-c/*.h
+        - lib/zig-llvm/include/lld/Common/*{.inc,.h}
+        - lib/zig-llvm/include/llvm/*
+        - lib/zig-llvm/include/llvm-c/*.h
+        - lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
+        - lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
+        - lib/zig-llvm/lib/liblld*.a
+        - lib/zig-llvm/lib/libclang-cpp*.so*
+        - lib/zig-llvm/lib/libc++*.so*
+        - lib/zig-llvm/lib/libLLVM*.so*
+        - lib/zig-llvm-path.txt
+
+  # No functional tests — cross-compiled binaries can't execute on linux-64 host
+
+about:
+  homepage: http://llvm.org/
+  repository: https://github.com/llvm/llvm-project
+  license: Apache-2.0 WITH LLVM-exception
+  license_file: llvm/LICENSE.TXT
+  license_family: Apache
+  summary: Development headers and libraries for LLVM compiled with ZIG (sysroot-less cross-build)
+
+extra:
+  recipe-maintainers:
+    - MementoRC

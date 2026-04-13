@@ -12,7 +12,8 @@ rattler-build = ">=0.52.1,<0.60"
 [tasks]
 build-all = "rattler-build build --recipe-dir ./recipes --skip-existing=all -c https://prefix.dev/prefix-package-incubator -c conda-forge"
 build = "rattler-build build -c https://prefix.dev/prefix-package-incubator -c conda-forge --recipe"
-
+build-cp-disabled = "rattler-build build --channel-priority disabled -c conda-forge -c https://prefix.dev/prefix-package-incubator --recipe"
+build-cf-first = "rattler-build build -c conda-forge -c https://prefix.dev/prefix-package-incubator --recipe"
 [feature.update-versions.dependencies]
 python = "3.12.*"
 requests = ">=2.32.3,<3"
