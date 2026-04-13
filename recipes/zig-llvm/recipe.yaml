@@ -140,6 +140,7 @@ tests:
       files:
         - ${{ library }}lib/zig-llvm/bin/llvm-config
         - ${{ library }}lib/zig-llvm/bin/llvm-config.real${{ exe }}
+        - ${{ library }}lib/zig-llvm/bin/llvm-dlltool${{ exe }}
         - ${{ library }}lib/zig-llvm/include/c++/*
         - ${{ library }}lib/zig-llvm/include/clang/*
         - ${{ library }}lib/zig-llvm/include/clang-c/*.h
