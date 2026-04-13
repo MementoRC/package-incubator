@@ -126,11 +126,18 @@ post_install() {
         patchelf --set-rpath '$ORIGIN/../lib' "${_bin}" 2>/dev/null || true
       fi
     done
+    echo "=== Fixing RPATH for Linux shared libraries ==="
+    for _lib in "${LLVM_INSTALL}/lib/"*.so*; do
+      if [[ -f "${_lib}" ]] && [[ ! -L "${_lib}" ]]; then
+        echo "  Setting RPATH on $(basename "${_lib}")"
+        patchelf --set-rpath '$ORIGIN:$ORIGIN/../..' "${_lib}" 2>/dev/null || true
+      fi
+    done
   fi
 
   if [[ "${target_platform}" == linux-* ]] || [[ "${target_platform}" == osx-* ]]; then
     echo "=== Stripping debug info from shared libraries ==="
-    find "${LLVM_INSTALL}/lib" -name '*.so*' -not -type l | while read -r lib; do
+    find "${LLVM_INSTALL}/lib" \( -name '*.so*' -o -name '*.dylib' \) -not -type l | while read -r lib; do
       echo "  Stripping: $(basename "${lib}")"
       llvm-strip --strip-debug "${lib}" 2>/dev/null || strip --strip-debug "${lib}" 2>/dev/null || true
     done

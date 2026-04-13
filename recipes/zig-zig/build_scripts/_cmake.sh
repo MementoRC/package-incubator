@@ -80,7 +80,7 @@ function apply_cmake_patches() {
 
   echo "Applying ${#CMAKE_PATCHES[@]} cmake patches to ${build_dir}"
 
-  local patch_dir="${RECIPE_DIR}/patches/cmake"
+  local patch_dir="${RECIPE_DIR}/patches/non_unix"
   if [[ ! -d "${patch_dir}" ]]; then
     echo "ERROR: Patch directory ${patch_dir} does not exist" >&2
     return 1

@@ -11,7 +11,15 @@ echo === Wrapper Script Validation ===
 
 REM --- 1. Wrapper existence ---
 echo --- Wrapper existence ---
-for %%w in (zig-cc.exe zig-cxx.exe zig-ar.bat zig-ranlib.bat zig-asm.bat zig-rc.bat) do (
+REM Discover the triple prefix from the installed *-zig-cc.exe wrapper filename
+set "_zig_pfx="
+for %%f in ("%_wrapper_dir%\*-zig-cc.exe") do (
+    set "_stem=%%~nf"
+    call set "_zig_pfx=%%_stem:-zig-cc=%%"
+    goto :pfx_found
+)
+:pfx_found
+for %%w in (%_zig_pfx%-zig-cc.exe %_zig_pfx%-zig-cxx.exe %_zig_pfx%-zig-ar.bat %_zig_pfx%-zig-ranlib.bat %_zig_pfx%-zig-asm.bat %_zig_pfx%-zig-rc.bat) do (
     if exist "%_wrapper_dir%\%%w" (
         echo   PASS: %%w exists
         set /a _pass+=1
@@ -19,15 +27,6 @@ for %%w in (zig-cc.exe zig-cxx.exe zig-ar.bat zig-ranlib.bat zig-asm.bat zig-rc.
         echo   FAIL: %%w exists
         set /a _fail+=1
     )
-)
-
-REM --- Windows DLL linker wrapper ---
-if exist "%_wrapper_dir%\zig-cxx-shared.exe" (
-    echo   PASS: zig-cxx-shared.exe exists
-    set /a _pass+=1
-) else (
-    echo   FAIL: zig-cxx-shared.exe exists
-    set /a _fail+=1
 )
 
 REM --- 2. Activation variables ---
@@ -46,14 +45,6 @@ if defined ZIG_RC_CMAKE (
     set /a _pass+=1
 ) else (
     echo   FAIL: ZIG_RC_CMAKE is set
-    set /a _fail+=1
-)
-
-if defined ZIG_CXX_SHARED (
-    echo   PASS: ZIG_CXX_SHARED is set
-    set /a _pass+=1
-) else (
-    echo   FAIL: ZIG_CXX_SHARED is set
     set /a _fail+=1
 )
 

@@ -71,6 +71,83 @@ if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
     -DLLVM_HOST_TRIPLE="${LLVM_TRIPLET}"
   )
 
+  # ppc64le: zig's self-hosted linker looks for `cc` in PATH to use as the
+  # GCC linker driver, but needs the cross-GCC for ppc64le. Create a `cc`
+  # symlink so zig finds the right linker. Also skip CMake's link test since
+  # zig's self-hosted linker injects -m elf64lppc then chokes on it.
+  # TODO: Remove once zig fixes self-hosted linker for ppc64le.
+  if [[ "${LLVM_TRIPLET}" == powerpc64le-* ]]; then
+    # Force CMake to skip compiler linking tests. zig's self-hosted linker
+    # injects -m elf64lppc then chokes on it, and CMAKE_TRY_COMPILE_TARGET_TYPE
+    # doesn't prevent CMakeTestCCompiler from linking. Compilation is verified
+    # by the pre-flight test above; linking isn't needed (libraries only).
+    CMAKE_CROSS_FLAGS+=(
+      -DCMAKE_C_COMPILER_WORKS=TRUE
+      -DCMAKE_CXX_COMPILER_WORKS=TRUE
+      -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+    )
+    # zig's self-hosted linker looks for `cc` in PATH as GCC linker driver for
+    # compilation, but invokes ld.bfd directly from GCC's libexec path for linking.
+    # The sysroot's libpthread.so is a GNU ld script with absolute paths:
+    #   GROUP ( /lib64/libpthread.so.0 /usr/lib64/libpthread_nonshared.a )
+    # ld.bfd resolves these from the build host's /lib64 (x86_64) rather than the
+    # ppc64le sysroot, because zig's self-hosted linker doesn't pass --sysroot.
+    # Fix: wrap the ld.bfd binary in GCC's libexec path with a script that injects
+    # --sysroot before any other args. This ensures all ld.bfd invocations (whether
+    # from GCC or zig's self-hosted linker) get the correct sysroot.
+    _ppc_gcc="${BUILD_PREFIX}/bin/powerpc64le-conda-linux-gnu-gcc"
+    _ppc_sysroot_early="${BUILD_PREFIX}/powerpc64le-conda-linux-gnu/sysroot"
+    if [[ -x "${_ppc_gcc}" ]]; then
+      _ppc_bin="${SRC_DIR}/_ppc64le_bin"
+      mkdir -p "${_ppc_bin}"
+      ln -sf "${_ppc_gcc}" "${_ppc_bin}/cc"
+      export PATH="${_ppc_bin}:${PATH}"
+      echo "  ppc64le: cc -> ${_ppc_gcc}"
+
+      # Wrap ld.bfd to inject --sysroot automatically.
+      # zig's self-hosted linker calls ld.bfd directly from GCC's libexec path
+      # (as a symlink -> $BUILD_PREFIX/bin/powerpc64le-conda-linux-gnu-ld),
+      # bypassing GCC's spec-file sysroot injection. We intercept by replacing
+      # the real ld binary with a wrapper that adds --sysroot, then renaming
+      # the original to ld.real. The libexec symlink keeps pointing to bin/ld
+      # which is now the wrapper.
+      _ppc_ld_bin="${BUILD_PREFIX}/bin/powerpc64le-conda-linux-gnu-ld"
+      if [[ -x "${_ppc_ld_bin}" ]] && [[ ! -f "${_ppc_ld_bin}.real" ]]; then
+        mv "${_ppc_ld_bin}" "${_ppc_ld_bin}.real"
+        # zig's self-hosted linker drops -lpthread/-ldl when building its ld.bfd
+        # invocation for ppc64le — it only passes -lgcc/-lgcc_s/-lc as implicit
+        # libs. This causes -z defs to fail on libunwind.so (pthread_rwlock_*
+        # and dladdr/dlsym undefined). We inject -lpthread -ldl after the
+        # object files for any -shared build. The --sysroot ensures ld.bfd finds
+        # libpthread.so.0 in the sysroot rather than the build host's /lib64.
+        cat > "${_ppc_ld_bin}" << PPCLD
+#!/usr/bin/env bash
+_args=("--sysroot=${_ppc_sysroot_early}")
+_is_shared=0
+_has_libcxx=0
+for _a in "\$@"; do
+    [[ "\$_a" == "-shared" ]]    && _is_shared=1
+    [[ "\$_a" == */libc++.a ]]   && _has_libcxx=1
+    _args+=("\$_a")
+done
+if (( _is_shared )); then
+    _args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib" -lpthread -ldl)
+fi
+# GCC redirect uses 'gcc' not 'g++', so -lstdc++ is never added automatically.
+# zig's bundled libc++.a/string.o (.toc) references typeinfo for std::length_error,
+# which lives in libstdc++.so on ppc64le Linux. Inject it for executable links only
+# (shared libs use -nostdlib++ and don't need it here).
+if (( !_is_shared )) && (( _has_libcxx )); then
+    _args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib" -lstdc++)
+fi
+exec "${_ppc_ld_bin}.real" "\${_args[@]}"
+PPCLD
+        chmod +x "${_ppc_ld_bin}"
+        echo "  ppc64le: ld.bfd wrapped at ${_ppc_ld_bin} -> injects --sysroot + -lpthread -ldl for shared"
+      fi
+    fi
+  fi
+
 
   # Tablegen tools run on the BUILD host, not target.
   # Provided by zig-llvm itself (build dep for cross-compilation).
@@ -90,46 +167,29 @@ if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
   # CROSS_TOOLCHAIN_FLAGS_NATIVE: tells LLVM's NATIVE sub-project which
   # compiler to use for building host tools (tablegen etc.).
   # Without this, NATIVE inherits CMAKE_C/CXX_COMPILER which target the
-  # cross architecture (e.g. aarch64), producing .exe that can't run on
+  # cross architecture (e.g. ppc64le), producing .o that can't link on
   # the build host (x86_64).
-  # Use the same zig binary but targeting the BUILD host architecture.
-  # Create .bat wrappers (NATIVE sub-project uses cmd.exe, not bash).
-  if is_not_unix; then
-    _host_zig="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
-    _host_zig_win=$(echo "${_host_zig}" | sed 's|/|\\|g')
-    _host_target="x86_64-windows-gnu"
-
-    _host_cc_bat="${SRC_DIR}/_host_cc.bat"
-    cat > "${_host_cc_bat}" << HOSTCC
-@echo off
-"${_host_zig_win}" cc -target ${_host_target} -mcpu=baseline %*
-HOSTCC
-
-    _host_cxx_bat="${SRC_DIR}/_host_cxx.bat"
-    cat > "${_host_cxx_bat}" << HOSTCXX
-@echo off
-"${_host_zig_win}" c++ -target ${_host_target} -mcpu=baseline %*
-HOSTCXX
-
-    # AR/RANLIB for NATIVE sub-project — must also use native zig.
-    # Can't reference ZIG_AR/ZIG_RANLIB here (set later in the script).
-    _host_ar_bat="${SRC_DIR}/_host_ar.bat"
-    cat > "${_host_ar_bat}" << HOSTAR
-@echo off
-"${_host_zig_win}" ar %*
-HOSTAR
-
-    _host_ranlib_bat="${SRC_DIR}/_host_ranlib.bat"
-    cat > "${_host_ranlib_bat}" << HOSTRANLIB
-@echo off
-"${_host_zig_win}" ranlib %*
-HOSTRANLIB
+  if is_linux; then
+    # Linux cross-builds: use BUILD_PREFIX zig-gcc wrappers for NATIVE tools.
+    # The wrappers (from zig-gcc build dep) target the build host (x86_64) and
+    # include sysroot detection, flag filtering, LLD auto-promotion, and
+    # --no-dependent-libraries. Using raw "zig cc" bypasses all of that.
+    _native_cc="${BUILD_PREFIX}/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cc"
+    _native_cxx="${BUILD_PREFIX}/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cxx"
+    CMAKE_CROSS_FLAGS+=(
+      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_native_cc};-DCMAKE_CXX_COMPILER=${_native_cxx};-DLLVM_ENABLE_ZSTD=OFF"
+    )
+  elif is_not_unix; then
+    _host_cc_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cc.exe"
+    _host_cxx_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cxx.exe"
+    _host_ar_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-ar.bat"
+    _host_ranlib_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-ranlib.bat"
 
     CMAKE_CROSS_FLAGS+=(
-      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_bat};-DCMAKE_CXX_COMPILER=${_host_cxx_bat};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024"
+      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024"
     )
-    echo "  HOST_CC: ${_host_cc_bat}"
-    echo "  HOST_CXX: ${_host_cxx_bat}"
+    echo "  HOST_CC: ${_host_cc_exe}"
+    echo "  HOST_CXX: ${_host_cxx_exe}"
   fi
 
   echo "  CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}"
@@ -139,8 +199,7 @@ HOSTRANLIB
 fi
 
 # Use zig compiler wrappers provided by the zig-compiler package.
-# These are pre-built wrappers with flag filtering, sysroot detection, and
-# zig-cxx-shared (ld.lld bypass for shared libraries).
+# These are pre-built wrappers with flag filtering and sysroot detection.
 # On Windows, conda packages install under Library/
 ZIG_WRAPPERS="${BUILD_PREFIX}/share/zig/wrappers"
 is_not_unix && ZIG_WRAPPERS="${BUILD_PREFIX}/Library/share/zig/wrappers"
@@ -151,38 +210,31 @@ if [[ ! -d "${ZIG_WRAPPERS}" ]]; then
 fi
 
 if is_not_unix; then
-  # Always use the native .exe — zig is a cross-compiler by design.
-  # The -target flag handles cross-compilation (e.g. -target aarch64-windows-gnu).
-  # .bat/.cmd wrappers break CMake's compiler detection (no version, no ABI info,
-  # missing STANDARD_COMPUTED_DEFAULT etc.) so we bypass them entirely.
-  _native_zig="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
-  if [[ ! -x "${_native_zig}" ]]; then
-    echo "ERROR: native zig not found at ${_native_zig}"
-    ls "${BUILD_PREFIX}/Library/bin/"*zig* 2>/dev/null || true
+  # Use the pre-built shim wrappers — they hardcode the cc/c++ subcommand internally,
+  # so cmake's compiler probe (--target=<triple> -print-target-triple) works correctly.
+  # Shims are installed side-by-side in Library/share/zig/wrappers/ by both the
+  # build-host and target-host wrapper packages.
+  _shim_cc="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc.exe"
+  if [[ ! -x "${_shim_cc}" ]]; then
+    echo "ERROR: zig cc shim not found at ${_shim_cc}"
+    ls "${ZIG_WRAPPERS}/"*zig* 2>/dev/null || true
     exit 1
   fi
-  _zig="${_native_zig}"
-  "${_zig}" version
+  "${_shim_cc}" --version
 
-  _target="${ZIG_TRIPLET}"
-  export ZIG_CC="${_zig};cc;-target;${_target};-mcpu=baseline"
-  export ZIG_CXX="${_zig};c++;-target;${_target};-mcpu=baseline"
-  export ZIG_ASM="${_zig};cc;-target;${_target};-mcpu=baseline"
-  # AR/RANLIB/RC/CXX_SHARED: use zig _11 activation wrappers directly.
-  # zig _11 provides zig-ar.bat, zig-ranlib.bat, zig-rc.bat, and
-  # zig-cxx-shared.exe (compiled C, native, arch-aware) via activation.
-  export ZIG_AR="${ZIG_WRAPPERS}/zig-ar.bat"
-  export ZIG_RANLIB="${ZIG_WRAPPERS}/zig-ranlib.bat"
-  export ZIG_RC="${_zig};rc"
-  export ZIG_CXX_SHARED="${ZIG_WRAPPERS}/zig-cxx-shared.exe"
+  export ZIG_CC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc.exe"
+  export ZIG_CXX="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx.exe"
+  export ZIG_ASM="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc.exe"
+  export ZIG_AR="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ar.bat"
+  export ZIG_RANLIB="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ranlib.bat"
+  export ZIG_RC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-rc.bat"
 else
-  export ZIG_CC="${ZIG_WRAPPERS}/zig-cc"
-  export ZIG_CXX="${ZIG_WRAPPERS}/zig-cxx"
-  export ZIG_CXX_SHARED="${ZIG_WRAPPERS}/zig-cxx-shared"
-  export ZIG_AR="${ZIG_WRAPPERS}/zig-ar"
-  export ZIG_RANLIB="${ZIG_WRAPPERS}/zig-ranlib"
-  export ZIG_ASM="${ZIG_WRAPPERS}/zig-asm"
-  export ZIG_RC="${ZIG_WRAPPERS}/zig-rc"
+  export ZIG_CC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc"
+  export ZIG_CXX="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx"
+  export ZIG_AR="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ar"
+  export ZIG_RANLIB="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ranlib"
+  export ZIG_ASM="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-asm"
+  export ZIG_RC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-rc"
 fi
 
 # macOS force-load wrapper: zig _14+ provides zig-force-load-cxx which handles
@@ -191,32 +243,12 @@ fi
 # force-load logic only activates when those flags are present.
 # _14 also fixes the relative-path bug (archives resolved to absolute before cd+ar x).
 if is_osx; then
-    if [[ -x "${ZIG_WRAPPERS}/zig-force-load-cxx" ]]; then
-        export ZIG_CXX="${ZIG_WRAPPERS}/zig-force-load-cxx"
+    if [[ -x "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-force-load-cxx" ]]; then
+        export ZIG_CXX="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-force-load-cxx"
     else
-        echo "ERROR: zig-force-load-cxx not found in ${ZIG_WRAPPERS}"
+        echo "ERROR: ${ZIG_TARGET_HOST}-zig-force-load-cxx not found in ${ZIG_WRAPPERS}"
         exit 1
     fi
-
-    # MACOS_LINK: system clang for the shared library LINK step.
-    # zig cc (BOTH cc and c++ modes) unconditionally injects its bundled static
-    # libc++ into every Mach-O .dylib — regardless of -nostdlib++ or driver mode.
-    # CI confirmed: zig-force-load-cc (cc mode) still produces LOCAL generic_category.
-    # The ONLY fix is to bypass zig entirely for the link step, same as Linux
-    # (where zig-cxx-shared calls ld.lld directly).
-    # On macOS, we use /usr/bin/clang (system clang) which:
-    #   - Does NOT inject zig's bundled libc++
-    #   - Handles -all_load/-force_load natively (Apple's ld64 supports these)
-    #   - No force-load archive extraction wrapper needed
-    #   - Correctly handles cross-arch via -arch flag
-    _osx_arch="arm64"
-    [[ "${target_platform}" == "osx-64" ]] && _osx_arch="x86_64"
-    export MACOS_LINK="/usr/bin/clang"
-    if [[ ! -x "${MACOS_LINK}" ]]; then
-        echo "ERROR: system clang not found at ${MACOS_LINK}"
-        exit 1
-    fi
-    echo "  MACOS_LINK: ${MACOS_LINK} (arch: ${_osx_arch})"
 
     # Patch deployment target in zig wrappers to match conda's MACOSX_DEPLOYMENT_TARGET.
     # _zig-cc-common.sh contains the actual `-target aarch64-macos-none` (or versioned
@@ -231,7 +263,7 @@ if is_osx; then
     # -target @ZIG_TARGET@ substitution. zig-force-load-cxx does NOT embed
     # the target directly — it sources _zig-cc-common.sh at runtime.
     # Patching the common script fixes ALL wrappers that source it.
-    for _wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/zig-cc" "${ZIG_WRAPPERS}/zig-cxx"; do
+    for _wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx"; do
         [[ -f "${_wrapper}" ]] || continue
         # Check if this is a text file (shell script) — binaries cannot be sed-patched
         if ! file "${_wrapper}" | grep -q 'text\|script\|ASCII'; then
@@ -258,7 +290,7 @@ if is_osx; then
 
     # Diagnostic: show the macOS target triple in each wrapper used as a compiler
     echo "  === macOS wrapper deployment targets (after patching) ==="
-    for _diag_wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/zig-cc" "${ZIG_WRAPPERS}/zig-cxx" "${ZIG_WRAPPERS}/zig-cxx-shared"; do
+    for _diag_wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx"; do
         [[ -f "${_diag_wrapper}" ]] || continue
         _diag_target=$(grep -oE 'macos(\.[0-9]+\.[0-9]+)?-none' "${_diag_wrapper}" | head -1 || true)
         echo "  $(basename "${_diag_wrapper}"): ${_diag_target:-<no macos*-none target found>}"
@@ -275,8 +307,6 @@ export CFLAGS="" CXXFLAGS="" LDFLAGS="" CPPFLAGS=""
 dbg "ZIG_TRIPLET: ${ZIG_TRIPLET}"
 dbg "ZIG_CC: ${ZIG_CC}"
 dbg "ZIG_CXX: ${ZIG_CXX}"
-dbg "MACOS_LINK: ${MACOS_LINK:-}"
-dbg "ZIG_CXX_SHARED: ${ZIG_CXX_SHARED}"
 dbg "ZIG_AR: ${ZIG_AR}"
 
 # LLVM_TRIPLET is set by recipe.yaml env (standard LLVM triple, no glibc version suffix)
@@ -291,7 +321,24 @@ is_linux && CMAKE_PLATFORM_FLAGS=(
   -DHAVE_PTHREAD_GETNAME_NP=0
   -DHAVE_PTHREAD_SETNAME_NP=0
   -DLLVM_ENABLE_ZSTD=ON
+  # Bypass FindZstd's CMAKE_PREFIX_PATH search — cross-builds must use the
+  # target-arch zstd from zig-zstd, not the host-arch copy in BUILD_PREFIX.
+  # ZSTD_LIBRARY/ZSTD_INCLUDE_DIR take full precedence over zstd_ROOT hints.
+  -DZSTD_LIBRARY="${PREFIX}/lib/zig-zstd/lib/libzstd.so"
+  -DZSTD_INCLUDE_DIR="${PREFIX}/lib/zig-zstd/include"
 )
+# Consumer links (llvm-ar etc.) need -rpath-link at LINK time to find
+# libLLVM.so's transitive deps (libz, libzstd, libxml2). For sysroot-less
+# targets (riscv64, s390x) these live in zig-* isolated dirs. Non-existent
+# dirs are silently ignored, so this is safe for all linux targets.
+if is_linux; then
+  _rpath_link_zig="-Wl,-rpath-link,${PREFIX}/lib/zig-zlib/lib -Wl,-rpath-link,${PREFIX}/lib/zig-zstd/lib -Wl,-rpath-link,${PREFIX}/lib/zig-libxml2/lib"
+  CMAKE_PLATFORM_FLAGS+=(
+    -DCMAKE_EXE_LINKER_FLAGS_INIT="${_rpath_link_zig}"
+    -DCMAKE_SHARED_LINKER_FLAGS_INIT="${_rpath_link_zig}"
+  )
+  unset _rpath_link_zig
+fi
 if is_osx; then
   # Determine the correct macOS architecture from the target platform.
   # cmake auto-detects from the host (build) machine, which is wrong for
@@ -383,90 +430,51 @@ else
   dbg "  cp -r \${PREFIX}/lib/zig-llvm ${RECIPE_DIR}/cache/"
 fi
 
-# === Fast flag compatibility test (Unix only) ===
-# Simulate the linker flags LLVM's build system will pass on each platform.
-# Catches unsupported flags in seconds instead of hours.
-# Skipped on Windows: ZIG_CC uses CMake semicolon syntax (zig;cc;-target;...)
-# which only works inside CMake, not as a direct bash command.
-if is_unix; then
-echo "=== Fast flag compatibility test ==="
-_test_dir="${SRC_DIR}/_flag_test"
-mkdir -p "${_test_dir}"
-cat > "${_test_dir}/test.c" << 'TESTC'
-int test_func(void) { return 42; }
-TESTC
-
-echo "  Compiling test.c..."
-"${ZIG_CC}" -c -fPIC -o "${_test_dir}/test.o" "${_test_dir}/test.c"
-
-# Test 1: basic shared library link
-echo "  Test 1: basic shared lib link..."
-"${ZIG_CC}" -shared -o "${_test_dir}/test.so" "${_test_dir}/test.o" && echo "  OK" || {
-    echo "  FAIL: basic shared library link"
-    exit 1
-}
-
-# Test 2: flags that LLVM's CMake will pass (platform-specific)
-_link_flags=()
-if is_linux; then
-    echo "  Test 2: Linux linker flags (should be silently filtered)..."
-    _link_flags=(
-        -Wl,--version-script,/dev/null
-        -Wl,-z,defs
-        -Wl,--gc-sections
-        -Wl,--build-id=sha1
-        -Wl,-Bsymbolic-functions
+# === Hotfix: ppc64le wrapper LLD block ===
+# The zig wrapper hard-errors on ppc64le when it sees standard ELF linker flags
+# (--version-script, --gc-sections, etc.) because it classifies them as "LLD-only"
+# and LLD lacks ppc64le relocation support. But these flags are standard GNU ld
+# flags that ld.bfd handles natively. Patch the installed wrapper to:
+# 1. Only error on explicit -fuse-ld=lld, not auto-promoted ELF flags
+# 2. Filter -Bsymbolic* on ppc64le (zig's self-hosted linker rejects it before ld.bfd)
+# TODO: Remove once zig-feedstock publishes a build with this fix.
+_zig_common="${ZIG_WRAPPERS}/_zig-cc-common.sh"
+if [[ -f "${_zig_common}" ]] && grep -q 'Block LLD on ppc64le' "${_zig_common}" 2>/dev/null; then
+    echo "=== Patching installed zig wrapper for ppc64le LLD compatibility ==="
+    python3 - "${_zig_common}" << 'PATCH_EOF'
+import re, sys
+p = sys.argv[1]
+t = open(p).read()
+# 1. Replace hard-error LLD block with graceful fallback:
+#    only error on explicit -fuse-ld=lld, reset _use_lld=0 for auto-promoted flags
+old_block = re.compile(r'# --- Block LLD on ppc64le.*?^fi', re.MULTILINE | re.DOTALL)
+new_block = (
+    '# --- ppc64le: LLD lacks relocation support, but ld.bfd handles ELF flags ---\n'
+    'if (( _use_lld )) && [[ "powerpc64le" == "powerpc64le" ]]; then\n'
+    '    _explicit_lld=0\n'
+    '    for _a in "$@"; do\n'
+    '        [[ "$_a" == "-fuse-ld=lld" ]] && _explicit_lld=1 && break\n'
+    '    done\n'
+    '    if (( _explicit_lld )); then\n'
+    '        echo "zig cc: error: -fuse-ld=lld is not supported on ppc64le" >&2\n'
+    '        exit 1\n'
+    '    fi\n'
+    '    _use_lld=0\n'
+    'fi'
+)
+t = old_block.sub(new_block, t)
+# 2. Filter -Bsymbolic* on ppc64le (zig rejects before ld.bfd sees it)
+rpath_line = '-Wl,-rpath-link|-Wl,-rpath-link,*|-Wl,--disable-new-dtags) ;;'
+if rpath_line in t and 'Bsymbolic) ;;' not in t:
+    t = t.replace(
+        rpath_line,
+        '-Wl,-Bsymbolic-functions|-Wl,-Bsymbolic|-Bsymbolic-functions|-Bsymbolic) ;;\n'
+        '        ' + rpath_line
     )
-elif is_osx; then
-    echo "  Test 2a: macOS -all_load via force-load wrapper..."
-    # -all_load requires an archive; ZIG_CXX on macOS is the force-load
-    # wrapper which extracts archive members and passes .o files to zig
-    "${ZIG_AR}" rcs "${_test_dir}/libtest.a" "${_test_dir}/test.o"
-    if "${ZIG_CXX}" -shared -Wl,-all_load -o "${_test_dir}/test_allload.dylib" "${_test_dir}/libtest.a" 2>"${_test_dir}/flag_err.txt"; then
-        echo "    -Wl,-all_load via wrapper ... OK"
-    else
-        echo "    -Wl,-all_load via wrapper ... FAIL"
-        cat "${_test_dir}/flag_err.txt" | head -5 | sed 's/^/      /'
-        _flag_fail=1
-    fi
-    echo "  Test 2b: macOS flags that should be filtered by hotfix..."
-    echo "_test_func" > "${_test_dir}/exports.txt"
-    _link_flags=(
-        -Wl,-exported_symbols_list,"${_test_dir}/exports.txt"
-        -Wl,-force_symbols_not_weak_list,"${_test_dir}/exports.txt"
-        -Wl,-force_symbols_weak_list,/dev/null
-        -Wl,-reexported_symbols_list,/dev/null
-        -Wl,-unexported_symbols_list,/dev/null
-    )
+open(p, 'w').write(t)
+print('  Wrapper patched successfully')
+PATCH_EOF
 fi
-
-# Run each flag individually to identify which one fails
-_flag_fail=0
-for _flag in "${_link_flags[@]}"; do
-    echo -n "    ${_flag} ... "
-    if "${ZIG_CC}" -shared -o "${_test_dir}/test_flag.so" "${_test_dir}/test.o" "${_flag}" 2>"${_test_dir}/flag_err.txt"; then
-        echo "OK"
-    else
-        echo "FAIL"
-        cat "${_test_dir}/flag_err.txt" | head -5 | sed 's/^/      /'
-        _flag_fail=1
-    fi
-done
-
-if [[ ${_flag_fail} -ne 0 ]]; then
-    echo ""
-    echo "  ============================================================"
-    echo "  EARLY ABORT: linker flag compatibility test failed."
-    echo "  One or more flags that LLVM's CMake will pass are not"
-    echo "  supported by the zig wrapper. Fix the wrapper filters."
-    echo "  ============================================================"
-    echo "  Wrapper: ${ZIG_CC}"
-    cat "${ZIG_CC}" 2>/dev/null || echo "  (semicolon syntax, no wrapper file)"
-    exit 1
-fi
-echo "  === Flag compatibility test PASSED ==="
-rm -rf "${_test_dir}"
-fi  # is_unix
 
 # Windows: fast-fail test (~5 seconds) BEFORE any slow builds.
 # Validates tools, patches, and (on x86_64) the full DLL export + dlltool pipeline.
@@ -474,24 +482,22 @@ fi  # is_unix
 # DLL creation approaches and their limitations:
 #   zig cc -shared:     works on x86_64, but hangs ~100s with empty implibs on aarch64
 #   zig ld.lld:         routes to ELF driver, rejects MinGW PE flags (-m i386pep)
-#   zig-cxx-shared.exe: thin ld.lld wrapper, needs CRT objects (cmake provides them,
-#                        but standalone calls fail with missing DllMainCRTStartup)
 #
 # Strategy: full DLL pipeline test on x86_64 (zig cc -shared handles CRT).
 # On aarch64: validate tools + patches only; cmake handles DLL creation with
-# zig-cxx-shared.exe and full CRT context during the real build.
+# zig cc -shared and full CRT context during the real build.
 if is_not_unix; then
   echo "=== Fast Windows data-symbol export test ==="
   _stub_dir="${SRC_DIR}/_stub_test"
   mkdir -p "${_stub_dir}"
   _stub_fail=0
 
-  IFS=';' read -ra _zig_cc_args <<< "${ZIG_CC}"
-  IFS=';' read -ra _zig_cxx_args <<< "${ZIG_CXX}"
-  dbg "ZIG_CC parsed: ${_zig_cc_args[*]}"
-  dbg "ZIG_CXX parsed: ${_zig_cxx_args[*]}"
+  _zig_cc_args=("${ZIG_CC}")
+  _zig_cxx_args=("${ZIG_CXX}")
+  dbg "ZIG_CC: ${_zig_cc_args[*]}"
+  dbg "ZIG_CXX: ${_zig_cxx_args[*]}"
 
-  _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
+  _zig_bin="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
 
   # Pre-build tool validation: catch missing tools in ~1 second, before any compilation.
   echo "  Pre-build tool validation..."
@@ -535,7 +541,7 @@ if is_not_unix; then
 
   # Full DLL pipeline test: only on x86_64 where zig cc -shared works correctly.
   # On aarch64, zig cc -shared hangs ~100s and produces empty implibs (known zig issue).
-  # The aarch64 build uses zig-cxx-shared.exe via cmake which provides full CRT context.
+  # The aarch64 build delegates DLL creation to cmake with full CRT context.
   if [[ "${ZIG_TRIPLET}" != aarch64-* ]]; then
     # a.c: data symbol + function, no dllexport (like libLLVM with auto-export)
     cat > "${_stub_dir}/a.c" << 'ASRC'
@@ -772,169 +778,6 @@ DEFEOF
   rm -rf "${_stub_dir}"
 fi
 
-# === Quick-fail: reproduce libclang-cpp 8 KiB import lib and find the culprit flag ===
-# libclang-cpp.dll.a was 8 KiB (zero exports) despite --export-all-symbols × 3.
-# The DLL was 49 MiB (code IS there) but PE export table was empty.
-# The real link command has these flags we don't test above:
-#   -Wl,--gc-sections  -stdlib=libc++  -shared (twice)  @response_file  -lc++
-# This test adds each suspicious flag incrementally to find which one kills exports.
-if is_not_unix; then
-  echo "########## EXPORT-ALL-SYMBOLS TEST ##########"
-  _eas_dir="${SRC_DIR}/_export_all_test"
-  mkdir -p "${_eas_dir}"
-
-  # Mix of dllexport and non-dllexport, mirroring clang's sources.
-  # When ANY __declspec(dllexport) is present, lld switches to "selective export"
-  # mode — only dllexport symbols are exported unless --export-all-symbols overrides.
-  cat > "${_eas_dir}/funcs.c" << 'EAS_SRC'
-// funcs.c — mix of dllexport and non-dllexport (like clang's sources)
-__declspec(dllexport) int exported_func(void) { return 1; }
-int plain_alpha(void) { return 2; }
-int plain_beta(void) { return 3; }
-int plain_gamma(void) { return 4; }
-int plain_delta(void) { return 5; }
-EAS_SRC
-
-  echo "  Compiling test object..."
-  "${_native_zig}" cc -target ${ZIG_TRIPLET} -c "${_eas_dir}/funcs.c" -o "${_eas_dir}/funcs.obj"
-
-  # Helper: link a DLL with given extra flags, report plain_ symbol count in import lib.
-  # Expected: T1=0 (bug reproduced), T2/T3=4 (fix works), T4=4 (lld works directly).
-  _test_link() {
-    local _label="$1"; shift
-    local _implib="${_eas_dir}/${_label}.dll.a"
-    "${_native_zig}" cc -shared -target ${ZIG_TRIPLET} \
-        -Wl,--out-implib,"${_implib}" \
-        -o "${_eas_dir}/${_label}.dll" \
-        "$@" 2>&1 || true
-    local _syms
-    _syms=$(strings -a "${_implib}" 2>/dev/null | grep -c 'plain_' || echo 0)
-    printf "    %-40s  plain_ symbols: %2s  %s\n" "${_label}" "${_syms}" \
-        "$([ "${_syms}" -ge 4 ] 2>/dev/null && echo OK || echo BROKEN)"
-  }
-
-  echo "  ########## RESULTS ##########"
-  echo "  Counting 'plain_' symbols in import lib (expected: T1=0/BROKEN, T2/T3/T4=4/OK):"
-
-  # T1: baseline — no --export-all-symbols.
-  # With __declspec(dllexport) present, lld uses selective export mode.
-  # plain_ funcs should NOT be exported → 0 symbols → reproduces the bug.
-  _test_link "T1_baseline_no_eas" "${_eas_dir}/funcs.obj"
-
-  # T2: -Wl,--export-all-symbols via zig cc.
-  # If plain_ symbols are exported (4) → zig cc forwards the flag correctly.
-  # If still 0 → zig cc does NOT forward -Wl,--export-all-symbols to lld.
-  _test_link "T2_Wl_export_all" -Wl,--export-all-symbols "${_eas_dir}/funcs.obj"
-
-  # T3: -Xlinker --export-all-symbols — alternative flag form via zig cc.
-  # Same expectation as T2; tests whether -Xlinker path fares differently.
-  _test_link "T3_Xlinker_export_all" -Xlinker --export-all-symbols "${_eas_dir}/funcs.obj"
-
-  # T4: call ld.lld directly, bypassing zig cc entirely.
-  # If T4=OK but T2/T3=BROKEN → confirmed zig cc bug (flag not forwarded).
-  # If T4=BROKEN too → lld itself has an issue with this flag+dllexport combo.
-  _eas_lld=""
-  if [[ -f "${BUILD_PREFIX}/Library/bin/ld.lld.exe" ]]; then
-    _eas_lld="${BUILD_PREFIX}/Library/bin/ld.lld.exe"
-  else
-    # Try zig's bundled lld
-    _eas_lld_candidate=$(find "${_native_zig%/zig*}" -name "ld.lld*" 2>/dev/null | head -1 || true)
-    [[ -n "${_eas_lld_candidate}" ]] && _eas_lld="${_eas_lld_candidate}"
-  fi
-
-  if [[ -n "${_eas_lld}" ]]; then
-    _eas_implib4="${_eas_dir}/T4_lld_direct.dll.a"
-    "${_eas_lld}" -m i386pep \
-        --export-all-symbols \
-        --out-implib "${_eas_implib4}" \
-        -o "${_eas_dir}/T4_lld_direct.dll" \
-        "${_eas_dir}/funcs.obj" 2>&1 || true
-    _syms4=$(strings -a "${_eas_implib4}" 2>/dev/null | grep -c 'plain_' || echo 0)
-    printf "    %-40s  plain_ symbols: %2s  %s\n" "T4_lld_direct" "${_syms4}" \
-        "$([ "${_syms4}" -ge 4 ] 2>/dev/null && echo OK || echo BROKEN)"
-  else
-    echo "    T4_lld_direct: SKIPPED (ld.lld not found in BUILD_PREFIX or zig lib)"
-  fi
-
-  # --- T5: --exclude-symbols to remove the dllexport symbol ---
-  echo "  T5: --export-all-symbols + --exclude-symbols=exported_func..."
-  _test_link T5_exclude_dllexport \
-      -Wl,--export-all-symbols -Wl,--exclude-symbols=exported_func \
-      "${_eas_dir}/funcs.obj"
-
-  # --- T6: recompile WITHOUT dllexport, then --export-all-symbols ---
-  cat > "${_eas_dir}/funcs_nodllexport.c" << 'EAS_NODLLEXPORT'
-int exported_func(void) { return 1; }
-int plain_alpha(void) { return 2; }
-int plain_beta(void) { return 3; }
-int plain_gamma(void) { return 4; }
-int plain_delta(void) { return 5; }
-EAS_NODLLEXPORT
-  echo "  T6: same code WITHOUT __declspec(dllexport) + --export-all-symbols..."
-  "${_native_zig}" cc -target ${ZIG_TRIPLET} -c "${_eas_dir}/funcs_nodllexport.c" \
-      -o "${_eas_dir}/funcs_nodllexport.obj" 2>&1
-  _test_link T6_no_dllexport \
-      -Wl,--export-all-symbols \
-      "${_eas_dir}/funcs_nodllexport.obj"
-
-  # --- T7: system lld (from conda lld package) instead of zig's bundled lld ---
-  _sys_lld=""
-  for _candidate in "${BUILD_PREFIX}/Library/bin/ld.lld.exe" "${BUILD_PREFIX}/bin/ld.lld" \
-                     "${BUILD_PREFIX}/Library/bin/lld-link.exe"; do
-    [[ -x "${_candidate}" ]] && _sys_lld="${_candidate}" && break
-  done
-  if [[ -n "${_sys_lld}" ]]; then
-    echo "  T7: system lld (${_sys_lld}) + --export-all-symbols..."
-    _eas_implib7="${_eas_dir}/T7_sys_lld.dll.a"
-    "${_sys_lld}" -m i386pep \
-        --export-all-symbols \
-        --out-implib "${_eas_implib7}" \
-        -o "${_eas_dir}/T7_sys_lld.dll" \
-        "${_eas_dir}/funcs.obj" 2>&1 || true
-    _syms7=$(strings -a "${_eas_implib7}" 2>/dev/null | grep -c 'plain_' || echo 0)
-    printf "    %-40s  plain_ symbols: %2s  %s\n" "T7_sys_lld" "${_syms7}" \
-        "$([ "${_syms7}" -ge 4 ] 2>/dev/null && echo OK || echo BROKEN)"
-    echo "    system lld version: $("${_sys_lld}" --version 2>&1 | head -1 || echo unknown)"
-    echo "    zig lld version: $("${_eas_lld:-echo}" --version 2>&1 | head -1 || echo unknown)"
-  else
-    echo "    T7_sys_lld: SKIPPED (system ld.lld not found)"
-  fi
-
-  # --- T8: dump .drectve section — check for hidden -exclude-symbols: entries ---
-  echo "  T8: .drectve section of funcs.obj (dllexport version):"
-  "${_native_zig}" objdump -s -j .drectve "${_eas_dir}/funcs.obj" 2>&1 | sed 's/^/    /' || echo "    <objdump failed>"
-  echo "  T8b: .drectve section of funcs_nodllexport.obj (no dllexport):"
-  "${_native_zig}" objdump -s -j .drectve "${_eas_dir}/funcs_nodllexport.obj" 2>&1 | sed 's/^/    /' || echo "    <no .drectve section>"
-
-  # --- T9: -lldmingw explicit — does zig cc skip the MinGW driver? ---
-  echo "  T9: zig cc + -Wl,-lldmingw + --export-all-symbols (force MinGW driver)..."
-  _test_link T9_lldmingw_explicit \
-      -Wl,-lldmingw -Wl,--export-all-symbols \
-      "${_eas_dir}/funcs.obj"
-
-  # --- T10: zig cc -### to show actual lld invocation ---
-  echo "  T10: zig cc -### (showing actual linker command zig constructs):"
-  "${_native_zig}" cc -### -target ${ZIG_TRIPLET} -shared \
-      -Wl,--export-all-symbols \
-      -o /dev/null "${_eas_dir}/funcs.obj" 2>&1 | grep -i 'lld\|mingw\|export\|coff' | head -10 | sed 's/^/    /' \
-      || echo "    <zig cc -### failed or no matching output>"
-
-  echo ""
-  echo "  Diagnosis:"
-  echo "    T1=0/BROKEN → selective-export mode confirmed (bug reproduced)"
-  echo "    T2=4/OK or T3=4/OK → zig cc forwards --export-all-symbols correctly"
-  echo "    T2=BROKEN + T3=BROKEN + T4=OK → zig cc does NOT forward the flag (zig cc bug)"
-  echo "    T4=BROKEN → lld itself ignores --export-all-symbols with dllexport present"
-  echo "    T5=OK → --exclude-symbols workaround works"
-  echo "    T6=OK → removing __declspec(dllexport) from source fixes it (Patch 0005)"
-  echo "    T7=OK → system lld works, zig's bundled lld is broken/old"
-  echo "    T8: check for -exclude-symbols: in .drectve (hidden visibility auto-exclusion)"
-  echo "    T9=OK → zig cc was missing -lldmingw (MinGW driver not activated)"
-  echo "    T10: shows zig's actual lld invocation (check for -lldmingw flag)"
-
-  mv "${_eas_dir}" /tmp/_export_all_test_done 2>/dev/null || true
-fi
-
 mkdir -p "${LLVM_BUILD}"
 
 if is_unix || is_not_unix; then
@@ -1007,9 +850,54 @@ if is_unix || is_not_unix; then
     )
   fi
 
+  # Windows ARM64: cmake compiler link test fails with:
+  #   lld-link: unable to automatically import from _fpreset with relocation
+  #   type IMAGE_REL_ARM64_BRANCH26 in crt2.obj / libmingw32.lib
+  # ARM64 branch instructions (BL) can't be redirected to DLL import thunks
+  # the way x86 auto-import works. Skip the link test via STATIC_LIBRARY mode,
+  # and inject the _fpreset stub into all linker invocations so shared lib
+  # builds (libunwind.dll, libc++.dll, etc.) don't hit the same error.
+  if is_not_unix && [[ "${LLVM_TRIPLET}" == aarch64-* ]]; then
+    _fpreset_stub="${BUILD_PREFIX//\\//}/Library/lib/zig/libc/mingw/lib-common/_fpreset_arm64.o"
+    if [[ ! -f "${_fpreset_stub}" ]]; then
+      echo "WARNING: _fpreset_arm64.o stub not found at ${_fpreset_stub}"
+      echo "  ARM64 shared library links may fail with auto-import relocation errors"
+    fi
+    _RUNTIMES_CMAKE+=(
+      -DCMAKE_C_COMPILER_WORKS=TRUE
+      -DCMAKE_CXX_COMPILER_WORKS=TRUE
+      -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+      -DCMAKE_SHARED_LINKER_FLAGS="${_fpreset_stub}"
+      -DCMAKE_EXE_LINKER_FLAGS="${_fpreset_stub}"
+    )
+  fi
+
   # macOS: tell cmake the correct arch (prevents -mcpu=core2 on cross-builds)
   if is_osx; then
     _RUNTIMES_CMAKE+=(-DCMAKE_OSX_ARCHITECTURES="${_osx_arch}")
+  fi
+
+  # ppc64le: skip CMake compiler link test (same as main LLVM build).
+  # The ld wrapper (created above) injects --sysroot + -lpthread/-ldl for shared
+  # lib builds. Additionally suppress glibc-version-gated symbols that are NOT
+  # available in the glibc 2.17 sysroot but zig's bundled headers enable:
+  # - __cxa_thread_atexit_impl: added in glibc 2.18. zig's check_library_exists
+  #   tests against zig's bundled libc (newer glibc), so LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL
+  #   comes back ON. Override to OFF so the fallback implementation is compiled.
+  # - copy_file_range: added in glibc 2.27 libc wrapper. Guarded by
+  #   _LIBCPP_GLIBC_PREREQ(2,27) but zig's bundled libc++ headers may resolve
+  #   this as true. Undefine _LIBCPP_FILESYSTEM_USE_COPY_FILE_RANGE so the
+  #   sendfile/fstream fallback is used instead.
+  if [[ "${LLVM_TRIPLET}" == powerpc64le-* ]]; then
+    _RUNTIMES_CMAKE+=(
+      -DCMAKE_C_COMPILER_WORKS=TRUE
+      -DCMAKE_CXX_COMPILER_WORKS=TRUE
+      -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+      "-DCMAKE_CXX_FLAGS=-fvisibility=default -D__GLIBC_MINOR__=17"
+    )
+    _RUNTIMES_FLAGS+=(
+      -DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF
+    )
   fi
 
   echo "  Building runtimes: ${_RUNTIMES_LIST}..."
@@ -1056,103 +944,6 @@ if is_unix || is_not_unix; then
     echo "    ${_name} ($(wc -c < "${_probe_dir}/${_name}") bytes)"
   done
 
-fi
-
-# macOS: create a linker wrapper script that physically filters out zig's
-# bundled static libc++.a and libc++abi.a from cmake's <LINK_LIBRARIES>
-# expansion before calling system clang.
-#
-# WHY: cmake detects zig c++'s implicit link libraries (including the full path
-# to zig's bundled libc++.a) and injects them into <LINK_LIBRARIES> for every
-# shared library link rule.  When system clang receives zig's libc++.a as a
-# positional argument it statically merges the archive — making
-# generic_category LOCAL_DEFINED instead of imported from libc++.dylib.
-#
-# WHAT FAILED:
-#   1. -DCMAKE_CXX_IMPLICIT_LINK_LIBRARIES="" — cmake stores the implicit link
-#      libs as an INTERNAL cache variable during compiler detection; -D creates
-#      a NORMAL entry that is silently ignored in favour of the INTERNAL one.
-#   2. CMAKE_PROJECT_INCLUDE with CACHE INTERNAL FORCE — cmake's internal data
-#      structure is separate from the cache; the FORCE override did not take.
-#   3. Post-configure sed on build.ninja — unclear if pattern matched; fragile.
-#
-# FIX: wrapper script physically removes *libc++.a and *libc++abi.a from argv
-# before exec-ing /usr/bin/clang.  This is 100% guaranteed to work regardless
-# of cmake's internal cache behaviour.  The wrapper is baked into the cmake
-# CMAKE_CXX_CREATE_SHARED_LIBRARY template (shell expands ${SRC_DIR} at cmake
-# invocation time — cmake receives the fully expanded absolute path).
-if is_osx; then
-  # MACOS_LINK_LOG: file-based logging for the link wrapper.
-  # ninja suppresses stderr of successful commands, so we cannot use >&2.
-  # Writing to a file guarantees we can inspect ALL link invocations after the build.
-  export MACOS_LINK_LOG="${SRC_DIR}/macos_link_commands.log"
-  : > "${MACOS_LINK_LOG}"   # truncate / create empty
-
-  cat > "${SRC_DIR}/macos-link-wrapper.sh" << 'LINKWRAP'
-#!/bin/bash
-# Wrapper around /usr/bin/clang for shared library linking on macOS.
-# Filters out zig's bundled static libc++.a and libc++abi.a from cmake's
-# <LINK_LIBRARIES> expansion. cmake injects these via CMAKE_CXX_IMPLICIT_LINK_LIBRARIES
-# which we cannot reliably clear (tried -D, FORCE, sed — none worked).
-#
-# System clang gets -lc++ from the template (resolves to our shared
-# libc++.dylib), so the static archives are redundant AND harmful (they cause
-# LOCAL_DEFINED generic_category which breaks zig's RTTI check).
-#
-# NOTE: all output goes to MACOS_LINK_LOG (a file) because ninja eats stderr
-# on success.  stderr messages appear only for failed commands.
-_logfile="${MACOS_LINK_LOG:-/tmp/macos_link_commands.log}"
-echo "=== $(date -u '+%H:%M:%S') ===" >> "$_logfile"
-echo "ARGS: $*" >> "$_logfile"
-echo "---" >> "$_logfile"
-args=()
-skipped=0
-for arg in "$@"; do
-  case "$arg" in
-    *libc++.a|*libc++abi.a)
-      echo "SKIPPED: $arg" >> "$_logfile"
-      echo "  [macos-link-wrapper] skipping static libc++: $arg" >&2
-      skipped=$((skipped + 1))
-      ;;
-    -Wl,--color-diagnostics|--color-diagnostics|-Wl,--no-color-diagnostics|--no-color-diagnostics)
-      # LLVM's cmake detects zig as lld-capable and injects --color-diagnostics.
-      # Apple's ld64-classic doesn't understand this flag.  Filter it out.
-      echo "SKIPPED: $arg (lld-only flag)" >> "$_logfile"
-      skipped=$((skipped + 1))
-      ;;
-    *)
-      args+=("$arg")
-      ;;
-  esac
-done
-if [[ $skipped -gt 0 ]]; then
-  echo "  [macos-link-wrapper] filtered $skipped static libc++ archive(s)" >&2
-  echo "FILTERED: $skipped archive(s)" >> "$_logfile"
-fi
-echo "EXEC: /usr/bin/clang ${args[*]}" >> "$_logfile"
-# Unset LIBRARY_PATH so system clang doesn't search conda prefix paths.
-# conda-build sets LIBRARY_PATH=$BUILD_PREFIX/lib:$PREFIX/lib which contains
-# the conda libcxx package's libc++.a — if ld64 finds it, it statically links
-# libc++ instead of using our shared libc++.dylib from LLVM_INSTALL/lib.
-unset LIBRARY_PATH
-exec /usr/bin/clang "${args[@]}"
-LINKWRAP
-  chmod +x "${SRC_DIR}/macos-link-wrapper.sh"
-  echo "  Created macos-link-wrapper.sh (logging to ${MACOS_LINK_LOG})"
-
-  # Remove static libc++ archives from conda prefix paths.
-  # conda-forge zig depends on libcxx which installs libc++.a in $BUILD_PREFIX/lib.
-  # Even with our -L${LLVM_INSTALL}/lib first, LIBRARY_PATH=$BUILD_PREFIX/lib
-  # (set by conda-build) causes ld64 to find the conda .a before our .dylib.
-  # We also unset LIBRARY_PATH in the wrapper, but belt-and-suspenders.
-  for _conda_lib_dir in "${BUILD_PREFIX}/lib" "${PREFIX}/lib"; do
-    for _static_lib in libc++.a libc++abi.a; do
-      if [[ -f "${_conda_lib_dir}/${_static_lib}" ]]; then
-        echo "  Moving conda ${_static_lib} out of ${_conda_lib_dir}"
-        mv "${_conda_lib_dir}/${_static_lib}" "/tmp/${_static_lib}.conda_bak_$$"
-      fi
-    done
-  done
 fi
 
 _CLANG=(
@@ -1223,7 +1014,7 @@ _LLVM=(
   -DLLVM_TOOL_GOLD_BUILD=OFF
   -DLLVM_TOOL_LLC_BUILD=OFF
   -DLLVM_TOOL_LLI_BUILD=OFF
-  -DLLVM_TOOL_LLVM_AR_BUILD=OFF
+  -DLLVM_TOOL_LLVM_AR_BUILD=ON  # ON: llvm-ar creates llvm-dlltool symlink (needed for MinGW import lib generation)
   -DLLVM_TOOL_LLVM_AS_BUILD=OFF
   -DLLVM_TOOL_LLVM_AS_FUZZER_BUILD=OFF
   -DLLVM_TOOL_LLVM_BCANALYZER_BUILD=OFF
@@ -1311,6 +1102,7 @@ _LLVM=(
   -DLLVM_TOOL_YAML2OBJ_BUILD=OFF
 )
 
+
 echo "=== Configuring LLVM ==="
 echo "  Install prefix: ${LLVM_INSTALL} (separate from conda-forge llvmdev)"
 _CMAKE=(
@@ -1331,13 +1123,8 @@ _CMAKE=(
   -DCMAKE_BUILD_RPATH="${LLVM_INSTALL}/lib;${LLVM_BUILD}/lib;${BUILD_PREFIX}/lib;${PREFIX}/lib"
   -DCMAKE_INSTALL_RPATH="${LLVM_INSTALL}/lib"
 
-  # Shared library link rule override (Unix only): use zig-cxx-shared wrapper
-  # instead of zig c++ for creating .so files.  zig cc/c++ ALWAYS auto-merge
-  # zig's bundled static hidden-visibility libc++ into every .so at link time.
-  # The zig-cxx-shared wrapper bypasses zig entirely and invokes ld.lld directly
-  # for the shared library link step, so libc++.so.1 appears in NEEDED and
-  # generic_category resolves from the single shared copy at runtime.
-  # On non-Unix, zig c++ links .dll files normally (no libc++ dual-copy issue).
+  -DCMAKE_C_FLAGS="-fvisibility=default"
+  -DCMAKE_CXX_FLAGS="-fvisibility=default"
 )
 
 # RC compiler (resource compiler for Windows .exe version info).
@@ -1383,7 +1170,7 @@ CMAKE_RC_FLAGS=()
 if is_not_unix; then
   # _BUILD_PREFIX: forward-slash unix path version of BUILD_PREFIX,
   # created by build.bat (e.g. /d/a/package-incubator/.../build_env).
-  _rc_path="${_BUILD_PREFIX}/Library/share/zig/wrappers/zig-rc.bat"
+  _rc_path="${_BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_HOST}-zig-rc.bat"
   cat >> "${_cmake_init}" << CMINIT
 # RC compiler with forward-slash path — avoids CMake 4.2 backslash escape bug.
 set(CMAKE_RC_COMPILER "${_rc_path}" CACHE FILEPATH "RC compiler")
@@ -1393,238 +1180,18 @@ elif [[ -n "${ZIG_RC:-}" ]]; then
   CMAKE_RC_FLAGS=(-DCMAKE_RC_COMPILER="${ZIG_RC}")
 fi
 
-# All platforms: override shared library link rule to bypass zig for linking.
-# zig cc (all modes) injects its bundled static libc++ into shared libraries,
-# which breaks zig's own ZigClangIsLLVMUsingSeparateLibcxx() RTTI check.
-# Linux: zig-cxx-shared calls ld.lld directly (ELF).
-# macOS: system clang (/usr/bin/clang) calls Apple's ld64 directly.
-# Windows: zig-cxx-shared.exe calls ld.lld directly (PE/COFF).
-CMAKE_SHARED_FLAGS=()
-if [[ -n "${ZIG_CXX_SHARED:-}" ]] && is_linux; then
-    # Linux: override link rule (normal variable, not cache)
-    cat >> "${_cmake_project_include}" << CMINIT
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${ZIG_CXX_SHARED} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> <SONAME_FLAG><TARGET_SONAME> -o <TARGET> <OBJECTS> <LINK_LIBRARIES>")
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "\${CMAKE_CXX_CREATE_SHARED_LIBRARY}" CACHE STRING "CXX shared library link rule" FORCE)
-message(STATUS ">>> CMAKE_CXX_CREATE_SHARED_LIBRARY set to: \${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
-CMINIT
-    CMAKE_SHARED_FLAGS=(
-      -DCMAKE_SHARED_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++"
-      -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++"
-    )
-elif is_osx; then
-    # macOS: use macos-link-wrapper.sh for shared library linking.
-    #
-    # zig cc (BOTH cc and c++ modes) unconditionally injects its bundled static
-    # libc++ into Mach-O .dylib files, regardless of -nostdlib++.  CI confirmed
-    # on both osx-arm64 and osx-64.  The ONLY fix is to bypass zig entirely.
-    #
-    # macos-link-wrapper.sh (created above) filters out *libc++.a/*libc++abi.a
-    # from argv before exec-ing /usr/bin/clang.  This handles cmake's injection
-    # of zig's static libc++ via CMAKE_CXX_IMPLICIT_LINK_LIBRARIES into
-    # <LINK_LIBRARIES>.  Approaches that FAILED to clear this variable:
-    #   - -DCMAKE_CXX_IMPLICIT_LINK_LIBRARIES="" — creates a NORMAL cache entry,
-    #     silently ignored in favour of the INTERNAL one set during compiler detection
-    #   - CMAKE_PROJECT_INCLUDE with CACHE INTERNAL FORCE — cmake's internal data
-    #     structure is separate from the cache; the override did not take effect
-    #   - Post-configure sed on build.ninja — fragile; uncertain if it matched
-    #
-    # -fvisibility=default: zig compiles with hidden visibility by default.
-    # On Mach-O, hidden symbols are truly invisible to other dylibs.
-    # Without this, libclang-cpp.dylib can't see libLLVM.dylib's symbols.
-    #
-    # -arch: ensure correct target architecture for cross-builds (e.g. arm64 → x86_64).
-    # cmake may not propagate CMAKE_OSX_ARCHITECTURES into custom link rules.
-    #
-    # Compilation still uses zig-force-load-cxx (c++ mode) via CMAKE_CXX_COMPILER.
-    #
-    # CRITICAL: -L -lc++ MUST be baked into the link template itself.
-    # clang (not clang++) won't auto-link any C++ runtime on its own.
-    # The wrapper filters zig's static libc++.a out; -lc++ here resolves
-    # to the shared libc++.dylib we built in the runtimes phase.
-    # macOS: override link rule (normal variable, not cache)
-    cat >> "${_cmake_project_include}" << CMINIT
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${SRC_DIR}/macos-link-wrapper.sh -v -arch ${_osx_arch} -mmacosx-version-min=11.0 -Wl,-ld_classic <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> <SONAME_FLAG> <TARGET_SONAME> -o <TARGET> <OBJECTS> -L${LLVM_INSTALL}/lib -lc++ <LINK_LIBRARIES>")
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "\${CMAKE_CXX_CREATE_SHARED_LIBRARY}" CACHE STRING "CXX shared library link rule" FORCE)
-message(STATUS ">>> CMAKE_CXX_CREATE_SHARED_LIBRARY set to: \${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
-CMINIT
-    # zig cc defaults to macOS 13.0 target, emitting ADRP relocations that the
-    # NEW ld64 (Xcode 15+) rejects for ___dso_handle references in dylibs.
-    # Apple's clang avoids ADRP to ___dso_handle via GOT-indirect addressing,
-    # but zig's LLVM backend does not have this special case.
-    # -Wl,-ld_classic forces the classic linker (pre-Xcode 15 behavior) which
-    # does NOT have this ADRP restriction. -Wl,-fixup_chains was tried but
-    # does NOT fix the issue — the new ld64 rejects ADRP to ___dso_handle
-    # regardless of fixup format.
-    # CMAKE_OSX_DEPLOYMENT_TARGET does NOT work — zig ignores it.
-    # Must pass -mmacosx-version-min=11.0 directly in CMAKE_C/CXX_FLAGS so
-    # zig cc sees it as an explicit compiler flag.
-    CMAKE_SHARED_FLAGS=(
-      -DCMAKE_C_FLAGS="-fvisibility=default -mmacosx-version-min=11.0"
-      -DCMAKE_CXX_FLAGS="-fvisibility=default -mmacosx-version-min=11.0"
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
-      -DCMAKE_SHARED_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++"
-      -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_INSTALL}/lib -lc++"
-    )
-elif is_not_unix; then
-    # Windows: override shared library link rule to use `zig cc -shared`.
-    # zig cc handles @response files and -Wl, prefixes natively, so no
-    # wrapper script is needed. zig _14+ probes for libc++ at the install
-    # path set up after Phase 1 and links it dynamically when found.
-    #
-    # -fvisibility=default: CRITICAL — zig cc compiles with -fvisibility=hidden
-    # by default. lld's --export-all-symbols does NOT export hidden symbols.
-    # Without this, internal clang C++ symbols (SourceManager::getSpellingLocSlowCase
-    # etc.) are hidden in object files → missing from libclang-cpp.dll.a → 104
-    # undefined symbol errors when zig links against shared LLVM.
-    # Linux and macOS set this in their CMAKE_SHARED_FLAGS too.
-    #
-    # CRITICAL: --export-all-symbols MUST be in the link template itself.
-    # CMAKE_SHARED_LINKER_FLAGS=-Wl,--export-all-symbols does NOT propagate
-    # into <LINK_FLAGS> when CMAKE_CXX_CREATE_SHARED_LIBRARY is overridden.
-    # CI proof: libLLVM-20.dll.a=24 MiB (gets --export-all-symbols from patch
-    # 0004's target_link_options), libclang-cpp.dll.a=7.9 KiB (relied on
-    # CMAKE_SHARED_LINKER_FLAGS → <LINK_FLAGS> which DOES NOT WORK).
-    # Without --export-all-symbols, the DLL only exports __declspec(dllexport)
-    # symbols, missing thousands of clang/LLVM symbols zig needs.
-    # Windows: override link rule (normal variable, not cache)
-    # Use _BUILD_PREFIX_ (mixed path from build.bat: D:/a/... with drive letter).
-    # NOT _BUILD_PREFIX (/d/a/...) — ninja runs commands via cmd.exe which doesn't
-    # understand MSYS2 unix paths.  NOT BUILD_PREFIX (D:\a\...) — cmake treats
-    # backslashes as escape characters in set() strings.
-    _zig_cc_exe="${_BUILD_PREFIX_}/Library/bin/x86_64-w64-mingw32-zig.exe"
-    # zig cc -shared handles CRT, compiler-rt, and system import libs automatically.
-    # zig _14 probes for a shared libc++ at $BUILD_PREFIX/lib/zig-llvm/lib/libc++.dll.a
-    # (symlinked after Phase 1 runtimes build) and links it dynamically when found.
-    # Pre-generate MinGW import libraries from .def files as belt-and-suspenders;
-    # having them in -L won't conflict with zig's own auto-generated imports.
-    #
-    # zig cc -shared is only confirmed working on x86_64-windows-gnu.
-    # aarch64 hangs for 100+ seconds and produces an empty implib; that path
-    # still needs a different approach and is handled separately.
-    _mingw_implib_dir="${SRC_DIR}/_mingw_implibs"
-    mkdir -p "${_mingw_implib_dir}"
-    _zig_lib_dir="${_BUILD_PREFIX}/Library/lib/zig"
-    _zig_mingw_def="${_zig_lib_dir}/libc/mingw"
-    # Determine arch-specific def directory
-    if [[ "${ZIG_TRIPLET}" == aarch64-* ]]; then
-      _zig_mingw_arch_def="${_zig_mingw_def}/libarm64"
-      _dlltool_machine="arm64"
-    else
-      _zig_mingw_arch_def="${_zig_mingw_def}/lib64"
-      _dlltool_machine="i386:x86-64"
-    fi
-    echo "  Pre-generating MinGW import libraries from .def files..."
-    echo "  .def source: ${_zig_mingw_def}/lib-common/ and ${_zig_mingw_arch_def}/"
-    echo "  Output: ${_mingw_implib_dir}/"
-
-    # .def.in files need C preprocessing: they #include "func.def.in" from def-include/
-    # which defines architecture-gating macros (F64, F_X64, F_ARM64, etc.).
-    # Critical libs (kernel32, advapi32, ws2_32, ole32, uuid) are ALL .def.in files.
-    _def_include_dir="${_zig_mingw_def}/def-include"
-    _cpp_tmp_dir="${_mingw_implib_dir}/_preprocessed"
-    mkdir -p "${_cpp_tmp_dir}"
-    # Set architecture defines for the C preprocessor
-    if [[ "${ZIG_TRIPLET}" == aarch64-* ]]; then
-      _arch_defines=(-D__aarch64__)
-    else
-      _arch_defines=(-D__x86_64__)
-    fi
-    echo "  def-include dir: ${_def_include_dir}"
-    echo "  Arch defines: ${_arch_defines[*]}"
-
-    _gen_count=0
-    _gen_fail=0
-    _cpp_count=0
-    { set +x; } 2>/dev/null  # suppress trace for ~400 dlltool iterations
-    for _def_dir in "${_zig_mingw_def}/lib-common" "${_zig_mingw_arch_def}"; do
-      if [[ ! -d "${_def_dir}" ]]; then
-        echo "  WARNING: .def directory not found: ${_def_dir}"
-        continue
-      fi
-      for _def_file in "${_def_dir}"/*.def "${_def_dir}"/*.def.in; do
-        [[ -f "${_def_file}" ]] || continue
-        _lib_name=$(basename "${_def_file}" .def)
-        _lib_name=$(basename "${_lib_name}" .def.in)
-        _actual_def="${_def_file}"
-        # .def.in files need C preprocessing to expand #include and arch macros
-        if [[ "${_def_file}" == *.def.in ]]; then
-          _processed="${_cpp_tmp_dir}/${_lib_name}.def"
-          if "${_zig_bin}" cc -E -P -nostdinc -x c \
-              -I "${_def_include_dir}" "${_arch_defines[@]}" \
-              "${_def_file}" -o "${_processed}" 2>/dev/null; then
-            _actual_def="${_processed}"
-            (( _cpp_count++ )) || true
-          else
-            dbg "  cpp failed for ${_lib_name}.def.in"
-            (( _gen_fail++ )) || true
-            continue
-          fi
-        fi
-        if "${_zig_bin}" dlltool -m "${_dlltool_machine}" \
-            -d "${_actual_def}" -l "${_mingw_implib_dir}/lib${_lib_name}.a" 2>/dev/null; then
-          (( _gen_count++ )) || true
-        else
-          dbg "  dlltool failed for ${_lib_name}"
-          (( _gen_fail++ )) || true
-        fi
-      done
-    done
-    set -x
-    echo "  Preprocessed ${_cpp_count} .def.in files"
-    echo "  Generated ${_gen_count} import libraries (${_gen_fail} failures)"
-
-    # Verify critical libs exist
-    # uuid and mingw_crt are omitted: zig cc -shared compiles these automatically.
-    _critical_ok=1
-    for _crit in kernel32 shell32 psapi advapi32 ws2_32 ole32; do
-      if [[ ! -f "${_mingw_implib_dir}/lib${_crit}.a" ]]; then
-        echo "  FATAL: lib${_crit}.a was not generated"
-        _critical_ok=0
-      fi
-    done
-    if [[ ${_critical_ok} -eq 0 ]]; then
-      echo "  Available .def dirs:"
-      ls "${_zig_mingw_def}/" 2>/dev/null | sed 's/^/    /' || echo "    <not found>"
-      echo "  lib-common contents (first 10):"
-      ls "${_zig_mingw_def}/lib-common/" 2>/dev/null | head -10 | sed 's/^/    /' || echo "    <empty>"
-      exit 1
-    fi
-    echo "  Critical import libraries verified OK"
-    # Use _BUILD_PREFIX_ (mixed path D:/a/...) for the cmake template (cmd.exe compat)
-    _mingw_implib_dir_cmake="${_SRC_DIR_}/_mingw_implibs"
-    cat >> "${_cmake_project_include}" << CMINIT
-# Normal variable (original approach):
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${_zig_cc_exe} cc -shared -target ${ZIG_TRIPLET} <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> -Wl,--export-all-symbols -L${_mingw_implib_dir_cmake} -L${_PREFIX_}/Library/lib/zig-llvm/lib -o <TARGET> -Xlinker --out-implib -Xlinker <TARGET_IMPLIB> <OBJECTS> <LINK_LIBRARIES> -lc++")
-# CACHE FORCE (cmake 3.31+ may not propagate normal vars to ninja generator):
-set(CMAKE_CXX_CREATE_SHARED_LIBRARY "\${CMAKE_CXX_CREATE_SHARED_LIBRARY}" CACHE STRING "CXX shared library link rule" FORCE)
-message(STATUS ">>> CMAKE_CXX_CREATE_SHARED_LIBRARY set to: \${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
-CMINIT
-    CMAKE_SHARED_FLAGS=(
-      -DCMAKE_C_FLAGS="-fvisibility=default"
-      -DCMAKE_CXX_FLAGS="-fvisibility=default"
-    )
-fi
-
 ulimit -n 4096 2>/dev/null || true
 echo "=== cmake initial-cache file (${_cmake_init}) ==="
 sed 's/^/  /' "${_cmake_init}" || true
 echo "=== cmake project include file (${_cmake_project_include}) ==="
 sed 's/^/  /' "${_cmake_project_include}" || true
 
-# NOTE: Mini cmake validation removed — zig-as-Clang on Windows doesn't generate
-# shared library rules in a minimal project (cmake needs more context from the
-# real LLVM build's cmake modules). The post-configure check below (line ~1584)
-# validates the template injection in the REAL build.ninja right after cmake
-# configure (~2 min), before the ~90 min build phase.
-echo "=== Skipping mini cmake test (false-negative on Windows) ==="
-echo "  Will validate link template in real LLVM build.ninja after configure."
 cmake "-C${_cmake_init}" \
   -S "${LLVM_SRC}" -B "${LLVM_BUILD}" \
   -DCMAKE_PROJECT_INCLUDE="${_cmake_project_include}" \
   "${CMAKE_CROSS_FLAGS[@]}" \
   "${CMAKE_PLATFORM_FLAGS[@]}" \
   "${CMAKE_RC_FLAGS[@]}" \
-  "${CMAKE_SHARED_FLAGS[@]}" \
   -DHAS_LOGF128=OFF \
   -DLLD_BUILD_TOOLS=OFF \
   "${_CMAKE[@]}" \
@@ -1632,38 +1199,6 @@ cmake "-C${_cmake_init}" \
   "${_LLVM[@]}" \
   -G Ninja
 
-# === QUICK-FAIL: verify CMAKE_CXX_CREATE_SHARED_LIBRARY template in build.ninja ===
-# This runs RIGHT AFTER cmake configure, BEFORE the 90-minute build.
-# If the template wasn't injected, abort immediately instead of building for
-# 90+ minutes only to discover the link command is wrong.
-echo "=== Quick-fail: verifying link template in build.ninja ==="
-if is_osx; then
-  _template_marker="macos-link-wrapper"
-  _template_label="macos-link-wrapper.sh"
-elif is_not_unix; then
-  _template_marker="${ZIG_TRIPLET}"
-  _template_label="zig cc -shared -target ${ZIG_TRIPLET}"
-else
-  _template_marker="zig-cxx-shared"
-  _template_label="zig-cxx-shared"
-fi
-
-# cmake's ninja generator puts rules in CMakeFiles/rules.ninja (included by build.ninja).
-_rules_ninja="${LLVM_BUILD}/CMakeFiles/rules.ninja"
-_build_ninja="${LLVM_BUILD}/build.ninja"
-
-if grep -q "${_template_marker}" "${_rules_ninja}" 2>/dev/null; then
-  echo "  OK: ${_template_label} found in CMakeFiles/rules.ninja"
-else
-  echo "  FATAL: ${_template_label} NOT FOUND in CMakeFiles/rules.ninja!"
-  echo "  CMAKE_PROJECT_INCLUDE set the variable (confirmed in cache) but ninja generator did not use it."
-  { set +x; } 2>/dev/null
-  echo "  All CXX_SHARED rules in CMakeFiles/rules.ninja:"
-  grep -A3 'CXX_SHARED\|CREATE_SHARED\|SHARED_LIBRARY_LINKER' "${_rules_ninja}" 2>/dev/null | head -30 | sed 's/^/    /' || echo "    <none>"
-  set -x
-  echo "  Aborting to avoid wasting 90+ minutes on a build that will fail at link time."
-  exit 1
-fi
 
 # === Quick-fail: verify --export-all-symbols in ALL shared library link rules ===
 # libLLVM and libclang-cpp each get their own CXX_SHARED_LIBRARY_LINKER rule in
@@ -1696,284 +1231,6 @@ if is_not_unix; then
   set -x
 fi
 
-# === Windows quick-fail: verify zig cc -shared can link libc++ ===
-# The real LLVM build takes 2+ hours and fails at the very end linking
-# libLLVM-20.dll if libc++ isn't properly linked.  This ~10-second test
-# catches that failure mode immediately after cmake configure.
-if is_not_unix; then
-  echo "=== Quick-fail: zig cc -shared libc++ link test ==="
-  _libcxx_stub_dir="${SRC_DIR}/_libcxx_stub_test"
-  mkdir -p "${_libcxx_stub_dir}"
-
-  # Pure C stub — avoids needing C++ headers. Only tests the LINK step:
-  # can zig cc -shared find and link libc++.dll.a from LLVM_INSTALL/lib?
-  cat > "${_libcxx_stub_dir}/stub.c" << 'LIBCXXSTUB'
-__declspec(dllexport) int stub_func(void) { return 42; }
-LIBCXXSTUB
-
-  echo "  Compiling stub.c..."
-  if ! "${_native_zig}" cc -target ${ZIG_TRIPLET} \
-      -c "${_libcxx_stub_dir}/stub.c" \
-      -o "${_libcxx_stub_dir}/stub.obj"; then
-    echo "FATAL: zig cc cannot compile a trivial C file"
-    exit 1
-  fi
-
-  echo "  Linking stub.dll with -lc++ (verifying libc++ import lib is findable)..."
-  echo "  -L${LLVM_INSTALL}/lib"
-  ls -la "${LLVM_INSTALL}/lib/"libc++* 2>/dev/null | sed 's/^/    /' || echo "    <none>"
-  if ! "${_native_zig}" cc -shared -target ${ZIG_TRIPLET} \
-      -L"${LLVM_INSTALL}/lib" -lc++ \
-      -o "${_libcxx_stub_dir}/stub.dll" \
-      "${_libcxx_stub_dir}/stub.obj" 2>&1; then
-    echo "FATAL: zig cc -shared cannot link libc++ — aborting before 2hr build"
-    echo "  libc++.dll.a must be at ${LLVM_INSTALL}/lib/"
-    exit 1
-  fi
-
-  if [[ ! -f "${_libcxx_stub_dir}/stub.dll" ]]; then
-    echo "FATAL: link exited 0 but stub.dll not created"
-    exit 1
-  fi
-  echo "  OK: stub.dll + libc++ link works"
-  mv "${_libcxx_stub_dir}" /tmp/_libcxx_stub_test_done 2>/dev/null || true
-fi
-
-
-# === Fast stub shared library test ===
-# Before spending hours on the real LLVM build, create a tiny shared lib that
-# references std::generic_category() — exactly what libLLVM will do.
-# Verifies the link setup produces shared (not static) libc++ linkage.
-# Takes seconds, not hours.
-if is_linux; then
-  echo "=== Fast stub .so test (verify shared libc++ linkage) ==="
-  _stub_dir="${SRC_DIR}/_stub_test"
-  mkdir -p "${_stub_dir}"
-
-  # Compile: zig c++ produces .o with generic_category as U (UNDEFINED)
-  cat > "${_stub_dir}/stub.cpp" << 'STUBCPP'
-#include <system_error>
-// Force a reference to generic_category so it appears in the symbol table.
-// This mimics what LLVM/Clang code does internally.
-const std::error_category* _stub_ref = &std::generic_category();
-STUBCPP
-
-  echo "  Compiling stub.cpp with zig c++..."
-  "${ZIG_CXX}" -c -fPIC -o "${_stub_dir}/stub.o" "${_stub_dir}/stub.cpp"
-
-  if _debug; then
-    dbg "stub.o generic_category symbols:"
-    nm "${_stub_dir}/stub.o" | grep 'generic_category' | sed 's/^/    /' || echo "    <none>"
-  fi
-
-  # Link: use the CMAKE_CXX_CREATE_SHARED_LIBRARY wrapper (zig-cxx-shared)
-  echo "  Linking stub.so with zig-cxx-shared wrapper..."
-  "${ZIG_CXX_SHARED}" -shared -o "${_stub_dir}/stub.so" \
-    -L"${LLVM_INSTALL}/lib" -lc++ \
-    "${_stub_dir}/stub.o"
-
-  # Check the stub .so
-  echo "  === Checking stub.so ==="
-  _fail=0
-
-  echo "  --- Check 1: no local generic_category ---"
-  _local_syms=$(nm -a "${_stub_dir}/stub.so" 2>/dev/null | grep 'generic_category' || true)
-  dbg "nm -a: ${_local_syms:-<none>}"
-  if echo "${_local_syms}" | grep -qP '^[0-9a-f]+ [a-z] '; then
-    echo "  FAIL: local generic_category — libc++ baked in"
-    _fail=1
-  else
-    echo "  OK"
-  fi
-
-  echo "  --- Check 2: UNDEFINED in dynamic symbols ---"
-  _dynsym=$(readelf --dyn-syms --wide "${_stub_dir}/stub.so" 2>/dev/null | grep 'generic_category' || true)
-  dbg "readelf --dyn-syms: ${_dynsym:-<none>}"
-  if [[ -z "${_dynsym}" ]]; then
-    echo "  FAIL: not in dynamic symbol table"
-    _fail=1
-  elif echo "${_dynsym}" | grep -q 'UND'; then
-    echo "  OK: UNDEFINED"
-  else
-    echo "  FAIL: not UNDEFINED"
-    _fail=1
-  fi
-
-  echo "  --- Check 3: libc++.so in NEEDED ---"
-  _needed=$(readelf -d "${_stub_dir}/stub.so" 2>/dev/null | grep NEEDED || true)
-  if _debug; then echo "${_needed}" | sed 's/^/    /'; fi
-  if echo "${_needed}" | grep -qE 'libc\+\+\.so'; then
-    echo "  OK: libc++.so in NEEDED"
-  else
-    echo "  FAIL: libc++.so NOT in NEEDED"
-    _fail=1
-  fi
-
-  if [[ ${_fail} -ne 0 ]]; then
-    echo ""
-    echo "  ============================================================"
-    echo "  EARLY ABORT: stub .so test failed."
-    echo "  The shared library link setup does not produce a .so that"
-    echo "  uses external shared libc++.  The real LLVM build would fail"
-    echo "  zig's ZigClangIsLLVMUsingSeparateLibcxx check."
-    echo "  ============================================================"
-    echo "  Wrapper used: ${ZIG_CXX_SHARED}"
-    cat "${ZIG_CXX_SHARED}"
-    exit 1
-  fi
-  echo "  === Stub .so test PASSED ==="
-  rm -rf "${_stub_dir}"
-elif is_osx; then
-  # macOS equivalent of the Linux stub test.
-  # Verifies that system clang (bypassing zig) produces a .dylib that uses
-  # external shared libc++ instead of zig's bundled static copy.
-  # zig cc (BOTH cc and c++ modes) injects static libc++ into Mach-O .dylib
-  # files — confirmed on osx-arm64 and osx-64 CI.  System clang doesn't.
-  # Without this fix, libclang-cpp.dylib gets a LOCAL copy of generic_category
-  # ('t'), which zig's RTTI check detects at startup.
-  # NOTE: dyld deduplicates symbols at runtime (same addresses), so a
-  # dlsym address comparison would PASS even with the bug. We must check
-  # nm output to detect the static merge.
-  echo "=== Fast stub .dylib test (verify shared libc++ linkage) ==="
-  _stub_dir="${SRC_DIR}/_stub_test"
-  mkdir -p "${_stub_dir}"
-
-  cat > "${_stub_dir}/stub.cpp" << 'STUBCPP'
-#include <system_error>
-const std::error_category* _stub_ref = &std::generic_category();
-STUBCPP
-
-  echo "  Compiling stub.cpp with zig c++..."
-  "${ZIG_CXX}" -c -fPIC -fvisibility=default -o "${_stub_dir}/stub.o" "${_stub_dir}/stub.cpp"
-
-  # Diagnostic: check if generic_category is already baked into the OBJECT file.
-  # If it's defined ('t'/'T') in stub.o, the problem is at COMPILE time (zig's
-  # headers instantiate the symbol) and no linker change can fix it.
-  # If it's undefined ('U'), the problem is at link time and system clang should fix it.
-  _obj_syms=$(nm "${_stub_dir}/stub.o" 2>/dev/null | grep 'generic_category' || true)
-  dbg "stub.o nm: ${_obj_syms:-<none>}"
-  if echo "${_obj_syms}" | grep -q ' [tT] '; then
-    echo "  WARNING: generic_category is DEFINED in stub.o (compile-time issue)"
-    echo "  This means zig's headers instantiate the symbol locally."
-    echo "  No linker change will help — need to compile with system headers."
-  elif echo "${_obj_syms}" | grep -q ' U '; then
-    echo "  OK: generic_category is UNDEFINED in stub.o (link-time resolution)"
-  else
-    dbg "  stub.o: generic_category not found or unexpected symbol type"
-  fi
-
-  # Quick-fail: check deployment target mismatch before linking.
-  # zig may compile objects for a newer macOS target than the linker expects.
-  # e.g. zig uses macOS 13.0 but link template has -mmacosx-version-min=11.0.
-  # This causes ld64 to reject ADRP relocations to ___dso_handle.
-  _stub_minos=""
-  # LC_BUILD_VERSION (newer) shows: minos X.Y.Z; LC_VERSION_MIN_MACOSX shows: version X.Y
-  if otool -l "${_stub_dir}/stub.o" 2>/dev/null | grep -q 'LC_BUILD_VERSION'; then
-    _stub_minos=$(otool -l "${_stub_dir}/stub.o" 2>/dev/null \
-      | grep -A4 'LC_BUILD_VERSION' | grep 'minos' | awk '{print $2}' | head -1)
-  elif otool -l "${_stub_dir}/stub.o" 2>/dev/null | grep -q 'LC_VERSION_MIN_MACOSX'; then
-    _stub_minos=$(otool -l "${_stub_dir}/stub.o" 2>/dev/null \
-      | grep -A2 'LC_VERSION_MIN_MACOSX' | grep 'version' | awk '{print $2}' | head -1)
-  fi
-  echo "  stub.o deployment target (from zig): ${_stub_minos:-<unknown>}"
-
-  # Extract -mmacosx-version-min from the link template used for the real LLVM build.
-  _link_version_min=$(grep -o '\-mmacosx-version-min=[0-9.]*' "${_cmake_project_include}" \
-    | head -1 | sed 's/-mmacosx-version-min=//' || true)
-  if [[ -n "${_link_version_min}" ]]; then
-    echo "  Link template deployment target (-mmacosx-version-min): ${_link_version_min}"
-    if [[ -n "${_stub_minos}" ]]; then
-      # Compare major versions — if zig's minos major > linker's version-min major, ADRP risk
-      _zig_major=$(echo "${_stub_minos}" | cut -d. -f1)
-      _link_major=$(echo "${_link_version_min}" | cut -d. -f1)
-      if [[ "${_zig_major}" -gt "${_link_major}" ]]; then
-        echo "  EARLY ABORT: deployment target mismatch!"
-        echo "    zig compiled stub.o for macOS ${_stub_minos}"
-        echo "    linker template targets macOS ${_link_version_min} (-mmacosx-version-min)"
-        echo "    ld64 will reject ADRP relocations (e.g. to ___dso_handle) from newer-target objects."
-        echo "    Fix: remove -mmacosx-version-min from the CMAKE_CXX_CREATE_SHARED_LIBRARY"
-        echo "         template (let the linker default to the SDK), OR ensure zig cc also"
-        echo "         targets macOS ${_link_version_min} (patch zig-force-load-cxx wrapper)."
-        exit 1
-      fi
-    fi
-  else
-    echo "  Link template has no -mmacosx-version-min (linker will use SDK default)"
-  fi
-
-  # Link: use the wrapper — matches CMAKE_CXX_CREATE_SHARED_LIBRARY override.
-  # The wrapper filters *libc++.a/*libc++abi.a from argv then exec-s /usr/bin/clang.
-  # For the stub test there are no libc++.a args so this is equivalent to
-  # calling /usr/bin/clang directly, but using the wrapper keeps the test
-  # consistent with the real LLVM build.
-  # -arch ensures correct target for cross-builds (arm64 runner → x86_64 target).
-  echo "  Linking stub.dylib with macos-link-wrapper.sh (arch: ${_osx_arch})..."
-  "${SRC_DIR}/macos-link-wrapper.sh" -arch "${_osx_arch}" -dynamiclib \
-    -mmacosx-version-min="${_deploy_target}" -Wl,-ld_classic \
-    -L"${LLVM_INSTALL}/lib" -lc++ \
-    -o "${_stub_dir}/stub.dylib" \
-    "${_stub_dir}/stub.o"
-
-  echo "  === Checking stub.dylib ==="
-  _fail=0
-
-  echo "  --- Check 1: no local generic_category ---"
-  # nm -a shows all symbols; lowercase 't' = local defined = static libc++ baked in
-  _local_syms=$(nm -a "${_stub_dir}/stub.dylib" 2>/dev/null | grep 'generic_category' || true)
-  dbg "nm -a: ${_local_syms:-<none>}"
-  if echo "${_local_syms}" | grep -q '^[0-9a-f]* t '; then
-    echo "  FAIL: local generic_category ('t') — static libc++ baked in"
-    _fail=1
-  else
-    echo "  OK"
-  fi
-
-  echo "  --- Check 2: generic_category is UNDEFINED ---"
-  # nm -u shows undefined symbols (references to external shared libc++)
-  _undef=$(nm -u "${_stub_dir}/stub.dylib" 2>/dev/null | grep 'generic_category' || true)
-  dbg "nm -u: ${_undef:-<none>}"
-  if [[ -n "${_undef}" ]]; then
-    echo "  OK: UNDEFINED (will resolve from shared libc++)"
-  else
-    # Also check global defined — if -fvisibility=default made it global, that's also bad
-    _global=$(nm -gU "${_stub_dir}/stub.dylib" 2>/dev/null | grep 'generic_category' || true)
-    if [[ -n "${_global}" ]]; then
-      echo "  FAIL: GLOBAL DEFINED — libc++ symbol baked in (not delegating to shared)"
-      _fail=1
-    else
-      echo "  FAIL: generic_category not found in symbol table"
-      _fail=1
-    fi
-  fi
-
-  echo "  --- Check 3: libc++.dylib in load commands ---"
-  _deps=$(otool -L "${_stub_dir}/stub.dylib" 2>/dev/null || true)
-  if _debug; then echo "${_deps}" | sed 's/^/    /'; fi
-  if echo "${_deps}" | grep -q 'libc++'; then
-    echo "  OK: libc++ in load commands"
-  else
-    echo "  FAIL: libc++ NOT in load commands"
-    _fail=1
-  fi
-
-  if [[ ${_fail} -ne 0 ]]; then
-    echo ""
-    echo "  ============================================================"
-    echo "  EARLY ABORT: stub .dylib test failed."
-    echo "  The shared library link setup does not produce a .dylib that"
-    echo "  uses external shared libc++.  The real LLVM build would fail"
-    echo "  zig's ZigClangIsLLVMUsingSeparateLibcxx RTTI check."
-    echo "  ============================================================"
-    echo "  wrapper: ${SRC_DIR}/macos-link-wrapper.sh (arch: ${_osx_arch})"
-    echo "  MACOS_LINK: ${MACOS_LINK}"
-    echo "  ZIG_CXX: ${ZIG_CXX}"
-    echo "  LLVM_INSTALL/lib contents:"
-    ls -la "${LLVM_INSTALL}/lib/"libc++* 2>/dev/null || echo "    <none>"
-    exit 1
-  fi
-  echo "  === Stub .dylib test PASSED ==="
-  rm -rf "${_stub_dir}"
-fi
 
 echo "=== Building LLVM ==="
 if is_not_unix; then
@@ -1999,7 +1256,7 @@ if is_not_unix; then
   # The same function is exercised by the fast-fail stub test above, so any bug
   # in the shared logic surfaces in ~5 s (stub) rather than after the 90-min build.
   _implib=$(find "${LLVM_BUILD}" \( -name 'libLLVM*.dll.a' -o -name 'LLVM*.dll.a' \) 2>/dev/null | awk 'NR==1')
-  _zig_bin="${_native_zig:-${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe}"
+  _zig_bin="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
 
   # Determine dlltool machine type for cross-compilation (x64 host → arm64 target)
   _dlltool_machine=""

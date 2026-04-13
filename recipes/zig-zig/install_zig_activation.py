@@ -208,6 +208,7 @@ def install_activation_scripts(
         "@CROSS_TARGET_TRIPLET@": cross_target_triplet,
         "@CONDA_ZIG_BUILD@": conda_zig_build,
         "@CONDA_ZIG_HOST@": conda_zig_host,
+        "@ZIG_TARGET@": _strip_glibc_version(zig_triplet),
     }
 
     if is_nonunix:
@@ -251,33 +252,26 @@ def install_zig_cc_wrappers(
             zig_bin_name = zig_bin.rsplit("\\", 1)[-1]
             for mode, exe_name in [("cc", "zig-cc"), ("c++", "zig-cxx")]:
                 mode_replacements = {**replacements, "@ZIG_CC_MODE@": mode, "@ZIG_BIN_NAME@": zig_bin_name}
-                _compile_c_shim(cc_src, wrapper_dir / f"{exe_name}.exe", mode_replacements)
+                _compile_c_shim(cc_src, wrapper_dir / f"{cc_target}-{exe_name}.exe", mode_replacements)
 
         # Keep .bat for simple pass-through tools (no flag filtering needed)
-        for name in ["zig-ar", "zig-ranlib", "zig-asm", "zig-rc"]:
+        for name in ["zig-ar", "zig-ranlib", "zig-asm", "zig-rc", "zig-lld"]:
             src = scripts_dir / f"{name}.bat"
             if src.exists():
-                _install_template(src, wrapper_dir / f"{name}.bat", replacements)
+                _install_template(src, wrapper_dir / f"{cc_target}-{name}.bat", replacements)
 
-        # Windows DLL linker wrapper (.exe shim compiled with zig cc)
-        win_shared_src = recipe_dir / "building" / "zig-cxx-shared-win.c"
-        if win_shared_src.exists():
-            _compile_c_shim(
-                win_shared_src,
-                wrapper_dir / "zig-cxx-shared.exe",
-                replacements,
-            )
     else:
         wrapper_dir = prefix / "share" / "zig" / "wrappers"
-        # Install shared flag-filtering helper (sourced by zig-cc and zig-cxx)
-        common_src = scripts_dir / "_zig-cc-common.sh"
-        if common_src.exists():
-            _install_template(common_src, wrapper_dir / "_zig-cc-common.sh", replacements)
-        wrappers = ["zig-cc", "zig-cxx", "zig-ar", "zig-ranlib", "zig-asm", "zig-rc", "zig-cxx-shared", "zig-force-load-cc", "zig-force-load-cxx"]
+        # Install shared helpers (sourced by wrapper scripts, not executed directly)
+        for helper in ["_zig-cc-common.sh", "_zig-force-load-common.sh"]:
+            src = scripts_dir / helper
+            if src.exists():
+                _install_template(src, wrapper_dir / helper, replacements)
+        wrappers = ["zig-cc", "zig-cxx", "zig-ar", "zig-ranlib", "zig-asm", "zig-rc", "zig-lld", "zig-force-load-cc", "zig-force-load-cxx"]
         for name in wrappers:
             src = scripts_dir / f"{name}.sh"
             if src.exists():
-                _install_template(src, wrapper_dir / name, replacements, executable=True)
+                _install_template(src, wrapper_dir / f"{cc_target}-{name}", replacements, executable=True)
 
 
 def install_unix_cross_wrappers(

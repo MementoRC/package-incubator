@@ -209,16 +209,6 @@ EOF
     fi
   done
 
-  # Create static library using the current target architecture
-  echo "Creating static library..."
-  # Use eval to properly handle CC with space-separated command+args
-  # CC="${zig} cc" needs word splitting, but IFS doesn't include space
-  eval "${CC}" -c '"${stub_dir}/libc_csu_stubs.c"' -o '"${stub_dir}/libc_csu_stubs.o"' || return 1
-  eval "${AR}" rcs '"${stub_dir}/libcsu_compat.a"' '"${stub_dir}/libc_csu_stubs.o"' || return 1
-
-  # Copy to standard library location
-  cp "${stub_dir}/libcsu_compat.a" "${prefix}/lib/" || return 1
-
   # Patch glibc crt1.o files which reference __libc_csu_init/fini
   # NOTE: We do NOT patch GCC's crtbegin*.o files to avoid duplicate symbol definitions
   echo "Patching glibc crt1.o files..."
@@ -233,6 +223,5 @@ EOF
   done
 
   echo "Created GCC 14 + glibc 2.28 compatibility:"
-  echo "  - ${prefix}/lib/libcsu_compat.a"
   echo "  - Patched all glibc crt1*.o files with stub symbols"
 }

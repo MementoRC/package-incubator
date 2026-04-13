@@ -1,225 +1,374 @@
 schema_version: 1
 
 context:
-  build_number: 7
+  build_number: ${{ 109 if arm64 else 107 }}
   name: zig-llvm
   version: 20.1.8
 
-  library: ${{ "Library/" if not unix }}
-  exe: ${{ ".exe" if not unix }}
-  m2: ${{ "m2-" if not unix }}
+  library: ${{ "Library/" if not unix else "" }}
+  exe: ${{ ".exe" if not unix else "" }}
+  m2: ${{ "m2-" if not unix else "" }}
   sh: ${{ ".bat" if not unix else ".sh" }}
   so: ${{ ".so" if linux else ".dylib" if osx else ".dll.a" }}
+  zig: ${{ "zig-" if riscv64 else "" }}
 
   # Zig triplet mapping (for zig -target flag)
   zig_triplet: >-
     ${{
-      "x86_64-linux-gnu." ~ c_stdlib_version       if target_platform == "linux-64"       else
-      "aarch64-linux-gnu." ~ c_stdlib_version      if target_platform == "linux-aarch64"  else
-      "powerpc64le-linux-gnu." ~ c_stdlib_version  if target_platform == "linux-ppc64le"  else
-      "riscv64-linux-gnu." ~ c_stdlib_version      if target_platform == "linux-riscv64"  else
-      "s390x-linux-gnu." ~ c_stdlib_version        if target_platform == "linux-s390x"    else
-      "x86_64-macos-none"                          if target_platform == "osx-64"         else
-      "aarch64-macos-none"                         if target_platform == "osx-arm64"      else
-      "aarch64-windows-gnu"                        if not unix and arm64                  else
-      "x86_64-windows-gnu"                         if not unix                            else
+      "x86_64-linux-gnu." ~ c_stdlib_version        if target_platform == "linux-64"         else
+      "aarch64-linux-gnu." ~ c_stdlib_version       if target_platform == "linux-aarch64"    else
+      "powerpc64le-linux-gnu." ~ c_stdlib_version   if target_platform == "linux-ppc64le"    else
+      "riscv64-linux-gnu." ~ c_stdlib_version       if target_platform == "linux-riscv64"    else
+      "s390x-linux-gnu." ~ c_stdlib_version         if target_platform == "linux-s390x"      else
+      "x86_64-macos." ~ c_stdlib_version            if target_platform == "osx-64"           else
+      "aarch64-macos." ~ c_stdlib_version           if target_platform == "osx-arm64"        else
+      "aarch64-windows-gnu"                         if not unix and arm64                    else
+      "x86_64-windows-gnu"                          if not unix                              else
+      "native"
+    }}
+  # Bare zig target for target_platform (no glibc version suffix) - matches wrapper filename prefix
+  zig_target: >-
+    ${{
+      "x86_64-linux-gnu"                            if target_platform == "linux-64"         else
+      "aarch64-linux-gnu"                           if target_platform == "linux-aarch64"    else
+      "powerpc64le-linux-gnu"                       if target_platform == "linux-ppc64le"    else
+      "riscv64-linux-gnu"                           if target_platform == "linux-riscv64"    else
+      "s390x-linux-gnu"                             if target_platform == "linux-s390x"      else
+      "x86_64-macos." ~ c_stdlib_version            if target_platform == "osx-64"           else
+      "aarch64-macos." ~ c_stdlib_version           if target_platform == "osx-arm64"        else
+      "aarch64-windows-gnu"                         if not unix and arm64                    else
+      "x86_64-windows-gnu"                          if not unix                              else
+      "native"
+    }}
+  # Bare zig target for build_platform — wrapper filename prefix for the build-host compiler
+  zig_target_build: >-
+    ${{
+      "x86_64-linux-gnu"                            if build_platform == "linux-64"          else
+      "aarch64-linux-gnu"                           if build_platform == "linux-aarch64"     else
+      "powerpc64le-linux-gnu"                       if build_platform == "linux-ppc64le"     else
+      "riscv64-linux-gnu"                           if build_platform == "linux-riscv64"     else
+      "s390x-linux-gnu"                             if build_platform == "linux-s390x"       else
+      "x86_64-macos." ~ c_stdlib_version            if build_platform == "osx-64"            else
+      "aarch64-macos." ~ c_stdlib_version           if build_platform == "osx-arm64"         else
+      "aarch64-windows-gnu"                         if not unix and arm64                    else
+      "x86_64-windows-gnu"                          if not unix                              else
       "native"
     }}
   # LLVM target triple (standard format, no glibc version suffix)
   llvm_triplet: >-
     ${{
-      "x86_64-unknown-linux-gnu"                   if target_platform == "linux-64"       else
-      "aarch64-unknown-linux-gnu"                  if target_platform == "linux-aarch64"  else
-      "powerpc64le-unknown-linux-gnu"              if target_platform == "linux-ppc64le"  else
-      "riscv64-unknown-linux-gnu"                  if target_platform == "linux-riscv64"  else
-      "s390x-unknown-linux-gnu"                    if target_platform == "linux-s390x"    else
-      "x86_64-apple-darwin"                        if target_platform == "osx-64"         else
-      "aarch64-apple-darwin"                       if target_platform == "osx-arm64"      else
-      "aarch64-w64-windows-gnu"                    if not unix and arm64                  else
-      "x86_64-w64-windows-gnu"                     if not unix                            else
+      "x86_64-unknown-linux-gnu"                    if target_platform == "linux-64"         else
+      "aarch64-unknown-linux-gnu"                   if target_platform == "linux-aarch64"    else
+      "powerpc64le-unknown-linux-gnu"               if target_platform == "linux-ppc64le"    else
+      "riscv64-unknown-linux-gnu"                   if target_platform == "linux-riscv64"    else
+      "s390x-unknown-linux-gnu"                     if target_platform == "linux-s390x"      else
+      "x86_64-apple-darwin"                         if target_platform == "osx-64"           else
+      "aarch64-apple-darwin"                        if target_platform == "osx-arm64"        else
+      "aarch64-w64-windows-gnu"                     if not unix and arm64                    else
+      "x86_64-w64-windows-gnu"                      if not unix                              else
       "native"
     }}
 
-package:
-  name: ${{ name }}
-  version: ${{ version }}
-  
 source:
   - url: https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-${{ version }}.tar.gz
     sha256: a6cbad9b2243b17e87795817cfff2107d113543a12486586f8a055a2bb044963
     patches:
       - patches/0001-pass-through-QEMU_LD_PREFIX-SDKROOT.patch
       - patches/0002-fix-non-unix-zstd-shared-lib-finding.patch
+      - patches/0006-fix-cmake-cfg-intdir-windows.patch
       - if: not unix
         then:
           - patches/0004-add-llvm-dylib-export-all-symbols-mingw.patch
           - patches/0005-disable-clang-interpreter-dllexport-mingw.patch
 
-build:
-  number: ${{ build_number }}
-  # Cross-compiled Linux targets use zig-zig-llvm recipe instead
-  skip: target_platform in ["linux-aarch64", "linux-riscv64", "linux-s390x"]
-  # Disable rattler-build's automatic dylib relocation on macOS.
-  # Our post-install.sh rewrites all inter-library refs to @loader_path
-  # to isolate zig-llvm dylibs from conda-forge's LLVM/libc++ in $PREFIX/lib/.
-  # Without this, rattler-build's packaging step overwrites our @loader_path
-  # changes back to @rpath and adds rpaths that reach $PREFIX/lib/, causing
-  # dyld to load conda-forge's libc++ instead of zig-llvm's.
-  dynamic_linking:
-    binary_relocation: false
-  script:
-    env:
-      LLVM_TRIPLET: ${{ llvm_triplet }}
-      ZIG_TRIPLET: ${{ zig_triplet }}
-      # ZIG_LLVM_SKIP_BUILD: 1
-      ZIG_LLVM_DEBUG: 1
-      
-      # --- BOOTSTRAPPING ---
-      CONDA_BUILD_ZIG: >-
-        ${{
-          "x86_64-conda-linux-gnu"                 if build_platform == "linux-64"    else
-          "x86_64-apple-darwin13.4.0"              if build_platform == "osx-64"      else
-          "arm64-apple-darwin20.0.0"               if build_platform == "osx-arm64"   else
-          "aarch64-w64-mingw32"                    if not unix and arm64              else
-          "x86_64-w64-mingw32"                     if not unix                        else
-          "unknown"
-        }}-zig
-    
-  # --- DEBUG ---
-  # skip: not (osx and arm64 or not unix and x86_64)
-  # --- DEBUG ---
-      
-requirements:
-  build:
-    - ${{ stdlib('c') }}
-    - ${{ m2 }}bash >=5.2
-    # cmake pin: real fix is searching CMakeFiles/rules.ninja (not build.ninja).
-    # <4 as belt-and-suspenders against future cmake changes.
-    - cmake >=3.19,<4
-    - git
-    - ninja
-    - if: not osx
-      then:
-        - lld
-    - if: linux
-      then:
-        - patchelf
-    # Cross-compilation: need host tablegen tools (provided by zig-llvm itself)
-    - if: build_platform != target_platform
-      then:
-        - libxml2
-        - zig_${{ target_platform }} >=0.15.2 *_15
-        - zlib
-        - zstd
-        - if: osx
-          then:
-            - libxml2-devel
-      else:
-        - zig_${{ build_platform }} >=0.15.2 *_15
-    - if: not unix
-      then:
-        - ${{ m2 }}coreutils
-        - ${{ m2 }}findutils
-        - pkg-config
-  host:
-    - zlib
-    - if: unix
-      then:
-        - libxml2
-        - zstd
-  run_exports:
-    - ${{ pin_subpackage(name, upper_bound='x.x') }}
-    # lld static archives directly reference zlib/zstd symbols (ELF section
-    # compression). Consumers linking liblldELF.a etc. need these present.
-    - zlib
-    - if: unix
-      then:
-        - zstd
+outputs:
+  # === STAGING: Build LLVM once, cache result for both packages ===
+  - staging:
+      name: zig-llvm-build
+    build:
+      script:
+        file: build${{ sh }}
+        env:
+          LLVM_TRIPLET: ${{ llvm_triplet }}
+          ZIG_TRIPLET: ${{ zig_triplet }}
+          ZIG_TARGET_HOST: ${{ zig_target }}
+          ZIG_TARGET_BUILD: ${{ zig_target_build }}
+          # ZIG_LLVM_SKIP_BUILD: 1
+          ZIG_LLVM_DEBUG: 1
+          ZIG_DEBUG_SDK: "1"
 
-tests:
-  # Verify package structure (common files across all platforms)
-  - package_contents:
+          # --- BOOTSTRAPPING ---
+          CONDA_BUILD_ZIG: >-
+            ${{
+              "x86_64-conda-linux-gnu"                  if build_platform == "linux-64"          else
+              "x86_64-apple-darwin13.4.0"               if build_platform == "osx-64"            else
+              "arm64-apple-darwin20.0.0"                if build_platform == "osx-arm64"         else
+              "aarch64-w64-mingw32"                     if not unix and arm64                    else
+              "x86_64-w64-mingw32"                      if not unix                              else
+              "unknown"
+            }}-zig
+
+      # --- DEBUG ---
+      # skip: not (osx and arm64 or not unix and x86_64)
+      # --- DEBUG ---
+
+    requirements:
+      build:
+        - if: not riscv64
+          then:
+            - ${{ stdlib('c') }}
+        - ${{ m2 }}bash >=5.2
+        # cmake pin: real fix is searching CMakeFiles/rules.ninja (not build.ninja).
+        # <4 as belt-and-suspenders against future cmake changes.
+        - cmake >=3.19,<4
+        - git
+        - ninja
+        - zig-gcc_${{ build_platform }}
+        - zstd
+        - if: not osx
+          then:
+            - lld
+        - if: linux
+          then:
+            - libxml2
+            - patchelf
+        # Cross-compilation: need host tablegen tools + target compiler
+        - if: build_platform != target_platform
+          then:
+            - zig-llvm-tblgen
+            # zig-llvm-tblgen's llvm-tblgen binary is dynamically linked against
+            # libc++.so.1; pull zig-libcxx so the loader finds it at build time
+            # (needed for ARMTargetParserDef.inc generation on cross-builds).
+            # NOTE: no _${{ build_platform }} suffix — that variant doesn't exist
+            # for zig-libcxx (only zig-gcc has the multi-platform variant).
+            - zig-libcxx
+            - zig-gcc_${{ target_platform }}
+            - if: osx
+              then:
+                - libxml2-devel
+        - if: not unix
+          then:
+            - ${{ m2 }}coreutils
+            - ${{ m2 }}findutils
+            - pkg-config
+      host:
+        - ${{ zig }}zlib
+        - ${{ zig }}zstd
+        - if: riscv64
+          then:
+            - ${{ zig }}libxml2
+          else:
+            - libxml2-devel
+
+  # === zig-llvm-tblgen: lightweight native tools for cross-compilation ===
+  # Contains only the host-arch binaries needed to generate .inc files and
+  # query LLVM configuration. Cross-builds list this as a build: dep instead
+  # of pulling in the full zig-llvm package.
+  - package:
+      name: zig-llvm-tblgen
+      version: ${{ version }}
+    inherit: zig-llvm-build
+    build:
+      number: ${{ build_number }}
       files:
+        - ${{ library }}lib/zig-llvm/bin/llvm-tblgen${{ exe }}
+        - ${{ library }}lib/zig-llvm/bin/clang-tblgen${{ exe }}
+        - ${{ library }}lib/zig-llvm/bin/llvm-min-tblgen${{ exe }}
         - ${{ library }}lib/zig-llvm/bin/llvm-config
         - ${{ library }}lib/zig-llvm/bin/llvm-config.real${{ exe }}
         - ${{ library }}lib/zig-llvm/bin/llvm-dlltool${{ exe }}
-        - ${{ library }}lib/zig-llvm/include/c++/*
-        - ${{ library }}lib/zig-llvm/include/clang/*
-        - ${{ library }}lib/zig-llvm/include/clang-c/*.h
-        - ${{ library }}lib/zig-llvm/include/lld/Common/*{.inc,.h}
-        - ${{ library }}lib/zig-llvm/include/llvm/*
-        - ${{ library }}lib/zig-llvm/include/llvm-c/*.h
-        - ${{ library }}lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
-        - ${{ library }}lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
-        - ${{ library }}lib/zig-llvm/lib/liblld*.a
+    requirements:
+      run:
+        - ${{ pin_subpackage("zig-libcxx", upper_bound='x.x') }}
+    tests:
+      - package_contents:
+          # strict: true
+          files:
+            - ${{ library }}lib/zig-llvm/bin/llvm-tblgen${{ exe }}
+            - ${{ library }}lib/zig-llvm/bin/clang-tblgen${{ exe }}
+            # - ${{ library }}lib/zig-llvm/bin/llvm-min-tblgen${{ exe }}
+            - ${{ library }}lib/zig-llvm/bin/llvm-config
+            - ${{ library }}lib/zig-llvm/bin/llvm-config.real${{ exe }}
+            - ${{ library }}lib/zig-llvm/bin/llvm-dlltool${{ exe }}
 
-        # libc++abi is statically merged into libc++ on all platforms
-        - ${{ library }}lib/zig-llvm/lib/libclang-cpp*${{ so }}*
+  # === zig-libcxx ===
+  - package:
+      name: zig-libcxx
+      version: ${{ version }}
+    inherit: zig-llvm-build
+    build:
+      number: ${{ build_number }}
+      dynamic_linking:
+        binary_relocation: false
+      files:
+        - ${{ library }}lib/zig-llvm/include/c++
+        - ${{ library }}lib/zig-llvm/include/**/compact_unwind_encoding.h
+        - ${{ library }}lib/zig-llvm/include/{__libu,libu,u}nwind*.h
+        - ${{ library }}lib/zig-llvm/include/libunwind.modulemap
         - ${{ library }}lib/zig-llvm/lib/libc++*${{ so }}*
-        - ${{ library }}lib/zig-llvm/lib/libLLVM*${{ so }}*
+        - ${{ library }}lib/zig-llvm/lib/libunwind*${{ so }}*
+        - ${{ library }}lib/zig-llvm/lib/libc++.modules.json
         - if: not unix
           then:
-            # DLLs (runtime) in bin/
-            - Library/lib/zig-llvm/bin/libLLVM*.dll
-            - Library/lib/zig-llvm/bin/libclang-cpp*.dll
-            - Library/lib/zig-llvm/bin/libc++*.dll
-        - ${{ library }}lib/zig-llvm-path.txt
-        # Post-install test resources
-        - if: build_platform == target_platform
-          then:
-            - etc/conda/test-files/zig-llvm/*
-
-  - if: build_platform == target_platform
-    then:
-      # Verify llvm-config works and returns valid paths
-      - script:
-          - python testing/test_llvm_config.py
-        files:
-          recipe:
-            - testing/test_llvm_config.py
-        requirements:
-          run:
-            - python >=3.9
+            - ${{ library }}lib/zig-llvm/bin/libc++*.dll
+            - ${{ library }}lib/zig-llvm/bin/libunwind*.dll
+    requirements:
+      run_exports:
+        - ${{ pin_subpackage("zig-libcxx", upper_bound='x.x') }}
+    tests:
+      - package_contents:
+          strict: true
+          files:
+            - ${{ library }}lib/zig-llvm/include/c++/v1/*
+            - ${{ library }}lib/zig-llvm/include/**/compact_unwind_encoding.h
+            - ${{ library }}lib/zig-llvm/include/{__libu,libu,u}nwind*.h
+            - ${{ library }}lib/zig-llvm/include/libunwind.modulemap
+            - ${{ library }}lib/zig-llvm/lib/libc++*${{ so }}*
+            - ${{ library }}lib/zig-llvm/lib/libunwind*${{ so }}*
+            - ${{ library }}lib/zig-llvm/lib/libc++.modules.json
             - if: not unix
               then:
-                - ${{ m2 }}bash >=5.2
+                - ${{ library }}lib/zig-llvm/bin/libc++*.dll
+                - ${{ library }}lib/zig-llvm/bin/libunwind*.dll
 
-      # Verify shared libraries: valid format, no libstdc++, GLIBC versions, symbols
-      - script:
-          - python testing/test_shared_libs.py
-        files:
-          recipe:
-            - testing/test_shared_libs.py
-        requirements:
-          run:
-            - python >=3.9
-            - if: linux
+  # === zig-llvm: full LLVM installation (shared libs, headers, cmake) ===
+  - package:
+      name: ${{ name }}
+      version: ${{ version }}
+    inherit: zig-llvm-build
+    build:
+      number: ${{ build_number }}
+      dynamic_linking:
+        binary_relocation: false
+      files:
+        include:
+          - ${{ library }}lib/zig-llvm/**
+          - ${{ library }}lib/zig-llvm-path.txt
+          - if: build_platform == target_platform
+            then:
+              - etc/conda/test-files/zig-llvm/*
+        exclude:
+          - ${{ library }}lib/zig-llvm/bin/llvm-config
+          - ${{ library }}lib/zig-llvm/bin/llvm-config.real${{ exe }}
+          - ${{ library }}lib/zig-llvm/bin/llvm-dlltool${{ exe }}
+          - ${{ library }}lib/zig-llvm/bin/clang-tblgen${{ exe }}
+          - ${{ library }}lib/zig-llvm/bin/llvm-min-tblgen${{ exe }}
+          - ${{ library }}lib/zig-llvm/bin/llvm-tblgen${{ exe }}
+          - ${{ library }}lib/zig-llvm/include/c++
+          - ${{ library }}lib/zig-llvm/include/**/compact_unwind_encoding.h
+          - ${{ library }}lib/zig-llvm/include/{__libu,libu,u}nwind*.h
+          - ${{ library }}lib/zig-llvm/include/libunwind.modulemap
+          - ${{ library }}lib/zig-llvm/lib/libc++*${{ so }}*
+          - ${{ library }}lib/zig-llvm/lib/libunwind*${{ so }}*
+          - ${{ library }}lib/zig-llvm/lib/libc++.modules.json
+          - if: not unix
+            then:
+              - ${{ library }}lib/zig-llvm/bin/libc++*.dll
+              - ${{ library }}lib/zig-llvm/bin/libunwind*.dll
+    requirements:
+      run_exports:
+        - ${{ pin_subpackage(name, upper_bound='x.x') }}
+      run:
+        # lld static archives directly reference zlib/zstd symbols (ELF section
+        # compression). Consumers linking liblldELF.a etc. need these present.
+        - ${{ pin_subpackage("zig-llvm-tblgen", upper_bound='x.x') }}
+        - ${{ pin_subpackage("zig-libcxx", upper_bound='x.x') }}
+        - ${{ zig }}zlib
+        - zig-libcxx
+        - if: unix
+          then:
+            - ${{ zig }}zstd
+    tests:
+      # Verify package structure (common files across all platforms)
+      - package_contents:
+          strict: true
+          files:
+            - ${{ library }}lib/zig-llvm/include/clang/*
+            - ${{ library }}lib/zig-llvm/include/clang-c/*.h
+            - ${{ library }}lib/zig-llvm/include/lld/Common/*{.inc,.h}
+            - ${{ library }}lib/zig-llvm/include/llvm/*
+            - ${{ library }}lib/zig-llvm/include/llvm-c/*.h
+            - ${{ library }}lib/zig-llvm/lib/clang/${{ version | split('.') | first }}/include/*
+            - ${{ library }}lib/zig-llvm/lib/cmake/{clang,lld,llvm}/*{.cmake,.cpp.in}
+            # lld bundle: static archives are replaced by a single shared lib
+            # riscv64/s390x: skipped (no conda-forge zstd/xml2/z for these targets)
+            - if: linux and not (target_platform == "linux-riscv64" or target_platform == "linux-s390x")
               then:
-                - binutils
-
-      # CRITICAL: Validate shared libc++ linkage for zig's libcxx_shared.zig probe.
-      # Uses ctypes to dlopen the actual installed shared libraries,
-      # checks dependency entries, symbol binding, and compares runtime addresses of
-      # std::generic_category(). Verifies no static libc++ merged in.
-      - script:
-          - python testing/test_libc++_shared.py
-        files:
-          recipe:
-            - testing/test_libc++_shared.py
-        requirements:
-          run:
-            - python >=3.9
-            - if: linux
+                - lib/zig-llvm/lib/liblldZig.so
+            - if: osx
               then:
-                - binutils
+                - lib/zig-llvm/lib/liblldZig.dylib
+            - if: not unix
+              then:
+                - Library/lib/zig-llvm/lib/liblldZig.dll.a
+                - Library/lib/zig-llvm/bin/liblldZig.dll
 
-      # Verify zig can use this LLVM (requires zig in test env)
-      - script:
-          - zig version
-          - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
-        requirements:
-          run:
-            - zig >=0.15.2 *_15
+            - ${{ library }}lib/zig-llvm/lib/libclang-cpp*${{ so }}*
+            - ${{ library }}lib/zig-llvm/lib/libLLVM*${{ so }}*
+            - if: not unix
+              then:
+                # DLLs (runtime) in bin/
+                - Library/lib/zig-llvm/bin/libLLVM*.dll
+                - Library/lib/zig-llvm/bin/libclang-cpp*.dll
+            - ${{ library }}lib/zig-llvm-path.txt
+            # Post-install test resources
+            - if: build_platform == target_platform
+              then:
+                - etc/conda/test-files/zig-llvm/*
+
+      - if: build_platform == target_platform
+        then:
+          # Verify llvm-config works and returns valid paths
+          - script:
+              - python testing/test_llvm_config.py
+            files:
+              recipe:
+                - testing/test_llvm_config.py
+            requirements:
+              run:
+                - python >=3.9
+                - if: not unix
+                  then:
+                    - ${{ m2 }}bash >=5.2
+
+          # Verify shared libraries: valid format, no libstdc++, GLIBC versions, symbols
+          - script:
+              - python testing/test_shared_libs.py
+            files:
+              recipe:
+                - testing/test_shared_libs.py
+            requirements:
+              run:
+                - python >=3.9
+                - if: linux
+                  then:
+                    - binutils
+
+          # CRITICAL: Validate shared libc++ linkage for zig's libcxx_shared.zig probe.
+          # Uses ctypes to dlopen the actual installed shared libraries,
+          # checks dependency entries, symbol binding, and compares runtime addresses of
+          # std::generic_category(). Verifies no static libc++ merged in.
+          # Requires libLLVM + libclang-cpp (both in zig-llvm) and libc++/libunwind
+          # (provided by zig-libcxx, a run dep of zig-llvm).
+          - script:
+              - python testing/test_libc++_shared.py
+            files:
+              recipe:
+                - testing/test_libc++_shared.py
+            requirements:
+              run:
+                - python >=3.9
+                - if: linux
+                  then:
+                    - binutils
+
+          # Verify zig can use this LLVM (requires zig in test env)
+          - script:
+              - zig version
+              - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
+            requirements:
+              run:
+                - zig-gcc
 
 about:
   homepage: http://llvm.org/

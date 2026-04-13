@@ -87,6 +87,16 @@ function configure_cmake() {
   ) || return 1
 }
 
+# Disable langref/doctest build for cross-compilation targets where running
+# the compiled doctests is unreliable (sysroot-free libc, limited qemu fidelity).
+# Matches zig-gcc's -Dno-langref flag used when qemu is absent or unreliable.
+# Takes build_dir as argument (unused here; kept for call-site compatibility).
+function remove_failing_langref() {
+  local _build_dir="${1:-}"
+  echo "Disabling langref doctests for cross-build (-Dno-langref)"
+  EXTRA_ZIG_ARGS+=(-Dno-langref)
+}
+
 function configure_cmake_zigcpp() {
   local build_dir=$1
   local install_dir=$2

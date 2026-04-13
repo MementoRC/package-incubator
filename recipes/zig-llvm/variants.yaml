@@ -14,4 +14,11 @@ c_stdlib_version:
       - "2.17"
   - if: osx
     then:
-      - "11.0"
+      - "11.3"
+  - if: not unix
+    then:
+      - "2022"
+c_compiler:
+  - if: not unix
+    then:
+      - vs2017 
