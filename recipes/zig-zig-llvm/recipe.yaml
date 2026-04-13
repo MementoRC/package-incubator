@@ -8,6 +8,7 @@ context:
   # Zig triplet mapping (for zig -target flag)
   zig_triplet: >-
     ${{
+      "aarch64-linux-gnu." ~ c_stdlib_version      if target_platform == "linux-aarch64"  else
       "riscv64-linux-gnu." ~ c_stdlib_version      if target_platform == "linux-riscv64"  else
       "s390x-linux-gnu." ~ c_stdlib_version        if target_platform == "linux-s390x"    else
       "native"
@@ -15,6 +16,7 @@ context:
   # LLVM target triple (standard format, no glibc version suffix)
   llvm_triplet: >-
     ${{
+      "aarch64-unknown-linux-gnu"                  if target_platform == "linux-aarch64"  else
       "riscv64-unknown-linux-gnu"                  if target_platform == "linux-riscv64"  else
       "s390x-unknown-linux-gnu"                    if target_platform == "linux-s390x"    else
       "native"
@@ -33,8 +35,8 @@ source:
 
 build:
   number: ${{ build_number }}
-  # Only for sysroot-less Linux targets, always cross-compiled from linux-64
-  skip: not (target_platform in ["linux-riscv64", "linux-s390x"])
+  # Cross-compiled Linux targets, always from linux-64
+  skip: not (target_platform in ["linux-aarch64", "linux-riscv64", "linux-s390x"])
   dynamic_linking:
     binary_relocation: false
   script:
