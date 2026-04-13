@@ -10,9 +10,9 @@ function remove_unneeded() {
   # Many LLVM tools are symlinks, so delete both files and symlinks
   # On Windows, keep DLLs in bin/ (cmake installs .dll runtime there)
   echo "=== Removing tools except llvm-config ==="
-  find "${LLVM_INSTALL}/bin" \( -type f -o -type l \) ! \( -name "llvm-config*" -o -name "*-tblgen" -o -name "*.dll" \) -delete
+  find "${LLVM_INSTALL}/bin" \( -type f -o -type l \) ! \( -name "llvm-config*" -o -name "*-tblgen" -o -name "llvm-dlltool*" -o -name "*.dll" \) -delete
   ls "${LLVM_INSTALL}/bin/"
-  echo "  Kept llvm-config (and DLLs on Windows) in ${LLVM_INSTALL}/bin"
+  echo "  Kept llvm-config, llvm-dlltool, tblgen (and DLLs on Windows) in ${LLVM_INSTALL}/bin"
 
   # Remove share/ directory (clang-format helpers, cmake modules we don't need)
   echo "=== Removing share/ directory ==="
