@@ -147,11 +147,11 @@ requirements:
         - ${{ m2 }}findutils
         - pkg-config
   host:
-    - zlib
+    - ${{ zig }}zlib
     - if: unix
       then:
-        - libxml2
-        - zstd
+        - ${{ zig }}libxml2
+        - ${{ zig }}zstd
   run_exports:
     - ${{ pin_subpackage(name, upper_bound='x.x') }}
     # lld static archives directly reference zlib/zstd symbols (ELF section

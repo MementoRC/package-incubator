@@ -38,15 +38,15 @@ jobs:
           path: output/linux-64/*.conda
           key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
           restore-keys: zig-gcc-linux-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-gcc
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-gcc \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-gcc artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
       - name: Save zig-gcc cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -60,15 +60,15 @@ jobs:
           path: output/linux-64/*.conda
           key: zig-llvm-linux-64-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: zig-llvm-linux-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-llvm
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -121,15 +121,15 @@ jobs:
           path: output/linux-64/zig-zig*.conda
           key: zig-zig-linux-64-${{ hashFiles('recipes/zig-zig/**') }}
           restore-keys: zig-zig-linux-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
       - name: Save zig-zig cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -175,15 +175,15 @@ jobs:
           path: output/osx-arm64/*.conda
           key: zig-gcc-osx-arm64-${{ hashFiles('recipes/zig-gcc/**') }}
           # restore-keys: zig-gcc-osx-arm64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-gcc
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-gcc \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-gcc artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
       - name: Save zig-gcc cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -197,15 +197,15 @@ jobs:
           path: output/osx-arm64/*.conda
           key: zig-llvm-osx-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: zig-llvm-osx-arm64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-llvm
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -258,15 +258,15 @@ jobs:
           path: output/osx-arm64/zig-zig*.conda
           key: zig-zig-osx-arm64-${{ hashFiles('recipes/zig-zig/**') }}
           restore-keys: zig-zig-osx-arm64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
       - name: Save zig-zig cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -312,15 +312,15 @@ jobs:
           path: output/win-64/*.conda
           key: zig-gcc-win-64-${{ hashFiles('recipes/zig-gcc/**') }}
           restore-keys: zig-gcc-win-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-gcc
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-gcc \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-gcc artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
       - name: Save zig-gcc cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -334,15 +334,15 @@ jobs:
           path: output/win-64/*.conda
           key: zig-llvm-win-64-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: zig-llvm-win-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-llvm
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -395,15 +395,15 @@ jobs:
           path: output/win-64/zig-zig*.conda
           key: zig-zig-win-64-${{ hashFiles('recipes/zig-zig/**') }}
           restore-keys: zig-zig-win-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
       - name: Save zig-zig cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -473,9 +473,6 @@ jobs:
           path: output/${{ matrix.target }}/*.conda
           key: zig-zlib-${{ matrix.target }}-${{ hashFiles('recipes/zig-zlib/**') }}
           restore-keys: zig-zlib-${{ matrix.target }}-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zlib
         shell: bash
         run: |
@@ -483,6 +480,9 @@ jobs:
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zlib artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zlib-*'
       - name: Save zig-zlib cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -496,9 +496,6 @@ jobs:
           path: output/${{ matrix.target }}/*.conda
           key: zig-zstd-${{ matrix.target }}-${{ hashFiles('recipes/zig-zstd/**') }}
           restore-keys: zig-zstd-${{ matrix.target }}-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zstd
         shell: bash
         run: |
@@ -506,6 +503,9 @@ jobs:
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zstd artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zstd-*'
       - name: Save zig-zstd cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -519,9 +519,6 @@ jobs:
           path: output/${{ matrix.target }}/*.conda
           key: zig-libxml2-${{ matrix.target }}-${{ hashFiles('recipes/zig-libxml2/**') }}
           restore-keys: zig-libxml2-${{ matrix.target }}-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-libxml2
         shell: bash
         run: |
@@ -529,6 +526,9 @@ jobs:
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-libxml2 artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-libxml2-*'
       - name: Save zig-libxml2 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -542,9 +542,6 @@ jobs:
           path: output/${{ matrix.target }}/*.conda
           key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: zig-llvm-${{ matrix.target }}-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-llvm
         shell: bash
         run: |
@@ -552,6 +549,9 @@ jobs:
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -565,9 +565,6 @@ jobs:
           path: output/${{ matrix.target }}/*.conda
           key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
           restore-keys: zig-zig-${{ matrix.target }}-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig
         shell: bash
         run: |
@@ -575,6 +572,9 @@ jobs:
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
       - name: Save zig-zig cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -582,9 +582,6 @@ jobs:
           path: output/${{ matrix.target }}/zig-zig*.conda
           key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
 
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig-llvm
         shell: bash
         run: |
@@ -592,6 +589,9 @@ jobs:
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-llvm-*'
 
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'
@@ -634,15 +634,15 @@ jobs:
           path: output/osx-64/*.conda
           key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: zig-llvm-osx-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-llvm
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -656,15 +656,15 @@ jobs:
           path: output/osx-64/*.conda
           key: zig-zig-osx-64-${{ hashFiles('recipes/zig-zig/**') }}
           restore-keys: zig-zig-osx-64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
       - name: Save zig-zig cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -713,15 +713,15 @@ jobs:
           path: output/win-arm64/*.conda
           key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
           restore-keys: zig-llvm-win-arm64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-llvm
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
@@ -735,15 +735,15 @@ jobs:
           path: output/win-arm64/*.conda
           key: zig-zig-win-arm64-${{ hashFiles('recipes/zig-zig/**') }}
           restore-keys: zig-zig-win-arm64-
-      - name: Prune stale .conda artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output
       - name: Build zig-zig
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
       - name: Save zig-zig cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
