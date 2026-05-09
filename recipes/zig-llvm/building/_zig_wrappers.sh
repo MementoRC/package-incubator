@@ -14,7 +14,7 @@ if is_not_unix; then
   # so cmake's compiler probe (--target=<triple> -print-target-triple) works correctly.
   # Shims are installed side-by-side in Library/share/zig/wrappers/ by both the
   # build-host and target-host wrapper packages.
-  _shim_cc="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc.exe"
+  _shim_cc="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc.exe"
   if [[ ! -x "${_shim_cc}" ]]; then
     echo "ERROR: zig cc shim not found at ${_shim_cc}"
     ls "${ZIG_WRAPPERS}/"*zig* 2>/dev/null || true
@@ -22,19 +22,19 @@ if is_not_unix; then
   fi
   "${_shim_cc}" --version
 
-  export ZIG_CC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc.exe"
-  export ZIG_CXX="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx.exe"
-  export ZIG_ASM="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc.exe"
-  export ZIG_AR="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ar.bat"
-  export ZIG_RANLIB="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ranlib.bat"
-  export ZIG_RC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-rc.bat"
+  export ZIG_CC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc.exe"
+  export ZIG_CXX="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx.exe"
+  export ZIG_ASM="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc.exe"
+  export ZIG_AR="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ar.exe"
+  export ZIG_RANLIB="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ranlib.exe"
+  export ZIG_RC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-rc.exe"
 else
-  export ZIG_CC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc"
-  export ZIG_CXX="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx"
-  export ZIG_AR="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ar"
-  export ZIG_RANLIB="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-ranlib"
-  export ZIG_ASM="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-asm"
-  export ZIG_RC="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-rc"
+  export ZIG_CC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc"
+  export ZIG_CXX="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx"
+  export ZIG_AR="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ar"
+  export ZIG_RANLIB="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ranlib"
+  export ZIG_ASM="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-asm"
+  export ZIG_RC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-rc"
 fi
 
 # setup_macos_sysroot: ensure /opt/MacOSX*.sdk exists for zig-cc path #3 lookup.
@@ -124,10 +124,10 @@ PYEOF
 if is_osx; then
     setup_macos_sysroot
 
-    if [[ -x "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-force-load-cxx" ]]; then
-        export ZIG_CXX="${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-force-load-cxx"
+    if [[ -x "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cxx" ]]; then
+        export ZIG_CXX="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cxx"
     else
-        echo "ERROR: ${ZIG_TARGET_HOST}-zig-force-load-cxx not found in ${ZIG_WRAPPERS}"
+        echo "ERROR: ${CONDA_BUILD_ZIG}-force-load-cxx not found in ${ZIG_WRAPPERS}"
         exit 1
     fi
 
@@ -144,7 +144,7 @@ if is_osx; then
     # -target @ZIG_TARGET@ substitution. zig-force-load-cxx does NOT embed
     # the target directly — it sources _zig-cc-common.sh at runtime.
     # Patching the common script fixes ALL wrappers that source it.
-    for _wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx"; do
+    for _wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx"; do
         [[ -f "${_wrapper}" ]] || continue
         # Check if this is a text file (shell script) — binaries cannot be sed-patched
         if ! file "${_wrapper}" | grep -q 'text\|script\|ASCII'; then
@@ -171,7 +171,7 @@ if is_osx; then
 
     # Diagnostic: show the macOS target triple in each wrapper used as a compiler
     echo "  === macOS wrapper deployment targets (after patching) ==="
-    for _diag_wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cc" "${ZIG_WRAPPERS}/${ZIG_TARGET_HOST}-zig-cxx"; do
+    for _diag_wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx"; do
         [[ -f "${_diag_wrapper}" ]] || continue
         _diag_target=$(grep -oE 'macos(\.[0-9]+\.[0-9]+)?-none' "${_diag_wrapper}" | head -1 || true)
         echo "  $(basename "${_diag_wrapper}"): ${_diag_target:-<no macos*-none target found>}"

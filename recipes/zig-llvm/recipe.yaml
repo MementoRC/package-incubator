@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: ${{ 109 if arm64 else 107 }}
+  build_number: ${{ 110 if arm64 else 108 }}
   name: zig-llvm
   version: 20.1.8
 
@@ -101,6 +101,7 @@ outputs:
           CONDA_BUILD_ZIG: >-
             ${{
               "x86_64-conda-linux-gnu"                  if build_platform == "linux-64"          else
+              "aarch64-conda-linux-gnu"                 if build_platform == "linux-aarch64"     else
               "x86_64-apple-darwin13.4.0"               if build_platform == "osx-64"            else
               "arm64-apple-darwin20.0.0"                if build_platform == "osx-arm64"         else
               "aarch64-w64-mingw32"                     if not unix and arm64                    else
@@ -123,8 +124,8 @@ outputs:
         - cmake >=3.19,<4
         - git
         - ninja
-        - zig-gcc_${{ build_platform }}
-        - zstd
+        - zig_${{ build_platform }} ==0.15.2 *_25
+        # - zstd
         - if: not osx
           then:
             - lld
@@ -140,9 +141,9 @@ outputs:
             # libc++.so.1; pull zig-libcxx so the loader finds it at build time
             # (needed for ARMTargetParserDef.inc generation on cross-builds).
             # NOTE: no _${{ build_platform }} suffix — that variant doesn't exist
-            # for zig-libcxx (only zig-gcc has the multi-platform variant).
+            # for zig-libcxx (only zig has the multi-platform variant).
             - zig-libcxx
-            - zig-gcc_${{ target_platform }}
+            - zig_${{ target_platform }} ==0.15.2 *_25
             - if: osx
               then:
                 - libxml2-devel
@@ -151,6 +152,9 @@ outputs:
             - ${{ m2 }}coreutils
             - ${{ m2 }}findutils
             - pkg-config
+        - if: not unix and arm64
+          then:
+            - llvm-tools 20.*  # provides llvm-nm and llvm-readobj for extract_symbols.py
       host:
         - ${{ zig }}zlib
         - ${{ zig }}zstd
@@ -295,6 +299,9 @@ outputs:
             - if: linux and not (target_platform == "linux-riscv64" or target_platform == "linux-s390x")
               then:
                 - lib/zig-llvm/lib/liblldZig.so
+            - if: linux and (target_platform == "linux-riscv64" or target_platform == "linux-s390x")
+              then:
+                - lib/zig-llvm/lib/liblld*.a
             - if: osx
               then:
                 - lib/zig-llvm/lib/liblldZig.dylib
@@ -368,7 +375,7 @@ outputs:
               - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
             requirements:
               run:
-                - zig-gcc
+                - zig ==0.15.2 *_25
 
 about:
   homepage: http://llvm.org/

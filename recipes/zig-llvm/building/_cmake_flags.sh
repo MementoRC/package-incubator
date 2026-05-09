@@ -22,15 +22,35 @@ is_linux && CMAKE_PLATFORM_FLAGS=(
   -DHAVE_PTHREAD_GETNAME_NP=0
   -DHAVE_PTHREAD_SETNAME_NP=0
   -DLLVM_ENABLE_ZSTD=ON
-  # Cross-builds: -Dzstd_ROOT alone is insufficient because find_package(zstd)
-  # still searches CMAKE_PREFIX_PATH (which includes BUILD_PREFIX with host-arch
-  # libzstd.so) before honoring the root hint, producing "incompatible with
-  # elf64lriscv" link errors. Bypass FindZstd entirely with explicit cache vars
-  # — matches zig-zig-llvm/build.sh:323-328. zig-zstd is a host dep so the
-  # path resolves to the target arch's libzstd in both native and cross builds.
-  -DZSTD_LIBRARY="${PREFIX}/lib/zig-zstd/lib/libzstd.so"
-  -DZSTD_INCLUDE_DIR="${PREFIX}/lib/zig-zstd/include"
 )
+
+# --------------------------------------------------------------------
+# Conditional zstd pin: only when zig-zstd is actually installed.
+# zig-zstd ships only for riscv64 (per recipe.yaml ${{ zig }}zstd which
+# expands to 'zig-zstd' only when ${{ zig }} == 'zig-'); other platforms
+# use plain conda-forge zstd in $PREFIX/lib + $PREFIX/include. Pinning
+# unconditionally caused cmake configure to fail on linux-64 native:
+#   Imported target "zstd::libzstd_shared" includes non-existent path
+#     "$PREFIX/lib/zig-zstd/include"
+# because the pin pointed at a path that doesn't exist on non-riscv64.
+# zig-zstd installs zstdConfig.cmake at a non-default path; pin zstd_DIR so
+# CMake's find_package(zstd CONFIG) doesn't pick up BUILD_PREFIX's x86_64
+# zstd via CMAKE_PREFIX_PATH (caused riscv64 cross-link 'incompatible with
+# elf64lriscv' against $BUILD_PREFIX/lib/libzstd.so). All three vars are
+# typed (:PATH/:FILEPATH) so CMake stores them as INITIALIZED in the cache —
+# without type annotations CMake marks them UNINITIALIZED and find_package
+# ignores them, falling back to CMAKE_PREFIX_PATH (which includes BUILD_PREFIX).
+# --------------------------------------------------------------------
+if is_linux && [[ -d "${PREFIX}/lib/zig-zstd/lib/cmake/zstd" ]]; then
+    CMAKE_PLATFORM_FLAGS+=(
+        -Dzstd_DIR:PATH="${PREFIX}/lib/zig-zstd/lib/cmake/zstd"
+        -Dzstd_LIBRARY:FILEPATH="${PREFIX}/lib/zig-zstd/lib/libzstd.so"
+        -Dzstd_INCLUDE_DIR:PATH="${PREFIX}/lib/zig-zstd/include"
+    )
+    echo "  cmake_flags: zstd pinned to zig-zstd (riscv64 layout)"
+elif is_linux; then
+    echo "  cmake_flags: zig-zstd not installed, leaving zstd to CMAKE_PREFIX_PATH"
+fi
 if is_osx; then
   # Determine the correct macOS architecture from the target platform.
   # cmake auto-detects from the host (build) machine, which is wrong for
@@ -46,6 +66,9 @@ if is_osx; then
     # called by external consumers (libclang-cpp.dylib, tools). LLVM's own cmake
     # adds -Wl,-dead_strip via add_link_opts(); this knob prevents that.
     -DLLVM_NO_DEAD_STRIP=ON
+    # macos-14 runner has 7 GB RAM; parallel link of libLLVM.dylib + libclang-cpp.dylib
+    # exceeds it. Serialize link jobs to prevent OOM kill of runner agent.
+    -DLLVM_PARALLEL_LINK_JOBS=1
   )
 
   # zig's ld64.lld doesn't auto-translate -isysroot into -syslibroot for the link

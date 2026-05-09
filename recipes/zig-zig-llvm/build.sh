@@ -21,6 +21,7 @@ fi
 source ${RECIPE_DIR}/building/post-install.sh
 source ${RECIPE_DIR}/building/remove-unneeded.sh
 source ${RECIPE_DIR}/building/strip_atexit_from_implib.sh
+source ${RECIPE_DIR}/building/_lld_bundle.sh
 
 build_platform="${build_platform:-${target_platform}}"
 
@@ -321,12 +322,19 @@ is_linux && CMAKE_PLATFORM_FLAGS=(
   -DHAVE_PTHREAD_GETNAME_NP=0
   -DHAVE_PTHREAD_SETNAME_NP=0
   -DLLVM_ENABLE_ZSTD=ON
-  # Bypass FindZstd's CMAKE_PREFIX_PATH search — cross-builds must use the
-  # target-arch zstd from zig-zstd, not the host-arch copy in BUILD_PREFIX.
-  # ZSTD_LIBRARY/ZSTD_INCLUDE_DIR take full precedence over zstd_ROOT hints.
-  -DZSTD_LIBRARY="${PREFIX}/lib/zig-zstd/lib/libzstd.so"
-  -DZSTD_INCLUDE_DIR="${PREFIX}/lib/zig-zstd/include"
 )
+# Only pin zstd_DIR when zig-zstd is actually installed (riscv64 layout).
+# Unconditional pinning on non-riscv64 targets points at a non-existent path,
+# causing CMake's imported target to emit errors. Typed :PATH/:FILEPATH
+# annotations ensure CMake stores vars as INITIALIZED. Mirrors the proven
+# pattern in recipes/zig-llvm/building/_cmake_flags.sh.
+if is_linux && [[ -d "${PREFIX}/lib/zig-zstd/lib/cmake/zstd" ]]; then
+  CMAKE_PLATFORM_FLAGS+=(
+    -Dzstd_DIR:PATH="${PREFIX}/lib/zig-zstd/lib/cmake/zstd"
+    -Dzstd_LIBRARY:FILEPATH="${PREFIX}/lib/zig-zstd/lib/libzstd.so"
+    -Dzstd_INCLUDE_DIR:PATH="${PREFIX}/lib/zig-zstd/include"
+  )
+fi
 # Consumer links (llvm-ar etc.) need -rpath-link at LINK time to find
 # libLLVM.so's transitive deps (libz, libzstd, libxml2). For sysroot-less
 # targets (riscv64, s390x) these live in zig-* isolated dirs. Non-existent
@@ -335,7 +343,12 @@ if is_linux; then
   _rpath_link_zig="-Wl,-rpath-link,${PREFIX}/lib/zig-zlib/lib -Wl,-rpath-link,${PREFIX}/lib/zig-zstd/lib -Wl,-rpath-link,${PREFIX}/lib/zig-libxml2/lib"
   CMAKE_PLATFORM_FLAGS+=(
     -DCMAKE_EXE_LINKER_FLAGS_INIT="${_rpath_link_zig}"
-    -DCMAKE_SHARED_LINKER_FLAGS_INIT="${_rpath_link_zig}"
+    # -nostdlib++ prevents zig-cc from injecting bundled static libc++.a into
+    # shared library link steps (libLLVM.so, libclang-cpp.so). The cmake build
+    # already adds NEEDED libc++.so via dynamic linkage; without this flag,
+    # zig-cc sees -stdlib=libc++ and ALSO adds zig-cache's libc++.a, causing
+    # a static merge (LOCAL_DEFINED on generic_category etc.).
+    -DCMAKE_SHARED_LINKER_FLAGS_INIT="${_rpath_link_zig} -nostdlib++"
   )
   unset _rpath_link_zig
 fi
@@ -1186,6 +1199,19 @@ sed 's/^/  /' "${_cmake_init}" || true
 echo "=== cmake project include file (${_cmake_project_include}) ==="
 sed 's/^/  /' "${_cmake_project_include}" || true
 
+# Tail-visible zstd diagnostic via EXIT trap so it fires on both success and
+# ninja failure (set -e otherwise exits before our inline diagnostic).
+if is_linux; then
+  _zstd_diag() {
+    if [[ -f "${LLVM_BUILD}/CMakeCache.txt" ]]; then
+      echo "=== zstd CMake resolution (tail-visible, on-exit) ==="
+      grep -iE '^zstd|libzstd' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true
+      echo "===================================================="
+    fi
+  }
+  trap '_zstd_diag' EXIT
+fi
+
 cmake "-C${_cmake_init}" \
   -S "${LLVM_SRC}" -B "${LLVM_BUILD}" \
   -DCMAKE_PROJECT_INCLUDE="${_cmake_project_include}" \
@@ -1199,6 +1225,11 @@ cmake "-C${_cmake_init}" \
   "${_LLVM[@]}" \
   -G Ninja
 
+  # Diagnostic: confirm CMake resolved zstd to the riscv64 zig-zstd, not BUILD_PREFIX x86_64.
+  # If this regresses, the link will fail with 'incompatible with elf64lriscv'.
+  echo "=== zstd CMake resolution ==="
+  grep -i '^zstd' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true
+  echo "============================="
 
 # === Quick-fail: verify --export-all-symbols in ALL shared library link rules ===
 # libLLVM and libclang-cpp each get their own CXX_SHARED_LIBRARY_LINKER rule in
@@ -1465,6 +1496,7 @@ fi
 remove_unneeded
 post_install
 fix_lld_cmake_deps
+build_lld_bundle
 
 # Verify llvm-config --system-libs includes zlib/zstd (native builds only)
 if ! is_cross; then

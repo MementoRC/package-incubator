@@ -28,6 +28,11 @@ if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
   # zig's self-hosted linker injects -m elf64lppc then chokes on it.
   # TODO: Remove once zig fixes self-hosted linker for ppc64le.
   if [[ "${LLVM_TRIPLET}" == powerpc64le-* ]]; then
+    # Force zig-cc to select shared libc++ instead of zig-cache static .a.
+    # libcxx_shared.findSharedLibCxxString skips its logic when target_arch !=
+    # build_arch UNLESS this env var is set (cross-arch ppc64le from x86_64).
+    export ZIG_SHARED_LIBCXX_DIR="${PREFIX}/lib/zig-llvm/lib"
+
     # Force CMake to skip compiler linking tests. zig's self-hosted linker
     # injects -m elf64lppc then chokes on it, and CMAKE_TRY_COMPILE_TARGET_TYPE
     # doesn't prevent CMakeTestCCompiler from linking. Compilation is verified
@@ -41,9 +46,12 @@ if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
     # libLLVM.so has DT_NEEDED for libz.so.1, libzstd.so.1, libxml2.so.16.
     # Consumers (llvm-ar etc.) need -rpath-link at link time (not just runtime rpath).
     # Cover both flat ($PREFIX/lib) and zig-* isolated layouts; non-existent dirs are no-ops.
-    _rpath_link="-Wl,-rpath-link,${PREFIX}/lib -Wl,-rpath-link,${PREFIX}/lib/zig-zlib/lib -Wl,-rpath-link,${PREFIX}/lib/zig-zstd/lib -Wl,-rpath-link,${PREFIX}/lib/zig-libxml2/lib"
+    _rpath_link="-Wl,-rpath-link,${PREFIX}/lib -Wl,-rpath-link,${PREFIX}/lib/zig-zlib/lib -Wl,-rpath-link,${PREFIX}/lib/zig-zstd/lib -Wl,-rpath-link,${PREFIX}/lib/zig-libxml2/lib -Wl,-rpath-link,${BUILD_PREFIX}/powerpc64le-conda-linux-gnu/sysroot/usr/lib64 -Wl,-rpath-link,${BUILD_PREFIX}/powerpc64le-conda-linux-gnu/sysroot/lib64"
     CMAKE_CROSS_FLAGS+=(
       -DCMAKE_EXE_LINKER_FLAGS_INIT="${_rpath_link}"
+      # Allow zig-cc to inject bundled libc++/libc++abi into the link command;
+      # the ld.bfd wrapper below (lines 114-143) intercepts and swaps these static
+      # .a files for the recipe's shared libc++.so, preventing LOCAL_DEFINED merges.
       -DCMAKE_SHARED_LINKER_FLAGS_INIT="${_rpath_link}"
     )
     unset _rpath_link
@@ -84,22 +92,59 @@ if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
         cat > "${_ppc_ld_bin}" << PPCLD
 #!/usr/bin/env bash
 _args=("--sysroot=${_ppc_sysroot_early}")
+# Sysroot library search path + rpath-link is needed for EVERY link, not just
+# -shared. Executables that link libLLVM.so as a DSO trigger rpath-link
+# resolution of libLLVM's DT_NEEDED (libstdc++.so.6), which lives in the
+# sysroot. Without this, bin/clang-fuzzer-dictionary etc. fail with
+# 'libstdc++.so.6 not found' + undefined references to @GLIBCXX_3.4 symbols.
+_args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib")
+_args+=(-rpath-link "${_ppc_sysroot_early}/usr/lib64" -rpath-link "${_ppc_sysroot_early}/usr/lib")
 _is_shared=0
-_has_libcxx=0
 for _a in "\$@"; do
     [[ "\$_a" == "-shared" ]]    && _is_shared=1
-    [[ "\$_a" == */libc++.a ]]   && _has_libcxx=1
     _args+=("\$_a")
 done
 if (( _is_shared )); then
-    _args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib" -lpthread -ldl -lrt -lm)
+    _args+=(-lpthread -ldl -lrt -lm)
 fi
-# Whenever zig's libc++.a is in the link (executable OR shared), it references
-# typeinfo for std::length_error / std::runtime_error / std::logic_error which
-# live in libstdc++.so on ppc64le Linux. Inject -lstdc++ from the sysroot.
-if (( _has_libcxx )); then
-    _args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib" -lstdc++)
-fi
+# NOTE: Do NOT inject -lstdc++ here. libc++abi.a is already in the link
+# command (from zig-cc's libc++/libc++abi/libunwind bundle), which provides
+# the std::* typeinfo symbols (runtime_error, logic_error, length_error,
+# etc.) statically. Injecting -lstdc++ would cause dynamic libstdc++.so.6
+# to win over libc++abi.a, baking DT_NEEDED libstdc++.so.6 into the output
+# DSO and breaking downstream links (clang-fuzzer-dictionary @GLIBCXX_3.4
+# undefined refs).
+# Swap zig's bundled static libc++/libc++abi/libunwind (which reference symbols
+# only in libstdc++.so on ppc64le, re-introducing the libstdc++ dependency) for
+# the recipe's zig-libcxx shared libs (built libstdc++-free). Replacement path
+# from ZIG_LIBCXX_DIR (default \${PREFIX}/lib/zig-llvm/lib). Falls back to
+# original path if replacement .so is missing.
+_libcxx_dir="\${ZIG_LIBCXX_DIR:-${PREFIX}/lib/zig-llvm/lib}"
+_libcxx_so="\${_libcxx_dir}/libc++.so"
+_libunwind_so="\${_libcxx_dir}/libunwind.so"
+_swap_args=()
+for _a in "\${_args[@]}"; do
+    case "\${_a}" in
+        */zig-cache/*/libc++.a|*/zig-cache/*/libc++abi.a)
+            if [[ -f "\${_libcxx_so}" ]]; then
+                _swap_args+=("\${_libcxx_so}")
+            else
+                _swap_args+=("\${_a}")
+            fi
+            ;;
+        */zig-cache/*/libunwind.a)
+            if [[ -f "\${_libunwind_so}" ]]; then
+                _swap_args+=("\${_libunwind_so}")
+            else
+                _swap_args+=("\${_a}")
+            fi
+            ;;
+        *)
+            _swap_args+=("\${_a}")
+            ;;
+    esac
+done
+_args=("\${_swap_args[@]}")
 exec "${_ppc_ld_bin}.real" "\${_args[@]}"
 PPCLD
         chmod +x "${_ppc_ld_bin}"
@@ -154,17 +199,17 @@ PPCLD
     # The wrappers (from zig-gcc build dep) target the build host (x86_64) and
     # include sysroot detection, flag filtering, LLD auto-promotion, and
     # --no-dependent-libraries. Using raw "zig cc" bypasses all of that.
-    _native_cc="${BUILD_PREFIX}/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cc"
-    _native_cxx="${BUILD_PREFIX}/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cxx"
-    _native_asm="${BUILD_PREFIX}/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-asm"
+    _native_cc="${BUILD_PREFIX}/share/zig/wrappers/${CONDA_BUILD_ZIG}-cc"
+    _native_cxx="${BUILD_PREFIX}/share/zig/wrappers/${CONDA_BUILD_ZIG}-cxx"
+    _native_asm="${BUILD_PREFIX}/share/zig/wrappers/${CONDA_BUILD_ZIG}-asm"
     CMAKE_CROSS_FLAGS+=(
       "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_native_cc};-DCMAKE_CXX_COMPILER=${_native_cxx};-DCMAKE_ASM_COMPILER=${_native_asm};-DCMAKE_PREFIX_PATH=${BUILD_PREFIX};-DCMAKE_FIND_ROOT_PATH=${BUILD_PREFIX};-DLLVM_ENABLE_ZSTD=OFF"
     )
   elif is_not_unix; then
-    _host_cc_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cc.exe"
-    _host_cxx_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-cxx.exe"
-    _host_ar_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-ar.bat"
-    _host_ranlib_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_BUILD}-zig-ranlib.bat"
+    _host_cc_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-cc.exe"
+    _host_cxx_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-cxx.exe"
+    _host_ar_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-ar.exe"
+    _host_ranlib_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-ranlib.exe"
 
     CMAKE_CROSS_FLAGS+=(
       "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024"

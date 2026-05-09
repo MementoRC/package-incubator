@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: ${{ 113 if target_platform == 'osx-arm64' else 111 }}
+  build_number: ${{ 113 if target_platform == 'osx-arm64' else 112 if target_platform == 'linux-64' else 111 }}
   name: zig-gcc
   version: "0.15.2"
 

@@ -28,6 +28,33 @@ source ${RECIPE_DIR}/building/_env.sh
 source ${RECIPE_DIR}/building/_cross_compile.sh
 source ${RECIPE_DIR}/building/_zig_wrappers.sh
 source ${RECIPE_DIR}/building/_cmake_flags.sh
+
+# --------------------------------------------------------------------
+# Workaround: zig-zstd / zig-zlib / zig-libxml2 ship cmake config files
+# (zstdConfig.cmake etc.) that declare INTERFACE_INCLUDE_DIRECTORIES
+# pointing at $PREFIX/lib/zig-<pkg>/include. The packages create the
+# parent dir but not always the include subdir. CMake validates
+# imported-target include paths at configure time and aborts with
+# 'Imported target zstd::libzstd_shared includes non-existent path'
+# if the directory is missing.
+#
+# We ensure the dir exists AND drop a .keep file so the directory is
+# non-empty (prevents any later cleanup from removing it). The mkdir
+# is unconditional — idempotent and cheap. If headers are truly
+# needed, missing-header errors will surface at compile time; if not,
+# the empty-but-present dir is harmless.
+# --------------------------------------------------------------------
+for _zigdep in zig-zstd zig-zlib zig-libxml2; do
+    if [[ -d "${PREFIX}/lib/${_zigdep}" ]]; then
+        mkdir -p "${PREFIX}/lib/${_zigdep}/include"
+        : > "${PREFIX}/lib/${_zigdep}/include/.keep"
+        echo "  workaround: ensured ${PREFIX}/lib/${_zigdep}/include (with .keep)"
+    else
+        echo "  workaround: parent ${PREFIX}/lib/${_zigdep} not found, skipping"
+    fi
+done
+unset _zigdep
+
 source ${RECIPE_DIR}/building/_runtimes_build.sh
 source ${RECIPE_DIR}/building/_llvm_build.sh
 source ${RECIPE_DIR}/building/_post_build.sh

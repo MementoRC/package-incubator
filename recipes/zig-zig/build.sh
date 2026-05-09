@@ -3,6 +3,15 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# LC_ALL=C avoids 'bash: warning: setlocale: LC_ALL: cannot change locale
+# (C.UTF-8)' from bash's startup when conda activates the env with
+# LC_ALL=C.UTF-8 but the runner's locale-archive lacks C.UTF-8 (macOS
+# specifically). Findllvm.cmake captures the llvm-config wrapper's stderr
+# via ERROR_VARIABLE and treats the warning as 'shared library not
+# supported', so any bash invocation chain that goes through cmake's
+# captured-stderr path must run with LC_ALL=C.
+export LC_ALL=C
+
 if [[ ${BASH_VERSINFO[0]} -lt 5 || (${BASH_VERSINFO[0]} -eq 5 && ${BASH_VERSINFO[1]} -lt 2) ]]; then
   if [[ -x "${BUILD_PREFIX}/bin/bash" ]]; then
     exec "${BUILD_PREFIX}/bin/bash" "$0" "$@"
@@ -85,6 +94,10 @@ zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" \( -name "${COND
 if [[ -z "${zig}" ]]; then
   zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" -name '*-zig' -o -name '*-zig.exe' 2>/dev/null | head -1 || true)"
 fi
+# Fallback: conda-forge zig installs a plain `zig` binary (no triplet prefix)
+if [[ -z "${zig}" ]]; then
+  zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" \( -name 'zig' -o -name 'zig.exe' \) 2>/dev/null | head -1 || true)"
+fi
 
 echo "CONDA_ZIG_BUILD: ${CONDA_ZIG_BUILD:-NOT FOUND}"
 echo "CONDA_ZIG_HOST: ${CONDA_ZIG_HOST:-NOT FOUND}"
@@ -93,6 +106,55 @@ echo "ZIG_CC: ${ZIG_CC:-NOT SET}"
 echo "ZIG_CXX: ${ZIG_CXX:-NOT SET}"
 echo "ZIG_AR: ${ZIG_AR:-NOT SET}"
 echo "ZIG_RANLIB: ${ZIG_RANLIB:-NOT SET}"
+
+# Self-stage zig-cc wrappers (formerly provided by zig-gcc build dep; now
+# using conda-forge zig + self-staging the wrapper scripts from RECIPE_DIR/scripts/).
+# Wrappers provide flag filtering and sysroot detection that bare `zig cc` lacks.
+if [[ -z "${ZIG_CC:-}" ]] && [[ -n "${zig}" ]]; then
+  _wrapper_dir="${BUILD_PREFIX}/share/zig/wrappers"
+  mkdir -p "${_wrapper_dir}"
+
+  # Derive cc_target: ZIG_WRAPPER_TRIPLET with glibc version suffix stripped.
+  # Mirrors install_zig_activation.py _strip_glibc_version(): removes .X.Y from
+  # -gnu* triplets only (e.g. aarch64-linux-gnu.2.17 → aarch64-linux-gnu).
+  _cc_target="${ZIG_WRAPPER_TRIPLET}"
+  if [[ "${_cc_target}" =~ ^(.*-gnu[a-z]*)\.[0-9]+\.[0-9]+$ ]]; then
+    _cc_target="${BASH_REMATCH[1]}"
+  fi
+  _cc_target_arch="${_cc_target%%-*}"
+
+  # Install shared helper scripts (sourced by wrappers; installed unprefixed)
+  for _helper in "_zig-cc-common.sh" "_zig-force-load-common.sh"; do
+    _src="${RECIPE_DIR}/scripts/${_helper}"
+    [[ -f "${_src}" ]] || continue
+    sed -e "s|@ZIG_BIN@|${zig}|g" \
+        -e "s|@ZIG_TARGET@|${_cc_target}|g" \
+        -e "s|@ZIG_TARGET_ARCH@|${_cc_target_arch}|g" \
+        "${_src}" > "${_wrapper_dir}/${_helper}"
+  done
+
+  # Install triple-prefixed wrapper scripts (drop .sh extension, add triple prefix)
+  for _name in zig-cc zig-cxx zig-ar zig-ranlib zig-asm zig-rc zig-lld zig-force-load-cc zig-force-load-cxx; do
+    _src="${RECIPE_DIR}/scripts/${_name}.sh"
+    [[ -f "${_src}" ]] || continue
+    _dst="${_wrapper_dir}/${_cc_target}-${_name}"
+    sed -e "s|@ZIG_BIN@|${zig}|g" \
+        -e "s|@ZIG_TARGET@|${_cc_target}|g" \
+        -e "s|@ZIG_TARGET_ARCH@|${_cc_target_arch}|g" \
+        "${_src}" > "${_dst}"
+    chmod +x "${_dst}"
+  done
+
+  export ZIG_CC="${_wrapper_dir}/${_cc_target}-zig-cc"
+  export ZIG_CXX="${_wrapper_dir}/${_cc_target}-zig-cxx"
+  export ZIG_AR="${_wrapper_dir}/${_cc_target}-zig-ar"
+  export ZIG_RANLIB="${_wrapper_dir}/${_cc_target}-zig-ranlib"
+  export ZIG_ASM="${_wrapper_dir}/${_cc_target}-zig-asm"
+  export ZIG_RC="${_wrapper_dir}/${_cc_target}-zig-rc"
+
+  echo "Self-staged zig-cc wrappers in ${_wrapper_dir} (cc_target=${_cc_target})"
+  echo "ZIG_CC: ${ZIG_CC}"
+fi
 
 if [[ -z "${ZIG_CC:-}" ]]; then
   echo "Activation did not set ZIG_CC, using zig binary directly"
@@ -185,21 +247,84 @@ if [[ ${_llvm_config_works} -eq 1 ]] && [[ "${LLVM_CONFIG}" != *"zig-llvm"* ]]; 
     _wrapper="${ZIG_LLVM_ROOT}/bin/llvm-config"
     cat > "${_wrapper}" << WRAPEOF
 #!/usr/bin/env bash
-# Cross-build llvm-config wrapper: runs the host llvm-config (BUILD_PREFIX)
-# but rewrites all paths to point at the target zig-llvm installation.
-# Short-circuit --shared-mode: zig-llvm is built with LLVM_BUILD_LLVM_DYLIB=ON
-# and ships libLLVM.dylib. The BUILD_PREFIX llvm-config (conda-forge llvm-tools,
-# static-only) would falsely report 'static', causing cmake/Findllvm.cmake to
-# reject zig-llvm despite the dylib being present.
+# Cross-build llvm-config wrapper for osx-64 cross from osx-arm64.
+
+# Suppress 'setlocale: LC_ALL: cannot change locale (C.UTF-8)' warnings on
+# stderr — Findllvm.cmake captures wrapper stderr and treats non-empty as
+# 'shared library not supported'.
+export LC_ALL=C
+
+# The "real" llvm-config is conda-forge llvmdev's host-arch binary at
+# ${BUILD_PREFIX}/bin/llvm-config — static-only. zig's Findllvm.cmake
+# probes shared linkability via:
+#   1. llvm-config --libs --link-shared       (precondition; static llvm-config errors)
+#   2. llvm-config --shared-mode --link-shared (would return 'shared' if reached)
+#   3. llvm-config --shared-mode               (fallback)
+# zig-llvm IS built shared (libLLVM.dylib at \${ZIG_LLVM_ROOT}/lib), so we
+# answer those queries directly and only delegate the path/version queries
+# to the static llvm-config (with --link-shared stripped).
+
+# Per-invocation log so we can see exactly what CMake calls.
+{
+  echo "[\$(date +%H:%M:%S)] llvm-config-wrapper called: \$*"
+} >> "${cmake_build_dir}/llvm-config-wrapper.log" 2>/dev/null || true
+
+# Classify args
+_has_shared_mode=0
+_has_libs=0
+_has_system_libs=0
+_has_link_shared=0
+_has_link_static=0
 for arg in "\$@"; do
-  if [[ "\$arg" == "--shared-mode" ]]; then
-    echo "shared"; exit 0
-  fi
+  case "\$arg" in
+    --shared-mode)  _has_shared_mode=1 ;;
+    --libs)         _has_libs=1 ;;
+    --system-libs)  _has_system_libs=1 ;;
+    --link-shared)  _has_link_shared=1 ;;
+    --link-static)  _has_link_static=1 ;;
+  esac
 done
-output="\$("${_real_llvm_config}" "\$@" 2>&1)" || { echo "\$output" >&2; exit 1; }
+
+# Short-circuit: --shared-mode (regardless of --link-shared/static)
+if (( _has_shared_mode )); then
+  echo "shared"
+  exit 0
+fi
+
+# Short-circuit: --libs --link-shared → zig-llvm ships libLLVM.dylib as a
+# combined shared library; the static llvm-config can't answer this.
+if (( _has_libs && _has_link_shared )); then
+  echo "-lLLVM"
+  exit 0
+fi
+
+# Short-circuit: --system-libs --link-shared → no extra system libs needed
+# beyond what -lLLVM already pulls; return empty.
+if (( _has_system_libs && _has_link_shared )); then
+  echo ""
+  exit 0
+fi
+
+# For all other queries, delegate to the real (static-only) llvm-config
+# with --link-shared stripped (it would otherwise error). Strip
+# --link-static too if present alongside --link-shared (defensive).
+_args=()
+for arg in "\$@"; do
+  case "\$arg" in
+    --link-shared) : ;;  # drop
+    *) _args+=("\$arg") ;;
+  esac
+done
+
+output="\$("${_real_llvm_config}" "\${_args[@]}" 2>&1)" || {
+  echo "\$output" >&2
+  exit 1
+}
+
 # Rewrite BUILD_PREFIX paths → ZIG_LLVM_ROOT
 output="\${output//${BUILD_PREFIX//\//\\/}/${ZIG_LLVM_ROOT//\//\\/}}"
-# Filter flags unsupported by zig's linker (same as zig-llvm wrapper)
+
+# Filter linker flags zig's lld doesn't accept (preserve existing behavior)
 for arg in "\$@"; do
   case "\$arg" in
     --ldflags|--system-libs|--libs|--link-static|--link-shared)
@@ -213,6 +338,7 @@ for arg in "\$@"; do
       break ;;
   esac
 done
+
 echo "\$output"
 WRAPEOF
     chmod +x "${_wrapper}"
@@ -277,6 +403,10 @@ if is_osx; then
     -DZIG_SYSTEM_LIBCXX=c++
     -DCMAKE_C_FLAGS="-Wno-incompatible-pointer-types"
     -DCMAKE_OSX_ARCHITECTURES="${_osx_arch}"
+    # cmake fallback for zig2 link: zig's paths_first linker only searches the
+    # -L paths cmake adds; CMAKE_LIBRARY_PATH covers ZIG_LLVM_ROOT/lib but not
+    # $PREFIX/lib where libz/libzstd/libxml2 from conda-forge live.
+    -DCMAKE_EXE_LINKER_FLAGS="-L${PREFIX}/lib"
   )
 
   # Cross-builds: zig_$cross_target_platform_ activation provides wrappers
@@ -284,7 +414,14 @@ if is_osx; then
 fi
 
 # Override zig's default max_rss (7.8GB) which exceeds CI runner memory
-EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
+if [[ "${target_platform}" == osx-* ]]; then
+  # macos-14 runner has ~14 GB RAM; 7.5 GB is the proven-working value for
+  # zig 0.15.2 ReleaseSafe (the compile-exe-zig step declares a 7 GB internal
+  # upper bound, so anything below 7 GB triggers a build-runner assert panic).
+  EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
+else
+  EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
+fi
 
 
 # zig-llvm builds a monolithic shared library on all platforms.
@@ -325,6 +462,7 @@ if is_linux; then
   is_cross && is_osx && ${INSTALL_NAME_TOOL:-install_name_tool} -add_rpath "${BUILD_PREFIX}"/lib "${PREFIX}"/bin/llvm-config
 fi
 
+mkdir -p "${PREFIX}/${_library}bin"
 rm -f "${PREFIX}/${_library}bin"/llvm-config*
 if is_not_unix; then
   # On Windows: remove bash wrapper, restore real exe for native builds.
@@ -413,7 +551,26 @@ for _cm_dir in llvm clang lld; do
 done
 echo "  Libraries: $(ls "${ZIG_LLVM_ROOT}/lib/"*.a "${ZIG_LLVM_ROOT}/lib/"*.dll.a "${ZIG_LLVM_ROOT}/lib/"*.dylib "${ZIG_LLVM_ROOT}/lib/"*.so* 2>/dev/null | wc -l) files"
 
-configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}"
+_cmake_configure_rc=0
+configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}" || _cmake_configure_rc=$?
+
+# Dump llvm-config wrapper invocation log so we can see what CMake actually called.
+# Gated to cross-unix builds where the wrapper exists.
+if is_cross && is_unix && [[ -f "${cmake_build_dir}/llvm-config-wrapper.log" ]]; then
+  echo "=== llvm-config wrapper invocations (${cmake_build_dir}/llvm-config-wrapper.log) ==="
+  cat "${cmake_build_dir}/llvm-config-wrapper.log" || true
+  echo "=================================================="
+fi
+# Enumerate all llvm-config that CMake might find (in case it's bypassing our wrapper)
+if is_cross && is_unix; then
+  echo "=== all llvm-config under PREFIX and BUILD_PREFIX ==="
+  find "${PREFIX}" -name 'llvm-config*' 2>/dev/null | head -20
+  find "${BUILD_PREFIX}" -name 'llvm-config*' 2>/dev/null | head -20
+  echo "====================================================="
+fi
+if [[ ${_cmake_configure_rc} -ne 0 ]]; then
+  exit ${_cmake_configure_rc}
+fi
 
 rm -f "${PREFIX}/${_library}bin"/llvm-config*
 
@@ -425,12 +582,30 @@ rm -f "${PREFIX}/${_library}bin"/llvm-config*
 # each of the six lld archives.  We substitute them all with the bundle path.
 # Add zig-llvm's bundled libc++ to ensure same C++ stdlib is used
 if is_linux; then
-  _lld_bundle_path="${PREFIX}/lib/zig-llvm/lib/liblldZig.so"
-  # Remove all six individual liblld*.a references; then append the bundle path.
-  perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
-  # Collapse duplicate semicolons left by the removal, then append the bundle.
-  perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
-  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;${_lld_bundle_path};-lzstd;-lxml2;-lz;-L${PREFIX}/lib/zig-llvm/lib;-lc++;-lc++abi;-lunwind\"@" "${cmake_build_dir}"/config.h
+  _lld_lib="${PREFIX}/lib/zig-llvm/lib"
+  if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
+    # liblldZig.so is not built on these platforms (no shared zstd/xml2/z available
+    # from conda-forge); link the 6 lld static archives directly with --whole-archive
+    # to preserve all driver entry-point symbols.
+    _lld_static_tokens="-Wl,--whole-archive"
+    for _a in liblldELF.a liblldCOFF.a liblldMachO.a liblldWasm.a liblldMinGW.a liblldCommon.a; do
+      _lld_static_tokens="${_lld_static_tokens};${_lld_lib}/${_a}"
+    done
+    _lld_static_tokens="${_lld_static_tokens};-Wl,--no-whole-archive;-lzstd;-lxml2;-lz;-lpthread;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
+    # Remove all six individual liblld*.a references (cmake wrote them with full paths);
+    # then append the static-archive token list.
+    perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
+    # Collapse duplicate semicolons left by the removal, then append the token list.
+    perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
+    perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;${_lld_static_tokens}\"@" "${cmake_build_dir}"/config.h
+  else
+    _lld_bundle_path="${_lld_lib}/liblldZig.so"
+    # Remove all six individual liblld*.a references; then append the bundle path.
+    perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
+    # Collapse duplicate semicolons left by the removal, then append the bundle.
+    perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
+    perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;${_lld_bundle_path};-lzstd;-lxml2;-lz;-L${_lld_lib};-lc++;-lc++abi;-lunwind\"@" "${cmake_build_dir}"/config.h
+  fi
 elif is_osx; then
   _lld_bundle_path="${PREFIX}/lib/zig-llvm/lib/liblldZig.dylib"
   perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
@@ -914,6 +1089,10 @@ else
       export ZIG_CROSS_TARGET_TRIPLE="${ZIG_TRIPLET}"
       export ZIG_CROSS_TARGET_MCPU="baseline"
     fi
+  elif is_osx; then
+    CMAKE_PATCHES+=(
+      0006-osx-link-lldzig-zig2-CMakeLists.txt.patch
+    )
   fi
   if is_not_unix; then
     _version=$(ls -1v "${VSINSTALLDIR}/VC/Tools/MSVC" | tail -n 1)

@@ -27,32 +27,38 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Restore zig-gcc cache
-        uses: actions/cache/restore@v4
-        with:
-          path: output/linux-64/*.conda
-          key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
-          restore-keys: zig-gcc-linux-64-
-      - name: Build zig-gcc
-        shell: bash
-        run: |
-          rattler-build build --recipe recipes/zig-gcc \
-            --skip-existing=local --target-platform=linux-64 \
-            -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-gcc artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
-      - name: Save zig-gcc cache
-        if: ${{ !cancelled() }}
-        uses: actions/cache/save@v4
-        with:
-          path: output/linux-64/*.conda
-          key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
+
+
+
+      # - name: Restore zig-gcc cache
+      #   uses: actions/cache/restore@v4
+      #   with:
+      #     path: output/linux-64/*.conda
+      #     key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
+      #     restore-keys: zig-gcc-linux-64-
+      # - name: Build zig-gcc
+      #   shell: bash
+      #   run: |
+      #     rattler-build build --recipe recipes/zig-gcc \
+      #       --skip-existing=local --target-platform=linux-64 \
+      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      # - name: Prune stale zig-gcc artifacts
+      #   shell: bash
+      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
+      # - name: Save zig-gcc cache
+      #   if: ${{ !cancelled() }}
+      #   uses: actions/cache/save@v4
+      #   with:
+      #     path: output/linux-64/*.conda
+      #     key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
+
+
+
 
       - name: Restore zig-llvm cache
         uses: actions/cache/restore@v4
@@ -79,7 +85,7 @@ jobs:
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: native-linux-64
+          name: native-linux-64-phase1
           path: output/linux-64/*.conda
           retention-days: 1
 
@@ -104,7 +110,7 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -112,7 +118,7 @@ jobs:
       - name: Download native linux-64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: native-linux-64
+          name: native-linux-64-phase1
           path: output/linux-64/
 
       - name: Restore zig-zig cache
@@ -140,8 +146,8 @@ jobs:
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: native-linux-64
-          path: output/linux-64/*.conda
+          name: native-linux-64-phase2
+          path: output/linux-64/zig-zig*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -164,7 +170,7 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -216,7 +222,7 @@ jobs:
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: native-osx-arm64
+          name: native-osx-arm64-phase1
           path: output/osx-arm64/*.conda
           retention-days: 1
 
@@ -241,7 +247,7 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -249,7 +255,7 @@ jobs:
       - name: Download native osx-arm64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: native-osx-arm64
+          name: native-osx-arm64-phase1
           path: output/osx-arm64/
 
       - name: Restore zig-zig cache
@@ -277,8 +283,8 @@ jobs:
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: native-osx-arm64
-          path: output/osx-arm64/*.conda
+          name: native-osx-arm64-phase2
+          path: output/osx-arm64/zig-zig*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -301,7 +307,7 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -353,7 +359,7 @@ jobs:
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: native-win-64
+          name: native-win-64-phase1
           path: output/win-64/*.conda
           retention-days: 1
 
@@ -378,7 +384,7 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -386,7 +392,7 @@ jobs:
       - name: Download native win-64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: native-win-64
+          name: native-win-64-phase1
           path: output/win-64/
 
       - name: Restore zig-zig cache
@@ -414,8 +420,8 @@ jobs:
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: native-win-64
-          path: output/win-64/*.conda
+          name: native-win-64-phase2
+          path: output/win-64/zig-zig*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -450,16 +456,17 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Download native linux-64 artifacts
+      - name: Download native linux-64 artifacts (phase 1 + phase 2)
         uses: actions/download-artifact@v4
         with:
-          name: native-linux-64
+          pattern: native-linux-64-*
           path: output/linux-64/
+          merge-multiple: true
 
       - name: Index local channel
         run: pixi run python -m conda_index output/
@@ -611,16 +618,17 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Download native osx-arm64 artifacts
+      - name: Download native osx-arm64 artifacts (phase 1 + phase 2)
         uses: actions/download-artifact@v4
         with:
-          name: native-osx-arm64
+          pattern: native-osx-arm64-*
           path: output/osx-arm64/
+          merge-multiple: true
 
       - name: Index local channel
         run: pixi run python -m conda_index output/
@@ -690,16 +698,17 @@ jobs:
           fetch-depth: 2
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.67.2
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Download native win-64 artifacts
+      - name: Download native win-64 artifacts (phase 1 + phase 2)
         uses: actions/download-artifact@v4
         with:
-          name: native-win-64
+          pattern: native-win-64-*
           path: output/win-64/
+          merge-multiple: true
 
       - name: Index local channel
         run: pixi run python -m conda_index output/

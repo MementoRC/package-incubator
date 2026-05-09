@@ -1,0 +1,20 @@
+# macOS: Link liblldZig.dylib bundle + system z/zstd/xml2 into zig2 executable
+#
+# On macOS, zig-llvm ships an umbrella dylib liblldZig.dylib that bundles all
+# lld components. It must be linked explicitly because the installed cmake
+# configs don't declare it as a transitive dependency of zigcpp.
+# z, zstd, and xml2 are system libraries pulled in by LLVM/lld; link them
+# by name so the linker resolves them from $PREFIX/lib via zig cc's sysroot.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -881,4 +881,8 @@ target_link_libraries(zig2
+ target_link_libraries(zig2 LINK_PUBLIC zigcpp)
+
++# osx: link liblldZig.dylib bundle + system z/zstd/xml2 from $PREFIX/lib
++set(_zig_llvm_lib "$ENV{PREFIX}/lib/zig-llvm/lib")
++target_link_libraries(zig2 PRIVATE "${_zig_llvm_lib}/liblldZig.dylib")
++target_link_libraries(zig2 PRIVATE z zstd xml2)
++
+ if(MSVC)
+   target_link_libraries(zig2 LINK_PUBLIC ntdll.lib ws2_32.lib)

@@ -252,5 +252,30 @@ EOF
     done
   fi
 
+  # Verify build-arch libc++ is present at the probe path before Phase 2 LLVM build.
+  # zig's libcxx_shared.zig probes ${_probe_dir}/libc++.so.1 (or equivalent on other
+  # platforms); if absent, zig falls back to its bundled static libc++.a from zig-cache,
+  # causing static merge of libc++ into every .so we build (failing the post-install
+  # LOCAL_DEFINED check).
+  echo "=== libc++ probe state at ${_probe_dir} ==="
+  ls -la "${_probe_dir}/" 2>&1 | head -30 || echo "  (probe dir missing or unlistable)"
+  # Platform-aware probe filename (matches what zig's libcxx_shared.zig actually probes for):
+  # Linux → libc++.so.1, macOS → libc++.1.dylib, Windows → libc++.dll.a
+  if is_not_unix; then
+    _probe_file="${_probe_dir}/libc++.dll.a"
+  elif is_osx; then
+    _probe_file="${_probe_dir}/libc++.1.dylib"
+  else
+    _probe_file="${_probe_dir}/libc++.so.1"
+  fi
+  if [[ ! -f "${_probe_file}" ]]; then
+    echo "FATAL: ${_probe_file} is missing."
+    echo "       zig will fall back to bundled static libc++.a, causing static merge"
+    echo "       into every shared library built (post-install LOCAL_DEFINED check will fail)."
+    echo "       Verify zig-libcxx is in the build environment and installs to lib/zig-llvm/lib/."
+    exit 1
+  fi
+  echo "=== libc++ probe path verified: ${_probe_file} present ==="
+
 fi
 

@@ -249,6 +249,19 @@ sed 's/^/  /' "${_cmake_init}" || true
 echo "=== cmake project include file (${_cmake_project_include}) ==="
 sed 's/^/  /' "${_cmake_project_include}" || true
 
+# Tail-visible zstd diagnostic via EXIT trap so it fires on both success and
+# ninja failure (set -e otherwise exits before our inline diagnostic).
+if [[ "${target_platform}" == "linux-"* ]]; then
+  _zstd_diag() {
+    if [[ -f "${LLVM_BUILD}/CMakeCache.txt" ]]; then
+      echo "=== zstd CMake resolution (tail-visible, on-exit) ==="
+      grep -iE '^zstd|libzstd' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true
+      echo "===================================================="
+    fi
+  }
+  trap '_zstd_diag' EXIT
+fi
+
 cmake "-C${_cmake_init}" \
   -S "${LLVM_SRC}" -B "${LLVM_BUILD}" \
   -DCMAKE_PROJECT_INCLUDE="${_cmake_project_include}" \
@@ -262,6 +275,50 @@ cmake "-C${_cmake_init}" \
   "${_LLVM[@]}" \
   -G Ninja
 
+  # Diagnostic: confirm CMake resolved zstd to the riscv64 zig-zstd, not BUILD_PREFIX x86_64.
+  # If this regresses, the link will fail with 'incompatible with elf64lriscv'.
+  echo "=== zstd CMake resolution ==="
+  grep -i '^zstd' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true
+  echo "============================="
+
+  # === ppc64le ld.real shim (Option A diagnostic) ===
+  if [[ "${target_platform}" == "linux-ppc64le" ]]; then
+    _ld_real="${BUILD_PREFIX}/bin/powerpc64le-conda-linux-gnu-ld.real"
+    _ld_orig="${_ld_real}.orig"
+    _ld_log="${LLVM_BUILD}/ld-real-invocations.log"
+    if [[ -f "${_ld_real}" && ! -f "${_ld_orig}" ]]; then
+      cp "${_ld_real}" "${_ld_orig}"
+      cat > "${_ld_real}" <<LDSHIM
+#!/usr/bin/env bash
+{
+  printf '\\n[%s] cwd=%s\\n' "\$(date +%H:%M:%S.%N)" "\$(pwd)"
+  printf '  argv (\$# args):\\n'
+  for _a in "\$@"; do printf '    %s\\n' "\$_a"; done
+  printf '  --- end ---\\n'
+} >> "${_ld_log}" 2>/dev/null
+exec "${_ld_orig}" "\$@"
+LDSHIM
+      chmod +x "${_ld_real}"
+      echo "[ld-shim] installed: ${_ld_real} (orig at ${_ld_orig}, log at ${_ld_log})"
+    fi
+  fi
+
+  # === ppc64le SONAME probe (Option B diagnostic) ===
+  if [[ "${target_platform}" == "linux-ppc64le" ]]; then
+    echo "=== ppc64le pre-link SONAME probe ==="
+    for _dir in "${PREFIX}/lib" "${PREFIX}/lib/zig-zstd/lib" \
+                "${PREFIX}/lib/zig-zlib/lib" "${PREFIX}/lib/zig-libxml2/lib" \
+                "${PREFIX}/lib/zig-xml2/lib" "${BUILD_PREFIX}/lib"; do
+      echo "--- ${_dir} ---"
+      if [[ -d "${_dir}" ]]; then
+        ls -la "${_dir}"/libzstd* "${_dir}"/libz.so* "${_dir}"/libxml2.so* \
+          2>/dev/null | sed 's/^/  /' || echo "  (no matching SONAMEs)"
+      else
+        echo "  (directory does not exist)"
+      fi
+    done
+    echo "===================================="
+  fi
 
 # === Quick-fail: verify --export-all-symbols in ALL shared library link rules ===
 # libLLVM and libclang-cpp each get their own CXX_SHARED_LIBRARY_LINKER rule in
@@ -343,28 +400,195 @@ if is_not_unix; then
     # LLVM core + 3-target backend statics.
 
     # Stage 2: generate libLLVM.def from the static archives.
-    # extract_symbols.py: --nm <path> --os mingw <archives...> → stdout
+    # === win-arm64: libLLVM.def diagnostics + multi-attempt extraction ===
     _def_out="${LLVM_BUILD}/libLLVM.def"
-    dbg "win-arm64: running extract_symbols.py over $(
-      ls "${LLVM_BUILD}"/lib/LLVM*.lib "${LLVM_BUILD}"/lib/libLLVM*.a 2>/dev/null | wc -l
-    ) archives"
-    if ! python3 "${LLVM_SRC}/utils/extract_symbols.py" \
-        --nm "${BUILD_PREFIX}/bin/llvm-nm" \
-        --os mingw \
-        "${LLVM_BUILD}"/lib/LLVM*.lib "${LLVM_BUILD}"/lib/libLLVM*.a 2>/dev/null \
-        > "${_def_out}"; then
-      # Fallback: try broader glob (MSYS2 ar may produce .a on Windows)
-      python3 "${LLVM_SRC}/utils/extract_symbols.py" \
-        --nm "${BUILD_PREFIX}/bin/llvm-nm" --os mingw \
-        "${LLVM_BUILD}"/lib/*.a "${LLVM_BUILD}"/lib/*.lib 2>/dev/null \
-        > "${_def_out}" || true
+    _zig_bin="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
+
+    echo "=== win-arm64 extract_symbols diagnostics ==="
+
+    echo "--- nm tools available ---"
+    if [[ -x "${BUILD_PREFIX}/Library/bin/llvm-nm" ]]; then
+      echo "  Library/bin/llvm-nm (Windows path): FOUND"
+      "${BUILD_PREFIX}/Library/bin/llvm-nm" --version 2>&1 | head -5
+    elif [[ -x "${BUILD_PREFIX}/Library/bin/llvm-nm.exe" ]]; then
+      echo "  Library/bin/llvm-nm.exe: FOUND"
+      "${BUILD_PREFIX}/Library/bin/llvm-nm.exe" --version 2>&1 | head -5
+    elif [[ -x "${BUILD_PREFIX}/bin/llvm-nm" ]]; then
+      echo "  bin/llvm-nm (fallback): FOUND"
+      "${BUILD_PREFIX}/bin/llvm-nm" --version 2>&1 | head -5
+    else
+      echo "  host llvm-nm: NOT FOUND in Library/bin or bin"
     fi
+    "${_zig_bin}" version 2>&1 | head -3 \
+      || echo "  zig: NOT FOUND or errored"
+
+    echo "--- extract_symbols.py --help ---"
+    python3 "${LLVM_SRC}/utils/extract_symbols.py" --help 2>&1 | head -40 || true
+
+    echo "--- archive listing (LLVM*.lib + libLLVM*.a) ---"
+    shopt -s nullglob
+    _archives=( "${LLVM_BUILD}"/lib/LLVM*.lib "${LLVM_BUILD}"/lib/libLLVM*.a )
+    echo "  archive count: ${#_archives[@]}"
+    ls -la "${_archives[@]}" 2>/dev/null | head -10 || true
+    shopt -u nullglob
+
+    echo "--- sample archive symbol probe ---"
+    _sample=""
+    for _cand in "${LLVM_BUILD}/lib/libLLVMAArch64Info.a" \
+                 "${LLVM_BUILD}/lib/libLLVMSupport.a"; do
+      if [[ -f "${_cand}" ]]; then _sample="${_cand}"; break; fi
+    done
+
+    # Resolve host llvm-nm: Windows installs under Library/bin, not bin.
+    if [[ -x "${BUILD_PREFIX}/Library/bin/llvm-nm" ]]; then
+      _host_nm="${BUILD_PREFIX}/Library/bin/llvm-nm"
+    elif [[ -x "${BUILD_PREFIX}/Library/bin/llvm-nm.exe" ]]; then
+      _host_nm="${BUILD_PREFIX}/Library/bin/llvm-nm.exe"
+    elif [[ -x "${BUILD_PREFIX}/bin/llvm-nm" ]]; then
+      _host_nm="${BUILD_PREFIX}/bin/llvm-nm"
+    else
+      _host_nm=""
+      echo "  WARNING: no llvm-nm found in BUILD_PREFIX"
+    fi
+    echo "  selected host nm: ${_host_nm}"
+
+    # Resolve host llvm-readobj: same search order as llvm-nm above.
+    if [[ -x "${BUILD_PREFIX}/Library/bin/llvm-readobj" ]]; then
+      _host_readobj="${BUILD_PREFIX}/Library/bin/llvm-readobj"
+    elif [[ -x "${BUILD_PREFIX}/Library/bin/llvm-readobj.exe" ]]; then
+      _host_readobj="${BUILD_PREFIX}/Library/bin/llvm-readobj.exe"
+    elif [[ -x "${BUILD_PREFIX}/bin/llvm-readobj" ]]; then
+      _host_readobj="${BUILD_PREFIX}/bin/llvm-readobj"
+    else
+      _host_readobj=""
+      echo "  WARNING: no llvm-readobj found in BUILD_PREFIX"
+    fi
+    echo "  selected host readobj: ${_host_readobj}"
+
+    if [[ -n "${_sample}" ]]; then
+      echo "  sample: ${_sample}"
+      echo "  size: $(stat -c %s "${_sample}" 2>/dev/null || stat -f %z "${_sample}")"
+      if [[ -n "${_host_nm}" ]]; then
+        echo "  host llvm-nm output (first 10 lines):"
+        "${_host_nm}" "${_sample}" 2>&1 | head -10 | sed 's/^/    /' || true
+      fi
+      echo "  zig nm output (first 10 lines):"
+      "${_zig_bin}" nm "${_sample}" 2>&1 | head -10 | sed 's/^/    /' || true
+    else
+      echo "  no sample archive found"
+    fi
+
+    # Windows-invocable wrapper for `zig nm`. extract_symbols.py calls subprocess
+    # with the path directly; on Windows it must be a .bat or .exe.
+    _nm_wrapper="${LLVM_BUILD}/zig-nm-wrapper.bat"
+    cat > "${_nm_wrapper}" <<EOF
+@echo off
+"${_zig_bin}" nm %*
+EOF
+
+    # Try multiple --nm x --mangling combinations. zig MinGW uses Itanium mangling
+    # (not Microsoft); Linux ELF also uses Itanium mangling.
+    declare -a _attempts=()
+    if [[ -n "${_host_nm}" ]]; then
+      _attempts+=( "host-itanium|${_host_nm}|itanium" )
+    fi
+    if [[ -f "${_nm_wrapper}" ]]; then
+      _attempts+=( "zignm-itanium|${_nm_wrapper}|itanium" )
+    fi
+
+    # Restrict archive set to libLLVM's actual link inputs (match win-64's
+    # --export-all-symbols linker pruning behavior). Falls back to a wide glob
+    # if ninja-inputs fails (e.g., target name differs across LLVM versions).
+    _real_archives=()
+    if command -v ninja >/dev/null 2>&1; then
+      while IFS= read -r _arch; do
+        [[ -n "${_arch}" && -f "${_arch}" ]] && _real_archives+=( "${_arch}" )
+      done < <(ninja -C "${LLVM_BUILD}" -t inputs LLVM 2>/dev/null \
+        | grep -E '/(lib)?LLVM[^/]*\.(lib|a)$' \
+        | sort -u)
+    fi
+    if (( ${#_real_archives[@]} == 0 )); then
+      echo "[Stage 2] ninja-inputs returned no LLVM archives; falling back to glob" >&2
+      shopt -s nullglob
+      _real_archives=( "${LLVM_BUILD}"/lib/LLVM*.lib "${LLVM_BUILD}"/lib/libLLVM*.a )
+      shopt -u nullglob
+    fi
+    echo "[Stage 2] Archive count fed to extract_symbols.py: ${#_real_archives[@]}"
+
+    _winner_def=""
+    _winner_lines=0
+    _winner_label=""
+    for _entry in "${_attempts[@]}"; do
+      IFS="|" read -r _label _nm _os <<< "${_entry}"
+      _cand="${LLVM_BUILD}/libLLVM.def.${_label}"
+      _errf="${LLVM_BUILD}/libLLVM.def.${_label}.err"
+      echo "--- attempt: ${_label} (--nm=${_nm##*/} --mangling=${_os}) ---"
+      _extra_args=()
+      if [[ -n "${_host_readobj}" ]]; then
+        _extra_args+=(--readobj "${_host_readobj}")
+      fi
+      python3 "${LLVM_SRC}/utils/extract_symbols.py" \
+        --nm "${_nm}" --mangling "${_os}" \
+        "${_extra_args[@]}" \
+        "${_real_archives[@]}" \
+        > "${_cand}" 2> "${_errf}" && _rc=0 || _rc=$?
+      _lines=$(wc -l < "${_cand}" 2>/dev/null || echo 0)
+      echo "  exit: ${_rc}, def lines: ${_lines}"
+      echo "[Stage 2] Attempt '${_label}': .def line count = ${_lines}"
+      if [[ -s "${_errf}" ]]; then
+        echo "  stderr (first 200 lines):"
+        head -200 "${_errf}" | sed 's/^/    /'
+      fi
+      if (( _lines > _winner_lines )); then
+        _winner_def="${_cand}"
+        _winner_lines=${_lines}
+        _winner_label="${_label}"
+      fi
+    done
+
+    if [[ -n "${_winner_def}" ]]; then
+      echo "=== WINNER: ${_winner_label} with ${_winner_lines} lines ==="
+      cp "${_winner_def}" "${_def_out}"
+      echo "[Stage 2] === .def file head (first 20 lines) ==="
+      head -20 "${LLVM_BUILD}/libLLVM.def" 2>/dev/null | sed 's/^/[Stage 2] DEF: /' || echo "[Stage 2] DEF: <empty or unreadable>"
+      echo "[Stage 2] === .def file md5 / size ==="
+      wc -l "${LLVM_BUILD}/libLLVM.def" 2>/dev/null
+      md5sum "${LLVM_BUILD}/libLLVM.def" 2>/dev/null || true
+    else
+      echo "=== ALL ATTEMPTS PRODUCED EMPTY .def ==="
+    fi
+
     if [[ ! -s "${_def_out}" ]]; then
-      echo "  ERROR: win-arm64: libLLVM.def generation failed or produced empty file" >&2
+      echo "  ERROR: win-arm64: libLLVM.def generation failed across all attempts" >&2
       ls -la "${LLVM_BUILD}/lib/" 2>/dev/null | head -20 >&2
       exit 1
     fi
     dbg "win-arm64: libLLVM.def has $(wc -l < "${_def_out}") lines"
+
+    # Stage 2 post-filter: strip libc++ symbols (Itanium-mangled std::__1).
+    # libc++ symbols should not be exported from libLLVM — they are an internal
+    # implementation detail. Removing them reduces the export count by ~10-15k
+    # symbols to fit the PE/COFF 65535-symbol limit on win-arm64.
+    if [[ -s "${_def_out}" ]]; then
+      _pre_count=$(wc -l < "${_def_out}")
+      sed -i \
+        -e '/_ZNSt3__1/d' \
+        -e '/_ZNKSt3__1/d' \
+        -e '/_ZTVNSt3__1/d' \
+        -e '/_ZTINSt3__1/d' \
+        -e '/_ZTSNSt3__1/d' \
+        "${_def_out}"
+      _post_count=$(wc -l < "${_def_out}")
+      _delta=$(( _pre_count - _post_count ))
+      echo "[Stage 2 filter] libc++ stripped: ${_pre_count} → ${_post_count} (-${_delta})"
+      if [[ ${_post_count} -gt 65000 ]]; then
+        echo "ERROR: .def still has ${_post_count} symbols (limit ~65535). Need more aggressive filtering." >&2
+        echo "  Next options: --exclude '_ZN.*templates' or whitelist only _ZN4llvm/_ZN5clang/_ZN3lld namespaces" >&2
+        exit 1
+      fi
+    else
+      echo "WARNING: ${_def_out} empty or missing — Stage 2 extract_symbols.py may have failed" >&2
+    fi
 
     # Stage 3: build the libLLVM dll (patch 0004 uses --def libLLVM.def via the
     # patched cmake conditional; the .def file now exists so the link succeeds).
@@ -763,6 +987,20 @@ else
   # ${BUILD_PREFIX}/lib/zig-llvm/lib/ — needed by host llvm-tblgen.
   # Native build: same path resolves harmlessly to the build_env copy too.
   export LD_LIBRARY_PATH="${BUILD_PREFIX}/lib/zig-llvm/lib:${LLVM_INSTALL}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  set +e
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
+  _linux_build_rc=$?
+  set -e
+
+  # === ppc64le ld.real invocation report ===
+  if [[ "${target_platform}" == "linux-ppc64le" ]] && [[ -f "${_ld_log:-}" ]]; then
+    echo "=== ld.real invocations (last 500 lines of ${_ld_log}) ==="
+    tail -500 "${_ld_log}" || true
+    echo "=== END ld.real invocations ==="
+  fi
+
+  if [[ ${_linux_build_rc} -ne 0 ]]; then
+    exit ${_linux_build_rc}
+  fi
 fi
 

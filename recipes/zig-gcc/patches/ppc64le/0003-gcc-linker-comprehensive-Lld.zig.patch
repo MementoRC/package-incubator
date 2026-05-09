@@ -192,6 +192,50 @@
 +                try argv.append(try std.fmt.allocPrint(arena, "-Wl,-rpath-link,{s}", .{rpath}));
 +            }
 +
++            // === PPC64LE FIX: forward cross-toolchain library search dirs as -rpath-link ===
++            // libLLVM.so transitively depends on libstdc++.so.6, which lives in the cross-gcc
++            // tree (e.g., $BUILD_PREFIX/<triple>/lib64), not under sysroot. Without these
++            // -rpath-link entries, ld cannot resolve @GLIBCXX_3.4 references when downstream
++            // tools link against libLLVM.so. cmake's -Wl,-rpath-link,X flags don't reach
++            // elf.rpath_list (zig's clang driver passes them raw to LLD, but the redirect
++            // bypasses LLD), so we have to add them ourselves.
++            {
++                const search_argv = [_][]const u8{ gcc_path, "-print-search-dirs" };
++                const search_result = std.process.Child.run(.{
++                    .allocator = arena,
++                    .argv = &search_argv,
++                }) catch |err| blk: {
++                    std.log.err("=== PPC64LE rpath-link: -print-search-dirs failed: {s} ===", .{@errorName(err)});
++                    break :blk null;
++                };
++                if (search_result) |r| {
++                    defer arena.free(r.stdout);
++                    defer arena.free(r.stderr);
++                    if (r.term == .Exited and r.term.Exited == 0) {
++                        const prefix = "libraries: =";
++                        var line_it = std.mem.splitScalar(u8, r.stdout, '\n');
++                        var added: usize = 0;
++                        while (line_it.next()) |line| {
++                            if (std.mem.startsWith(u8, line, prefix)) {
++                                const paths = line[prefix.len..];
++                                var path_it = std.mem.splitScalar(u8, paths, ':');
++                                while (path_it.next()) |p| {
++                                    if (p.len == 0) continue;
++                                    const flag = try std.fmt.allocPrint(arena, "-Wl,-rpath-link={s}", .{p});
++                                    try argv.append(flag);
++                                    std.log.err("=== PPC64LE rpath-link: appended {s} ===", .{flag});
++                                    added += 1;
++                                }
++                                break;
++                            }
++                        }
++                        std.log.err("=== PPC64LE rpath-link: total {d} paths added ===", .{added});
++                    } else {
++                        std.log.err("=== PPC64LE rpath-link: gcc exited non-zero, stderr: {s} ===", .{r.stderr});
++                    }
++                }
++            }
++
 +            // Library paths — only when libc_installation is available (build-time)
 +            // At runtime, GCC finds libraries via its own sysroot configuration
 +            if (comp.config.link_libc) {

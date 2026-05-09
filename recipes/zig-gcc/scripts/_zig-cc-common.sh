@@ -171,9 +171,17 @@ args=()
 i=0
 argv=("$@")
 argc=${#argv[@]}
+_next_is_rpath_link=0
 
 while [[ $i -lt $argc ]]; do
     arg="${argv[$i]}"
+    # Handle two-arg form of -Wl,-rpath-link <path> for ppc64le conversion to -L.
+    if (( _next_is_rpath_link )); then
+        _next_is_rpath_link=0
+        args+=( "-L" "$arg" )
+        ((i++))
+        continue
+    fi
     case "$arg" in
         -Xlinker)
             next_i=$((i + 1))
@@ -210,11 +218,16 @@ while [[ $i -lt $argc ]]; do
             fi
             ;;
         -Wl,-rpath-link|-Wl,-rpath-link,*)
-            # Pass -rpath-link through to zig when LLD is the active linker, or
-            # when the ppc64le GCC redirect (Lld.zig patch) will forward it to
-            # cross-gcc/ld.bfd. Otherwise drop — zig's self-hosted linker
-            # doesn't accept this flag.
-            if (( _use_lld )) || [[ "${_zig_target_arch}" == "powerpc64le" ]]; then
+            # ppc64le: zig→gcc→ld.real chain swallows -Wl,-rpath-link. Convert to -L
+            # so ld.real can resolve transitive SONAMEs of dynamic libs being linked.
+            # LLD: pass through (LLD handles -rpath-link natively).
+            # Others: drop — zig's self-hosted linker doesn't accept this flag.
+            if [[ "${_zig_target_arch}" == "powerpc64le" ]]; then
+                case "$arg" in
+                    -Wl,-rpath-link,*) args+=( "-L" "${arg#-Wl,-rpath-link,}" ) ;;
+                    -Wl,-rpath-link)   _next_is_rpath_link=1 ;;
+                esac
+            elif (( _use_lld )); then
                 args+=("$arg")
             fi
             ;;
