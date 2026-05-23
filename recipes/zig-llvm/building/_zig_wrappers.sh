@@ -130,6 +130,12 @@ if is_osx; then
         echo "ERROR: ${CONDA_BUILD_ZIG}-force-load-cxx not found in ${ZIG_WRAPPERS}"
         exit 1
     fi
+    if [[ -x "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cc" ]]; then
+        export ZIG_CC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cc"
+    else
+        echo "ERROR: ${CONDA_BUILD_ZIG}-force-load-cc not found in ${ZIG_WRAPPERS}"
+        exit 1
+    fi
 
     # Patch deployment target in zig wrappers to match conda's MACOSX_DEPLOYMENT_TARGET.
     # _zig-cc-common.sh contains the actual `-target aarch64-macos-none` (or versioned
