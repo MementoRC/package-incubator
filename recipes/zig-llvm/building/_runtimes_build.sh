@@ -104,23 +104,27 @@ if is_unix || is_not_unix; then
       -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
     )
 
-    # Windows COFF: build libunwind STATIC-ONLY and embed it into libc++abi.dll.
+    # Windows COFF: build libunwind STATIC-ONLY and embed it (and libc++abi) into libc++.dll.
     #
     # The unwind.lib collision (`ninja: error: multiple rules generate lib/unwind.lib`)
-    # happens when both `unwind` (shared, import lib → unwind.lib) and `unwind_static`
-    # (static → unwind.lib) targets are enabled — they both emit the same filename on
-    # COFF. Unix is unaffected because .a vs .so extensions differ.
+    # historically happened when both `unwind` (shared, import lib → unwind.lib) and
+    # `unwind_static` (static → unwind.lib) targets were enabled — both emit the same
+    # filename on COFF. Unix is unaffected because .a vs .so extensions differ.
     #
     # Solution: build only the STATIC libunwind on Windows (LIBUNWIND_ENABLE_SHARED=OFF,
-    # LIBUNWIND_ENABLE_STATIC=ON — overriding the Unix defaults set earlier). Then tell
-    # libcxxabi to statically link the unwinder into libc++abi.dll
-    # (LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=ON). The _Unwind_* and
-    # _GCC_specific_handler symbols end up inside libc++abi.dll itself.
+    # LIBUNWIND_ENABLE_STATIC=ON — overriding the Unix defaults set earlier), and embed
+    # it into libcxxabi (LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=ON). The
+    # default LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON then folds libcxxabi
+    # (with its embedded unwind) into libc++.dll — the standard Unix-like layout.
     #
-    # libcxx and libcxxabi remain separate DLLs (LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=OFF)
-    # — only the unwind layer is embedded.
+    # Why ABI-in-shared can stay ON on Windows now: the original reason for the OFF
+    # override (LIBUNWIND_ENABLE_SHARED=ON triggering the unwind.lib name collision)
+    # is gone now that the shared libunwind variant is disabled. With only one unwind
+    # target, no rule collision occurs. Without ABI-in-shared, libc++abi.dll builds
+    # as a separate DLL and fails to link against std::__1::__libcpp_mutex_* /
+    # __libcpp_condvar_* threading primitives that live in libc++ — a circular
+    # dependency that the merged layout avoids.
     _RUNTIMES_FLAGS+=(
-      -DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=OFF
       -DLIBUNWIND_ENABLE_SHARED=OFF
       -DLIBUNWIND_ENABLE_STATIC=ON
       -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=ON
