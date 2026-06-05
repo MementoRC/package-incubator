@@ -126,12 +126,14 @@ PYEOF
 if is_osx; then
   setup_macos_sysroot
 
-  _fl_cc="${_zig_bindir}/${CONDA_BUILD_ZIG}-force-load-cc${_ext}"
-  _fl_cxx="${_zig_bindir}/${CONDA_BUILD_ZIG}-force-load-cxx${_ext}"
-  if [[ ! -x "${_fl_cc}" || ! -x "${_fl_cxx}" ]]; then
-    echo "ERROR: force-load wrappers missing: ${_fl_cc} / ${_fl_cxx}"
-    exit 1
-  fi
-  export ZIG_CC="${_fl_cc}"
-  export ZIG_CXX="${_fl_cxx}"
+  # NOTE (build 27 caveat): upstream provides bin/${CONDA_BUILD_ZIG}-force-load-cc/-cxx
+  # binaries but the zig-wrapper.c basename dispatch in this version does NOT
+  # recognize the `-force-load-cc`/`-force-load-cxx` suffixes — invoking them
+  # errors with `zig-wrapper: cannot determine mode from basename(...)`.
+  # Workaround: leave ZIG_CC/ZIG_CXX pointed at plain -cc/-cxx. libcxx/libunwind
+  # build fine without force-load semantics. TODO: revisit if libLLVM.dylib link
+  # later surfaces missing-symbol failures from un-extracted -Wl,-force_load
+  # archive references — at that point either (a) write a local force-load
+  # shim wrapper, or (b) bump zig to a build with working force-load dispatch.
+  :  # no-op; ZIG_CC and ZIG_CXX remain set to the plain wrappers above
 fi
