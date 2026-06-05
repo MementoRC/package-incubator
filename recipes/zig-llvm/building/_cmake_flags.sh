@@ -189,49 +189,4 @@ else
   dbg "  cp -r \${PREFIX}/lib/zig-llvm ${RECIPE_DIR}/cache/"
 fi
 
-# === Hotfix: ppc64le wrapper LLD block ===
-# The zig wrapper hard-errors on ppc64le when it sees standard ELF linker flags
-# (--version-script, --gc-sections, etc.) because it classifies them as "LLD-only"
-# and LLD lacks ppc64le relocation support. But these flags are standard GNU ld
-# flags that ld.bfd handles natively. Patch the installed wrapper to:
-# 1. Only error on explicit -fuse-ld=lld, not auto-promoted ELF flags
-# 2. Filter -Bsymbolic* on ppc64le (zig's self-hosted linker rejects it before ld.bfd)
-# TODO: Remove once zig-feedstock publishes a build with this fix.
-_zig_common="${ZIG_WRAPPERS}/_zig-cc-common.sh"
-if [[ -f "${_zig_common}" ]] && grep -q 'Block LLD on ppc64le' "${_zig_common}" 2>/dev/null; then
-    echo "=== Patching installed zig wrapper for ppc64le LLD compatibility ==="
-    python3 - "${_zig_common}" << 'PATCH_EOF'
-import re, sys
-p = sys.argv[1]
-t = open(p).read()
-# 1. Replace hard-error LLD block with graceful fallback:
-#    only error on explicit -fuse-ld=lld, reset _use_lld=0 for auto-promoted flags
-old_block = re.compile(r'# --- Block LLD on ppc64le.*?^fi', re.MULTILINE | re.DOTALL)
-new_block = (
-    '# --- ppc64le: LLD lacks relocation support, but ld.bfd handles ELF flags ---\n'
-    'if (( _use_lld )) && [[ "powerpc64le" == "powerpc64le" ]]; then\n'
-    '    _explicit_lld=0\n'
-    '    for _a in "$@"; do\n'
-    '        [[ "$_a" == "-fuse-ld=lld" ]] && _explicit_lld=1 && break\n'
-    '    done\n'
-    '    if (( _explicit_lld )); then\n'
-    '        echo "zig cc: error: -fuse-ld=lld is not supported on ppc64le" >&2\n'
-    '        exit 1\n'
-    '    fi\n'
-    '    _use_lld=0\n'
-    'fi'
-)
-t = old_block.sub(new_block, t)
-# 2. Filter -Bsymbolic* on ppc64le (zig rejects before ld.bfd sees it)
-rpath_line = '-Wl,-rpath-link|-Wl,-rpath-link,*|-Wl,--disable-new-dtags) ;;'
-if rpath_line in t and 'Bsymbolic) ;;' not in t:
-    t = t.replace(
-        rpath_line,
-        '-Wl,-Bsymbolic-functions|-Wl,-Bsymbolic|-Bsymbolic-functions|-Bsymbolic) ;;\n'
-        '        ' + rpath_line
-    )
-open(p, 'w').write(t)
-print('  Wrapper patched successfully')
-PATCH_EOF
-fi
 

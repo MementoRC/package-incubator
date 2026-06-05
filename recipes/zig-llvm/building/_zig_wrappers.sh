@@ -1,49 +1,48 @@
-# Use zig compiler wrappers provided by the zig-compiler package.
-# These are pre-built wrappers with flag filtering and sysroot detection.
-# On Windows, conda packages install under Library/
-ZIG_WRAPPERS="${BUILD_PREFIX}/share/zig/wrappers"
-is_not_unix && ZIG_WRAPPERS="${BUILD_PREFIX}/Library/share/zig/wrappers"
-if [[ ! -d "${ZIG_WRAPPERS}" ]]; then
-  echo "ERROR: zig wrappers not found at ${ZIG_WRAPPERS}"
-  echo "  Is zig-compiler installed as a build dependency?"
-  exit 1
-fi
+# Use the zig C-wrapper binaries installed by the upstream zig package (build _27+).
+# Layout:
+#   Unix:    $BUILD_PREFIX/bin/${CONDA_BUILD_ZIG}-{cc,cxx,ar,ranlib,asm,rc,force-load-cc,force-load-cxx}
+#   Windows: $BUILD_PREFIX/Library/bin/${CONDA_BUILD_ZIG}-{...}.exe
+#
+# Upstream activation also exports ZIG_CC / ZIG_CXX / ZIG_AR / ZIG_RANLIB /
+# ZIG_ASM / ZIG_RC / ZIG_LLD / ZIG_FORCE_LOAD_CC / ZIG_FORCE_LOAD_CXX. We pin
+# the same values explicitly so the script is deterministic regardless of
+# activation order.
 
 if is_not_unix; then
-  # Use the pre-built shim wrappers — they hardcode the cc/c++ subcommand internally,
-  # so cmake's compiler probe (--target=<triple> -print-target-triple) works correctly.
-  # Shims are installed side-by-side in Library/share/zig/wrappers/ by both the
-  # build-host and target-host wrapper packages.
-  _shim_cc="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc.exe"
-  if [[ ! -x "${_shim_cc}" ]]; then
-    echo "ERROR: zig cc shim not found at ${_shim_cc}"
-    ls "${ZIG_WRAPPERS}/"*zig* 2>/dev/null || true
-    exit 1
-  fi
-  "${_shim_cc}" --version
-
-  export ZIG_CC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc.exe"
-  export ZIG_CXX="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx.exe"
-  export ZIG_ASM="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc.exe"
-  export ZIG_AR="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ar.exe"
-  export ZIG_RANLIB="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ranlib.exe"
-  export ZIG_RC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-rc.exe"
+  _zig_bindir="${BUILD_PREFIX}/Library/bin"
+  _ext=".exe"
 else
-  export ZIG_CC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc"
-  export ZIG_CXX="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx"
-  export ZIG_AR="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ar"
-  export ZIG_RANLIB="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-ranlib"
-  export ZIG_ASM="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-asm"
-  export ZIG_RC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-rc"
+  _zig_bindir="${BUILD_PREFIX}/bin"
+  _ext=""
+fi
+
+_probe_cc="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
+if [[ ! -x "${_probe_cc}" ]]; then
+  echo "ERROR: zig cc wrapper not found at ${_probe_cc}"
+  echo "  Is zig_${build_platform} ==0.15.2 *_27 a build dependency?"
+  ls "${_zig_bindir}/"*zig* 2>/dev/null || true
+  exit 1
+fi
+"${_probe_cc}" --version
+
+export ZIG_CC="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
+export ZIG_CXX="${_zig_bindir}/${CONDA_BUILD_ZIG}-cxx${_ext}"
+export ZIG_AR="${_zig_bindir}/${CONDA_BUILD_ZIG}-ar${_ext}"
+export ZIG_RANLIB="${_zig_bindir}/${CONDA_BUILD_ZIG}-ranlib${_ext}"
+export ZIG_RC="${_zig_bindir}/${CONDA_BUILD_ZIG}-rc${_ext}"
+if is_not_unix; then
+  # Upstream wrapper routes asm-mode through the cc binary on Windows.
+  export ZIG_ASM="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
+else
+  export ZIG_ASM="${_zig_bindir}/${CONDA_BUILD_ZIG}-asm"
 fi
 
 # setup_macos_sysroot: ensure /opt/MacOSX*.sdk exists for zig-cc path #3 lookup.
-# The zig-cc wrapper (_zig-cc-common.sh) globs /opt/MacOSX*.sdk as its third
-# macOS SDK search path. If neither that nor CONDA_BUILD_SYSROOT provides an
-# SDK, download the pinned phracker MacOSX11.0.sdk tarball, verify sha256, and
-# extract to /opt/. Falls back to ${SRC_DIR}/conda-sdks/ + symlink (or
-# CONDA_BUILD_SYSROOT export) if /opt/ is not writable.
-# Ported from conda-forge OCAML feedstock pattern (known-working).
+# The zig-cc wrapper globs /opt/MacOSX*.sdk as its third macOS SDK search path.
+# If neither that nor CONDA_BUILD_SYSROOT provides an SDK, download the pinned
+# phracker MacOSX11.0.sdk tarball, verify sha256, and extract to /opt/. Falls
+# back to ${SRC_DIR}/conda-sdks/ + symlink (or CONDA_BUILD_SYSROOT export) if
+# /opt/ is not writable. Ported from conda-forge OCAML feedstock pattern.
 setup_macos_sysroot() {
   local _sdk_primary="/opt"
   local _sdk_fallback="${SRC_DIR}/conda-sdks"
@@ -116,71 +115,24 @@ PYEOF
   echo "  macOS SDK ready: ${_sdk_path}"
 }
 
-# macOS force-load wrapper: zig _14+ provides zig-force-load-cxx which handles
-# -Wl,-all_load/-Wl,-force_load by extracting archives to .o files, in c++ mode.
-# Set as CMAKE_CXX_COMPILER so it handles both compile and link commands;
-# force-load logic only activates when those flags are present.
-# _14 also fixes the relative-path bug (archives resolved to absolute before cd+ar x).
+# macOS force-load wrapper: zig provides force-load-cxx/-cc which handle
+# -Wl,-all_load / -Wl,-force_load by extracting archives to .o files
+# before linking. Use as ZIG_CXX/ZIG_CC so it handles both compile and link;
+# force-load logic only activates when those linker flags are present.
+#
+# macOS deployment target: conda-build sets MACOSX_DEPLOYMENT_TARGET; CMake on
+# macOS reads it into CMAKE_OSX_DEPLOYMENT_TARGET and injects -mmacosx-version-min
+# automatically. The C-binary wrapper passes those flags through to clang.
+# No wrapper-level patching is needed — the build system handles it end-to-end.
 if is_osx; then
-    setup_macos_sysroot
+  setup_macos_sysroot
 
-    if [[ -x "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cxx" ]]; then
-        export ZIG_CXX="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cxx"
-    else
-        echo "ERROR: ${CONDA_BUILD_ZIG}-force-load-cxx not found in ${ZIG_WRAPPERS}"
-        exit 1
-    fi
-    if [[ -x "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cc" ]]; then
-        export ZIG_CC="${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-force-load-cc"
-    else
-        echo "ERROR: ${CONDA_BUILD_ZIG}-force-load-cc not found in ${ZIG_WRAPPERS}"
-        exit 1
-    fi
-
-    # Patch deployment target in zig wrappers to match conda's MACOSX_DEPLOYMENT_TARGET.
-    # _zig-cc-common.sh contains the actual `-target aarch64-macos-none` (or versioned
-    # macos.13.0-none in zig 0.15+). zig-force-load-cxx sources this at runtime — it does
-    # NOT embed the target itself. zig-cc and zig-cxx have the target in a comment only.
-    # ld64 rejects ADRP relocations when objects compiled for a newer target are linked
-    # against a .dylib built for an older one (e.g. zig compiles at 13.0, linker at 11.0).
-    # Patch _zig-cc-common.sh FIRST (fixes all sourcing wrappers), then individual scripts.
-    _deploy_target="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
-    echo "  Patching zig wrappers: setting macOS deployment target to ${_deploy_target}"
-    # _zig-cc-common.sh is sourced by all wrappers and contains the actual
-    # -target @ZIG_TARGET@ substitution. zig-force-load-cxx does NOT embed
-    # the target directly — it sources _zig-cc-common.sh at runtime.
-    # Patching the common script fixes ALL wrappers that source it.
-    for _wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx"; do
-        [[ -f "${_wrapper}" ]] || continue
-        # Check if this is a text file (shell script) — binaries cannot be sed-patched
-        if ! file "${_wrapper}" | grep -q 'text\|script\|ASCII'; then
-            echo "  SKIP $(basename "${_wrapper}"): not a text file (binary?), cannot patch deployment target"
-            continue
-        fi
-        # grep -oE extracts the current macos*-none target triple (if any) for logging
-        _before=$(grep -oE 'macos(\.[0-9]+\.[0-9]+)?-none' "${_wrapper}" | head -1 || true)
-        # Replace macos-none (unversioned) OR macos.X.Y-none (versioned) with the correct target.
-        # Two-pass: versioned first (more specific), then unversioned fallback.
-        sed -i.deplbak \
-            -e "s/macos\.[0-9][0-9]*\.[0-9][0-9]*-none/macos.${_deploy_target}-none/g" \
-            -e "s/macos-none/macos.${_deploy_target}-none/g" \
-            "${_wrapper}"
-        _after=$(grep -oE 'macos(\.[0-9]+\.[0-9]+)?-none' "${_wrapper}" | head -1 || true)
-        if [[ "${_before}" == "${_after}" ]] && [[ -n "${_before}" ]]; then
-            echo "  $(basename "${_wrapper}"): no change needed (already: ${_before})"
-        elif [[ -z "${_before}" ]]; then
-            echo "  $(basename "${_wrapper}"): no macos*-none pattern found (wrapper may use a different format)"
-        else
-            echo "  $(basename "${_wrapper}"): patched ${_before} -> ${_after}"
-        fi
-    done
-
-    # Diagnostic: show the macOS target triple in each wrapper used as a compiler
-    echo "  === macOS wrapper deployment targets (after patching) ==="
-    for _diag_wrapper in "${ZIG_WRAPPERS}/_zig-cc-common.sh" "${ZIG_CXX}" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cc" "${ZIG_WRAPPERS}/${CONDA_BUILD_ZIG}-cxx"; do
-        [[ -f "${_diag_wrapper}" ]] || continue
-        _diag_target=$(grep -oE 'macos(\.[0-9]+\.[0-9]+)?-none' "${_diag_wrapper}" | head -1 || true)
-        echo "  $(basename "${_diag_wrapper}"): ${_diag_target:-<no macos*-none target found>}"
-    done
+  _fl_cc="${_zig_bindir}/${CONDA_BUILD_ZIG}-force-load-cc${_ext}"
+  _fl_cxx="${_zig_bindir}/${CONDA_BUILD_ZIG}-force-load-cxx${_ext}"
+  if [[ ! -x "${_fl_cc}" || ! -x "${_fl_cxx}" ]]; then
+    echo "ERROR: force-load wrappers missing: ${_fl_cc} / ${_fl_cxx}"
+    exit 1
+  fi
+  export ZIG_CC="${_fl_cc}"
+  export ZIG_CXX="${_fl_cxx}"
 fi
-

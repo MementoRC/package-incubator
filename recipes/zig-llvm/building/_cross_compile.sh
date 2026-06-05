@@ -199,17 +199,17 @@ PPCLD
     # The wrappers (from zig-gcc build dep) target the build host (x86_64) and
     # include sysroot detection, flag filtering, LLD auto-promotion, and
     # --no-dependent-libraries. Using raw "zig cc" bypasses all of that.
-    _native_cc="${BUILD_PREFIX}/share/zig/wrappers/${CONDA_BUILD_ZIG}-cc"
-    _native_cxx="${BUILD_PREFIX}/share/zig/wrappers/${CONDA_BUILD_ZIG}-cxx"
-    _native_asm="${BUILD_PREFIX}/share/zig/wrappers/${CONDA_BUILD_ZIG}-asm"
+    _native_cc="${BUILD_PREFIX}/bin/${CONDA_BUILD_ZIG}-cc"
+    _native_cxx="${BUILD_PREFIX}/bin/${CONDA_BUILD_ZIG}-cxx"
+    _native_asm="${BUILD_PREFIX}/bin/${CONDA_BUILD_ZIG}-asm"
     CMAKE_CROSS_FLAGS+=(
       "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_native_cc};-DCMAKE_CXX_COMPILER=${_native_cxx};-DCMAKE_ASM_COMPILER=${_native_asm};-DCMAKE_PREFIX_PATH=${BUILD_PREFIX};-DCMAKE_FIND_ROOT_PATH=${BUILD_PREFIX};-DLLVM_ENABLE_ZSTD=OFF"
     )
   elif is_not_unix; then
-    _host_cc_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-cc.exe"
-    _host_cxx_exe="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-cxx.exe"
-    _host_ar_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-ar.exe"
-    _host_ranlib_bat="${BUILD_PREFIX}/Library/share/zig/wrappers/${CONDA_BUILD_ZIG}-ranlib.exe"
+    _host_cc_exe="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-cc.exe"
+    _host_cxx_exe="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-cxx.exe"
+    _host_ar_bat="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-ar.exe"
+    _host_ranlib_bat="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-ranlib.exe"
 
     CMAKE_CROSS_FLAGS+=(
       "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024"

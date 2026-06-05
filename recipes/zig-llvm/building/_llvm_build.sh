@@ -233,7 +233,7 @@ CMAKE_RC_FLAGS=()
 if is_not_unix; then
   # _BUILD_PREFIX: forward-slash unix path version of BUILD_PREFIX,
   # created by build.bat (e.g. /d/a/package-incubator/.../build_env).
-  _rc_path="${_BUILD_PREFIX}/Library/share/zig/wrappers/${ZIG_TARGET_HOST}-zig-rc.bat"
+  _rc_path="${_BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-rc.exe"
   cat >> "${_cmake_init}" << CMINIT
 # RC compiler with forward-slash path — avoids CMake 4.2 backslash escape bug.
 set(CMAKE_RC_COMPILER "${_rc_path}" CACHE FILEPATH "RC compiler")
