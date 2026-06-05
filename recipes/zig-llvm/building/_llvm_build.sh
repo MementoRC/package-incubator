@@ -845,7 +845,7 @@ elif is_osx; then
           [[ ! -x "${_zig_bin}" ]] && _zig_bin=$(find "${BUILD_PREFIX}/bin" -name '*-zig' -not -name '*.cmd' 2>/dev/null | head -1)
           _modified_cmd=$(echo "${_bare_link_cmd}" | sed -E "s|[^ ]*zig-force-load-cxx|${_zig_bin} c++ -target aarch64-macos.${MACOSX_DEPLOYMENT_TARGET:-11.0}-none -mcpu=baseline|")
           # Strip -all_load / -Wl,-all_load — not accepted by zig's Mach-O linker directly
-          _modified_cmd=$(echo "${_modified_cmd}" | sed -E 's/ -Wl,-all_load\b//g; s/ -all_load\b//g')
+          _modified_cmd=$(echo "${_modified_cmd}" | sed -E 's/ -Wl,-all_load / /g; s/ -Wl,-all_load$//; s/ -all_load / /g; s/ -all_load$//')
           _append="${_rest##*append|}"
           _modified_cmd="${_modified_cmd} ${_append}"
           ;;
@@ -865,10 +865,19 @@ elif is_osx; then
       # effectively collapse onto the bare baseline (their appended -syslibroot
       # gets re-stripped), but H7-H10 (env-prefix / --sysroot= / -isysroot /
       # -nostdlib++) get a clean shot at producing libLLVM.dylib.
+      #
+      # NOTE: BSD sed on macOS does not support \b as a word boundary (it would
+      # be interpreted as literal `b`), so we use explicit space/end-of-line
+      # anchors instead of \b. The pattern matches ` flag ` (token surrounded
+      # by spaces) OR ` flag$` (token at end of line) and replaces with a
+      # single space (preserving spacing for the surrounding tokens).
       _modified_cmd=$(echo "${_modified_cmd}" | sed -E '
-        s/ -Wl,-all_load\b//g
-        s/ -all_load\b//g
-        s/ -Wl,-syslibroot,[^ ]+//g
+        s/ -Wl,-all_load / /g
+        s/ -Wl,-all_load$//
+        s/ -all_load / /g
+        s/ -all_load$//
+        s/ -Wl,-syslibroot,[^ ]+ / /g
+        s/ -Wl,-syslibroot,[^ ]+$//
       ')
 
       echo ""
@@ -930,7 +939,7 @@ elif is_osx; then
       # Build the diagnostic command: replace wrapper with direct zig c++ -v,
       # strip -all_load variants (unsupported by direct zig), add SDK flags to reduce noise.
       _diag_cmd=$(echo "${_bare_link_cmd}" | sed -E "s|[^ ]*zig-force-load-cxx|${_zig_bin} c++ -v -target aarch64-macos.${MACOSX_DEPLOYMENT_TARGET:-11.0}-none -mcpu=baseline|")
-      _diag_cmd=$(echo "${_diag_cmd}" | sed -E 's/ -Wl,-all_load\b//g; s/ -all_load\b//g')
+      _diag_cmd=$(echo "${_diag_cmd}" | sed -E 's/ -Wl,-all_load / /g; s/ -Wl,-all_load$//; s/ -all_load / /g; s/ -all_load$//')
       _diag_cmd="${_diag_cmd} -Wl,-syslibroot,${_sdkroot} -L${_sdkroot}/usr/lib"
       _diag_cmd="${_diag_cmd} -Wl,-t"
       echo "  --- diagnostic command (length=${#_diag_cmd} chars) ---"
