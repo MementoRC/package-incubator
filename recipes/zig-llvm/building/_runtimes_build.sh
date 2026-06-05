@@ -34,14 +34,13 @@ if is_unix || is_not_unix; then
     -DLIBCXX_CXX_ABI=libcxxabi
   )
 
-  # libunwind provides _Unwind_* symbols needed by libc++abi's exception handling.
-  # On Unix: DWARF unwinding. On MinGW: SEH-based unwinding (libunwind has a SEH adapter).
-  # Without it, -nostdlib++ (used by runtimes CMake) strips zig's bundled unwind.
-  # On Windows, libunwind is excluded entirely: platform SEH/SjLj unwinding is used
-  # instead, avoiding the lib/unwind.lib collision (multiple rules generate same target).
-  if [[ "$LLVM_TRIPLET" != *-windows* ]]; then
-    _RUNTIMES_LIST="libunwind;${_RUNTIMES_LIST}"
-  fi
+  # libunwind provides _Unwind_* / _GCC_specific_handler symbols needed by
+  # libc++abi's exception handling. On Unix: DWARF unwinding (shared lib).
+  # On Windows (MinGW): SEH-based unwinding via libunwind's SEH adapter, built
+  # STATIC-only so it embeds into libc++abi.dll (see Windows overrides below).
+  # Without libunwind, the libc++abi.dll link fails with undefined _Unwind_Resume,
+  # _Unwind_RaiseException, _GCC_specific_handler, etc.
+  _RUNTIMES_LIST="libunwind;${_RUNTIMES_LIST}"
   _RUNTIMES_FLAGS+=(
     -DLIBUNWIND_ENABLE_SHARED=ON
     -DLIBUNWIND_ENABLE_STATIC=OFF
@@ -105,16 +104,27 @@ if is_unix || is_not_unix; then
       -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
     )
 
-    # On Windows COFF, LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON combined
-    # with LIBCXXABI_USE_LLVM_UNWINDER=ON + LIBUNWIND_ENABLE_SHARED=ON registers
-    # both an `unwind` (shared, import lib) and `unwind_static` target — both emit
-    # lib/unwind.lib, causing: ninja: error: multiple rules generate lib/unwind.lib
-    # Unix is unaffected (.a vs .so extensions differ). Override to OFF so
-    # libc++/libc++abi/libunwind remain separate DLLs linked dynamically.
-    _RUNTIMES_FLAGS+=( -DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=OFF )
-    # libunwind is excluded from _RUNTIMES_LIST on Windows (see above); also disable
-    # libc++abi's LLVM unwinder hook so it uses platform SEH unwinding instead.
-    _RUNTIMES_FLAGS+=( -DLIBCXXABI_USE_LLVM_UNWINDER=OFF )
+    # Windows COFF: build libunwind STATIC-ONLY and embed it into libc++abi.dll.
+    #
+    # The unwind.lib collision (`ninja: error: multiple rules generate lib/unwind.lib`)
+    # happens when both `unwind` (shared, import lib → unwind.lib) and `unwind_static`
+    # (static → unwind.lib) targets are enabled — they both emit the same filename on
+    # COFF. Unix is unaffected because .a vs .so extensions differ.
+    #
+    # Solution: build only the STATIC libunwind on Windows (LIBUNWIND_ENABLE_SHARED=OFF,
+    # LIBUNWIND_ENABLE_STATIC=ON — overriding the Unix defaults set earlier). Then tell
+    # libcxxabi to statically link the unwinder into libc++abi.dll
+    # (LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=ON). The _Unwind_* and
+    # _GCC_specific_handler symbols end up inside libc++abi.dll itself.
+    #
+    # libcxx and libcxxabi remain separate DLLs (LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=OFF)
+    # — only the unwind layer is embedded.
+    _RUNTIMES_FLAGS+=(
+      -DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=OFF
+      -DLIBUNWIND_ENABLE_SHARED=OFF
+      -DLIBUNWIND_ENABLE_STATIC=ON
+      -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=ON
+    )
 
     # Windows ARM64 only: cmake compiler link test additionally fails with:
     #   lld-link: unable to automatically import from _fpreset with relocation
