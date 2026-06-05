@@ -30,12 +30,11 @@ export ZIG_CXX="${_zig_bindir}/${CONDA_BUILD_ZIG}-cxx${_ext}"
 export ZIG_AR="${_zig_bindir}/${CONDA_BUILD_ZIG}-ar${_ext}"
 export ZIG_RANLIB="${_zig_bindir}/${CONDA_BUILD_ZIG}-ranlib${_ext}"
 export ZIG_RC="${_zig_bindir}/${CONDA_BUILD_ZIG}-rc${_ext}"
-if is_not_unix; then
-  # Upstream wrapper routes asm-mode through the cc binary on Windows.
-  export ZIG_ASM="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
-else
-  export ZIG_ASM="${_zig_bindir}/${CONDA_BUILD_ZIG}-asm"
-fi
+# Route ASM through the cc binary on all platforms. The dedicated `-zig-asm`
+# wrapper invokes `zig as`, which is not a valid zig subcommand in 0.15.2 build 27
+# (zig has cc/c++/ar/ranlib/objcopy/rc/dlltool/lib but no `as`). Routing .S/.s
+# files through `zig cc` lets clang's integrated assembler handle them.
+export ZIG_ASM="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
 
 # setup_macos_sysroot: ensure /opt/MacOSX*.sdk exists for zig-cc path #3 lookup.
 # The zig-cc wrapper globs /opt/MacOSX*.sdk as its third macOS SDK search path.
