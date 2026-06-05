@@ -71,19 +71,24 @@ if is_osx; then
     -DLLVM_PARALLEL_LINK_JOBS=1
   )
 
-  # zig's ld64.lld doesn't auto-translate -isysroot into -syslibroot for the link
-  # stage, so libSystem.tbd / _abort end up unresolved. Pass syslibroot directly.
-  # CONDA_BUILD_SYSROOT is set by conda-build on macOS via Xcode (or by our
-  # setup_macos_sysroot fallback to the phracker SDK). When set, propagate it
-  # to all link types (shared / module / exe).
+  # macOS sysroot propagation:
+  #
+  # Previously this block injected `-Wl,-syslibroot,${CONDA_BUILD_SYSROOT}`
+  # into CMAKE_*_LINKER_FLAGS to compensate for zig ld64.lld not translating
+  # -isysroot to -syslibroot at link time. Zig 0.15.2 build 27 REJECTS the
+  # -syslibroot linker arg outright (`error: unsupported linker arg: -syslibroot`)
+  # — it is no longer a translation gap, it is a rejection.
+  #
+  # On zig 0.15.2 the compiler-driven -isysroot pathway is sufficient: clang
+  # propagates the SDK path to its integrated MachO linker invocation. cmake
+  # passes -isysroot automatically when CMAKE_OSX_SYSROOT is set (conda-build
+  # sets this from CONDA_BUILD_SYSROOT).
+  #
+  # If linking later fails with `library not found for -lSystem` or unresolved
+  # _abort, the fix is to add a zig-native sysroot flag (likely via the upstream
+  # wrapper's --sysroot translation), NOT to re-add -Wl,-syslibroot.
   if [[ -n "${CONDA_BUILD_SYSROOT:-}" && -d "${CONDA_BUILD_SYSROOT}/usr/lib" ]]; then
-    _osx_syslibroot="-Wl,-syslibroot,${CONDA_BUILD_SYSROOT}"
-    CMAKE_PLATFORM_FLAGS+=(
-      "-DCMAKE_SHARED_LINKER_FLAGS=${_osx_syslibroot}"
-      "-DCMAKE_MODULE_LINKER_FLAGS=${_osx_syslibroot}"
-      "-DCMAKE_EXE_LINKER_FLAGS=${_osx_syslibroot}"
-    )
-    echo "  macOS link: -Wl,-syslibroot=${CONDA_BUILD_SYSROOT}"
+    echo "  macOS sysroot: relying on -isysroot/CMAKE_OSX_SYSROOT (${CONDA_BUILD_SYSROOT})"
   else
     echo "  WARNING: CONDA_BUILD_SYSROOT not set or has no usr/lib — link may fail with 'library not found for -lSystem'"
   fi
