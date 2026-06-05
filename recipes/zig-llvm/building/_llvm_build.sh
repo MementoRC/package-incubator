@@ -855,6 +855,22 @@ elif is_osx; then
           ;;
       esac
 
+      # Zig 0.15.2 build 27 rejects two flags that the original CMake/ninja link
+      # command (and several of the hypotheses) still inject:
+      #   -Wl,-all_load / -all_load    (Apple ld; use -Wl,-force_load per-archive
+      #                                  or rely on lld linking referenced syms only)
+      #   -Wl,-syslibroot,<path>       (Apple ld; use -isysroot or --sysroot=)
+      # Strip them from every hypothesis baseline so the hypothesis-specific
+      # append actually gets a chance to drive the link strategy. H1-H6 will
+      # effectively collapse onto the bare baseline (their appended -syslibroot
+      # gets re-stripped), but H7-H10 (env-prefix / --sysroot= / -isysroot /
+      # -nostdlib++) get a clean shot at producing libLLVM.dylib.
+      _modified_cmd=$(echo "${_modified_cmd}" | sed -E '
+        s/ -Wl,-all_load\b//g
+        s/ -all_load\b//g
+        s/ -Wl,-syslibroot,[^ ]+//g
+      ')
+
       echo ""
       echo "  ----- ${_hid}: trying -----"
       echo "  Append/modify: ${_rest}"
