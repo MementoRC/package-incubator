@@ -196,6 +196,9 @@ while [[ $i -lt $argc ]]; do
                     # otherwise and fails with "library not found for -l".
                     -l|-l:libpthread.a|-l:libpthread.so*)
                         i=$next_i ;;
+                    # CMake C-compiler probe injects /version:0.0; zig lld-link rejects it as InvalidVersion. Drop the sentinel; preserve real /version:X.Y.
+                    /version:0.0)
+                        i=$next_i ;;
                     *)
                         args+=("$arg" "$next_arg")
                         i=$next_i ;;
@@ -277,6 +280,8 @@ while [[ $i -lt $argc ]]; do
                 *) args+=("$arg") ;;     # keep on other platforms (linux LLD supports it)
             esac
             ;;
+        # CMake C-compiler probe injects /version:0.0; zig lld-link rejects it as InvalidVersion. Drop the sentinel; preserve real /version:X.Y.
+        /version:0.0) ;;
         *)
             # Drop empty-string args (e.g., from -l${EMPTY_VAR} cmake expansion).
             # ld64.lld interprets a lone empty arg after -l as -l "" and emits
