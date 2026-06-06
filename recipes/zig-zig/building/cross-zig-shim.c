@@ -9,8 +9,8 @@
  *
  * Placeholders replaced at install time:
  *   NATIVE_ZIG_EXE  - filename of the native zig binary (e.g. x86_64-w64-mingw32-zig.exe)
- *   CC_TRIPLET      - target for cc/c++ (e.g. aarch64-windows-msvc)
- *   ZIG_TRIPLET     - target for zig commands (e.g. aarch64-windows-msvc)
+ *   CC_TRIPLET      - target for cc/c++ (e.g. aarch64-windows-gnu)
+ *   ZIG_TRIPLET     - target for zig commands (e.g. aarch64-windows-gnu)
  *
  * Compiled during package build:
  *   cl /Fe:target-zig.exe cross-zig-shim.c

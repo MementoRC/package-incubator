@@ -12,7 +12,7 @@
  * Placeholders replaced at install time:
  *   ZIG_CC_MODE    - "cc" or "c++"
  *   ZIG_BIN_NAME   - zig binary filename (e.g. x86_64-w64-mingw32-zig.exe)
- *   ZIG_TARGET     - zig target triplet (e.g. x86_64-windows-msvc)
+ *   ZIG_TARGET     - zig target triplet (e.g. x86_64-windows-gnu)
  *
  * Compiled during package build with zig cc.
  */

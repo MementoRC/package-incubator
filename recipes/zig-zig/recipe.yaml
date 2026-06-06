@@ -13,7 +13,7 @@ context:
   zig: ${{ "zig-" if riscv64 else "" }}
 
   # Zig target mapping (for zig -target flag, differs from GCC triplets)
-  # win-64/win-arm64 use msvc here so the zig binary links against MSVC-ABI LLVM.
+  # win-64/win-arm64 use gnu ABI to match zig-llvm's MinGW-built libcxx/libcxxabi.
   zig_triplet: >-
     ${{
       "x86_64-linux-gnu." ~ c_stdlib_version        if cross_target_platform_ == "linux-64"      else
@@ -23,8 +23,8 @@ context:
       "s390x-linux-gnu." ~ c_stdlib_version         if cross_target_platform_ == "linux-s390x"   else
       "x86_64-macos." ~ c_stdlib_version            if cross_target_platform_ == "osx-64"        else
       "aarch64-macos." ~ c_stdlib_version           if cross_target_platform_ == "osx-arm64"     else
-      "x86_64-windows-msvc"                         if cross_target_platform_ == "win-64"        else
-      "aarch64-windows-msvc"                        if cross_target_platform_ == "win-arm64"     else
+      "x86_64-windows-gnu"                          if cross_target_platform_ == "win-64"        else
+      "aarch64-windows-gnu"                         if cross_target_platform_ == "win-arm64"     else
       "native"
     }}
 
