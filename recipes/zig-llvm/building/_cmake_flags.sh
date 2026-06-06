@@ -146,6 +146,27 @@ if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
     dbg "win-arm64: LLVM_ARM64_EXPORT_DEF=${LLVM_BUILD}/libLLVM.def (PE 65535 export-cap workaround)"
 fi
 
+# ppc64le: zig's lld lacks ppc64le ELF relocation support and falls back to the
+# conda cross-gcc linker driver (ld.real.orig). That binary resolves -lc++ /
+# -lc++abi / -lunwind by name (-l flags), but has no knowledge of where
+# zig-libcxx installs its shared libraries. Inject -L so ld.real.orig can
+# locate libc++.so / libunwind.so in the zig-libcxx output tree.
+#
+# Mechanism: export LDFLAGS with the -L path. cmake reads ENV{LDFLAGS} and
+# appends it to CMAKE_SHARED_LINKER_FLAGS / CMAKE_EXE_LINKER_FLAGS at
+# configure time, combining with (not overriding) the CMAKE_*_LINKER_FLAGS_INIT
+# rpath-link flags set in _cross_compile.sh.
+#
+# Path: zig-libcxx (build dep) installs shared libs to ${PREFIX}/lib/zig-llvm/lib/
+# (same location used by ZIG_LIBCXX_DIR in _cross_compile.sh; confirmed by
+# _runtimes_build.sh _probe_dir variable and zig-libcxx package layout).
+if [[ "${target_platform}" == "linux-ppc64le" ]]; then
+    _zig_libcxx_lib="${PREFIX}/lib/zig-llvm/lib"
+    export LDFLAGS="-L${_zig_libcxx_lib}"
+    echo "  ppc64le: LDFLAGS=-L${_zig_libcxx_lib} (ld.real.orig -lc++/-lc++abi/-lunwind resolution)"
+    unset _zig_libcxx_lib
+fi
+
 # === BUILD CACHE ===
 # For faster iteration on packaging/tests, cache built artifacts in recipe folder
 # Cache location: ${RECIPE_DIR}/cache/zig-llvm/
