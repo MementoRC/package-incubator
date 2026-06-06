@@ -41,7 +41,11 @@ function build_lld_bundle() {
 
   if is_linux; then
     local _out="${_lld_lib}/liblldZig.so"
-    "${ZIG_CXX}" -shared -fPIC \
+    # Pass -target so zig-cc links for TARGET arch, not the build-host arch.
+    # On native (linux-64) this is a no-op; on cross (aarch64, ppc64le, …) it
+    # prevents ld.lld rejecting TARGET .a members as "incompatible with elf_x86_64".
+    # ZIG_TARGET_HOST is the bare zig triple for target_platform (set by recipe.yaml).
+    "${ZIG_CXX}" -target "${ZIG_TARGET_HOST}" -shared -fPIC \
       -Wl,--whole-archive \
         "${_lld_lib}/liblldELF.a" \
         "${_lld_lib}/liblldCOFF.a" \
