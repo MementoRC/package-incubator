@@ -80,6 +80,12 @@ done
 
 # Fast path: if no force-load flags, exec upstream wrapper directly.
 if [[ ${_all_load} -eq 0 ]] && [[ ${#_force_load_archives[@]} -eq 0 ]]; then
+    # Override any caller-supplied -target / --target=… by appending ours last
+    # (zig CLI: last -target wins). Required for cross-builds where the upstream
+    # BUILD wrapper bakes in -target ${ZIG_TARGET_BUILD} and cmake may inject
+    # --target=<LLVM-format> (e.g. x86_64-apple-darwin) which zig rejects.
+    # On native (BUILD==TARGET) this is a harmless no-op.
+    _exec_args+=( -target "${ZIG_TARGET_HOST}" )
     exec "${_zig_target_bin}" "${_exec_args[@]}"
 fi
 
@@ -165,4 +171,10 @@ for _ea in "${_exec_args[@]}"; do
     esac
 done
 
+# Override any caller-supplied -target / --target=… by appending ours last
+# (zig CLI: last -target wins). Required for cross-builds where the upstream
+# BUILD wrapper bakes in -target ${ZIG_TARGET_BUILD} and cmake may inject
+# --target=<LLVM-format> (e.g. x86_64-apple-darwin) which zig rejects.
+# On native (BUILD==TARGET) this is a harmless no-op.
+_final_exec_args+=( -target "${ZIG_TARGET_HOST}" )
 exec "${_zig_target_bin}" "${_final_exec_args[@]}" "${_extracted_objects[@]}"
