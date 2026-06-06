@@ -23,7 +23,7 @@ build:
 
 requirements:
   build:
-    - zig-gcc_linux-riscv64 >=0.15.2,<0.16
+    - zig >=0.15.2,<0.16
     - cmake
     - ninja
 

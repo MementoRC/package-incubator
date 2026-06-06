@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Build zlib with zig cc for zig toolchain
+# Build zstd with zig cc for zig toolchain
 set -euxo pipefail
 
-echo "=== Building zig-zlib with zig cc ==="
+echo "=== Building zig-zstd with zig cc ==="
 
-# Find zig binary
-ZIG="${CONDA_ZIG_BUILD}"
+# Upstream conda-forge zig package ships the zig binary in BUILD_PREFIX.
+# Configure it as the cross-compiler targeting riscv64-linux-gnu.
+# Note: zig bundles lld; riscv64 lld support landed in LLVM 12 (zig >=0.10),
+#       so zig's bundled lld should support riscv64 here. If link failures
+#       occur, revisit with -fuse-ld=bfd as a follow-up.
+export ZIG_CC="${BUILD_PREFIX}/bin/zig cc -target riscv64-linux-gnu"
+export ZIG_AR="${BUILD_PREFIX}/bin/zig ar"
+export ZIG_RANLIB="${BUILD_PREFIX}/bin/zig ranlib"
 
 # Clear conda compiler flags - zig handles everything
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS
