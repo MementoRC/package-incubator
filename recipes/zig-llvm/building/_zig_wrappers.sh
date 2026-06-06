@@ -126,14 +126,35 @@ PYEOF
 if is_osx; then
   setup_macos_sysroot
 
-  # NOTE (build 27 caveat): upstream provides bin/${CONDA_BUILD_ZIG}-force-load-cc/-cxx
-  # binaries but the zig-wrapper.c basename dispatch in this version does NOT
-  # recognize the `-force-load-cc`/`-force-load-cxx` suffixes — invoking them
-  # errors with `zig-wrapper: cannot determine mode from basename(...)`.
-  # Workaround: leave ZIG_CC/ZIG_CXX pointed at plain -cc/-cxx. libcxx/libunwind
-  # build fine without force-load semantics. TODO: revisit if libLLVM.dylib link
-  # later surfaces missing-symbol failures from un-extracted -Wl,-force_load
-  # archive references — at that point either (a) write a local force-load
-  # shim wrapper, or (b) bump zig to a build with working force-load dispatch.
-  :  # no-op; ZIG_CC and ZIG_CXX remain set to the plain wrappers above
+  # macOS libLLVM.dylib link needs -Wl,-all_load / -Wl,-force_load semantics
+  # (LLVM's CMake injects -Wl,-all_load to prevent dead-strip of LLVM*.a archive
+  # members from the dylib — without it, ld64 only links symbols referenced by
+  # libllvm.cpp.o and the dylib ends up nearly empty, failing the
+  # _LLVMInitializeAArch64AsmParser export check).
+  #
+  # Upstream zig 0.15.2 build 27 ships bin/${CONDA_BUILD_ZIG}-force-load-cc
+  # and -cxx as copies of the compiled zig-wrapper.c, but that wrapper's
+  # detect_mode() lacks cases for -force-load-cc/-cxx suffixes — invocation
+  # errors with `zig-wrapper: cannot determine mode from basename(...)` and
+  # exit 1. The wrapper also has no archive extraction (it would only inject
+  # -fuse-ld=lld, which doesn't help: zig's MachO ld64 rejects -Wl,-all_load
+  # and -Wl,-force_load,X as unsupported linker args).
+  #
+  # Workaround: use the vendored shell-script force-load shim (adapted from
+  # this repo's zig-gcc recipe). The shim extracts .o members from each
+  # force-loaded archive via `ar x` and execs upstream's bin/${CONDA_BUILD_ZIG}-cc
+  # / -cxx with the modified argv + extracted .o files appended. The upstream
+  # wrapper still injects -target/-mcpu correctly in CC/CXX mode.
+  _fl_shim_cc="${RECIPE_DIR}/building/zig-force-load-cc.sh"
+  _fl_shim_cxx="${RECIPE_DIR}/building/zig-force-load-cxx.sh"
+  _fl_shim_common="${RECIPE_DIR}/building/_zig-force-load-common.sh"
+  if [[ ! -f "${_fl_shim_cc}" || ! -f "${_fl_shim_cxx}" || ! -f "${_fl_shim_common}" ]]; then
+    echo "ERROR: force-load shim missing in ${RECIPE_DIR}/building/" >&2
+    exit 1
+  fi
+  # git may not preserve the executable bit (depending on commit history /
+  # checkout settings); chmod just-in-time so cmake/ninja can invoke them.
+  chmod +x "${_fl_shim_cc}" "${_fl_shim_cxx}" "${_fl_shim_common}"
+  export ZIG_CC="${_fl_shim_cc}"
+  export ZIG_CXX="${_fl_shim_cxx}"
 fi
