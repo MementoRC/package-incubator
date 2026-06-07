@@ -147,14 +147,20 @@ if is_osx; then
   # wrapper still injects -target/-mcpu correctly in CC/CXX mode.
   _fl_shim_cc="${RECIPE_DIR}/building/zig-force-load-cc.sh"
   _fl_shim_cxx="${RECIPE_DIR}/building/zig-force-load-cxx.sh"
+  _fl_shim_asm="${RECIPE_DIR}/building/zig-force-load-asm.sh"
   _fl_shim_common="${RECIPE_DIR}/building/_zig-force-load-common.sh"
-  if [[ ! -f "${_fl_shim_cc}" || ! -f "${_fl_shim_cxx}" || ! -f "${_fl_shim_common}" ]]; then
+  if [[ ! -f "${_fl_shim_cc}" || ! -f "${_fl_shim_cxx}" || ! -f "${_fl_shim_asm}" || ! -f "${_fl_shim_common}" ]]; then
     echo "ERROR: force-load shim missing in ${RECIPE_DIR}/building/" >&2
     exit 1
   fi
   # git may not preserve the executable bit (depending on commit history /
   # checkout settings); chmod just-in-time so cmake/ninja can invoke them.
-  chmod +x "${_fl_shim_cc}" "${_fl_shim_cxx}" "${_fl_shim_common}"
+  chmod +x "${_fl_shim_cc}" "${_fl_shim_cxx}" "${_fl_shim_asm}" "${_fl_shim_common}"
   export ZIG_CC="${_fl_shim_cc}"
   export ZIG_CXX="${_fl_shim_cxx}"
+  # Route ASM through the force-load shim (cc mode) on macOS so that CMake's
+  # CMAKE_ASM_COMPILER gets the same -target ${ZIG_TARGET_HOST} injection as
+  # CC/CXX. Without this, CMake passes --target=x86_64-apple-darwin (LLVM format)
+  # which zig rejects with UnknownOperatingSystem for .S files.
+  export ZIG_ASM="${_fl_shim_asm}"
 fi
