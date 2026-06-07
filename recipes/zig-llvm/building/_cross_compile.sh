@@ -211,8 +211,11 @@ PPCLD
     _host_ar_bat="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-ar.exe"
     _host_ranlib_bat="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-ranlib.exe"
 
+    # CMake compiler probe builds an exe by default, which on Windows injects
+    # -Xlinker /version:0.0 — zig lld-link rejects bare 0.0 as InvalidVersion.
+    # Build a static lib for the probe instead (no link, no /version: flag).
     CMAKE_CROSS_FLAGS+=(
-      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024"
+      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024;-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
     )
     echo "  HOST_CC: ${_host_cc_exe}"
     echo "  HOST_CXX: ${_host_cxx_exe}"
