@@ -9,9 +9,35 @@ echo "=== Building zig-zstd with zig cc ==="
 # Note: zig bundles lld; riscv64 lld support landed in LLVM 12 (zig >=0.10),
 #       so zig's bundled lld should support riscv64 here. If link failures
 #       occur, revisit with -fuse-ld=bfd as a follow-up.
-export ZIG_CC="${BUILD_PREFIX}/bin/zig cc -target riscv64-linux-gnu"
-export ZIG_AR="${BUILD_PREFIX}/bin/zig ar"
-export ZIG_RANLIB="${BUILD_PREFIX}/bin/zig ranlib"
+#
+# cmake requires CMAKE_C_COMPILER to be a single binary path, not a command
+# line with arguments.  Write thin wrapper scripts that bake in the -target
+# flag; the single-quoted heredoc delimiter ('WRAPPER_EOF') prevents bash
+# from expanding ${BUILD_PREFIX} here — it is written literally and expanded
+# at wrapper-script execution time by the shell that runs the wrapper.
+_zig_wrapper_dir="${SRC_DIR}/zig-wrappers"
+mkdir -p "${_zig_wrapper_dir}"
+
+cat > "${_zig_wrapper_dir}/zig-cc" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+exec "${BUILD_PREFIX}/bin/zig" cc -target riscv64-linux-gnu "$@"
+WRAPPER_EOF
+
+cat > "${_zig_wrapper_dir}/zig-ar" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+exec "${BUILD_PREFIX}/bin/zig" ar "$@"
+WRAPPER_EOF
+
+cat > "${_zig_wrapper_dir}/zig-ranlib" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+exec "${BUILD_PREFIX}/bin/zig" ranlib "$@"
+WRAPPER_EOF
+
+chmod +x "${_zig_wrapper_dir}"/zig-{cc,ar,ranlib}
+
+export ZIG_CC="${_zig_wrapper_dir}/zig-cc"
+export ZIG_AR="${_zig_wrapper_dir}/zig-ar"
+export ZIG_RANLIB="${_zig_wrapper_dir}/zig-ranlib"
 
 # Clear conda compiler flags - zig handles everything
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS
