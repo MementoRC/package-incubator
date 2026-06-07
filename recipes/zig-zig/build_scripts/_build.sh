@@ -102,6 +102,15 @@ function configure_cmake_zigcpp() {
   local install_dir=$2
   local zig=${3:-}
 
+  # Cross-build (Linux): ZIG_CC/ZIG_CXX are BUILD-host wrappers (e.g. x86_64-...-zig-cxx).
+  # Without -target, cmake compiles zigcpp objects for BUILD arch, not TARGET arch,
+  # causing an "incompatible" error at final link (e.g. x86_64 .o linked into aarch64 zig).
+  # macOS is excluded: force-load shims already inject -target via ZIG_TARGET_HOST.
+  # Windows is excluded: the cmake cache seed sets CMAKE_C/CXX_FLAGS with -target.
+  if is_linux && is_cross; then
+    EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}")
+  fi
+
   configure_cmake "${build_dir}" "${install_dir}" "${zig}"
   pushd "${build_dir}"
     cmake --build . --target zigcpp -- -j"${CPU_COUNT}"
