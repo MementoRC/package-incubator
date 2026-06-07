@@ -1213,22 +1213,29 @@ if is_not_unix; then
   echo "=== Creating DLL isolation wrapper (Windows) ==="
   _zig_bin="${PREFIX}/Library/bin"
   _shim_c="${RECIPE_DIR}/building/zig_dll_shim.c"
+  # MSYS2 bash strips the inner escaped quotes from -DREAL_EXE_NAME="\"...\""
+  # so the preprocessor sees bare identifiers with hyphens. Inject via -include
+  # of a generated header instead.
+  _shim_hdr="${SRC_DIR}/shim_name.h"
   for _exe in "${_zig_bin}/"*-zig.exe; do
     [[ ! -f "${_exe}" ]] && continue
     _base=$(basename "${_exe}" .exe)
     mv "${_exe}" "${_zig_bin}/${_base}.real.exe"
     echo "  Compiling shim: ${_base}.exe -> ${_base}.real.exe"
+    printf '#define REAL_EXE_NAME "%s.real.exe"\n' "${_base}" > "${_shim_hdr}"
     "${zig}" cc -target x86_64-windows-gnu \
-      -DREAL_EXE_NAME="\"${_base}.real.exe\"" \
+      -include "${_shim_hdr}" \
       -o "${_zig_bin}/${_base}.exe" "${_shim_c}" \
       -lkernel32 -lshell32 || {
         echo "ERROR: Failed to compile DLL shim for ${_base}"
         echo "  Restoring original exe"
         mv "${_zig_bin}/${_base}.real.exe" "${_exe}"
+        rm -f "${_shim_hdr}"
         exit 1
       }
     echo "  ${_base}.exe (shim) -> ${_base}.real.exe (DLL path: zig-llvm/bin)"
   done
+  rm -f "${_shim_hdr}"
   # Clean .pdb from shim compilation
   ls "${_zig_bin}"/*.pdb
   rm -f "${_zig_bin}"/*.pdb
