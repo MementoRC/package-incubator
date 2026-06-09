@@ -98,6 +98,7 @@ _args=("--sysroot=${_ppc_sysroot_early}")
 # sysroot. Without this, bin/clang-fuzzer-dictionary etc. fail with
 # 'libstdc++.so.6 not found' + undefined references to @GLIBCXX_3.4 symbols.
 _args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib")
+_args+=(-L"${PREFIX}/lib/zig-llvm/lib")
 _args+=(-rpath-link "${_ppc_sysroot_early}/usr/lib64" -rpath-link "${_ppc_sysroot_early}/usr/lib")
 _is_shared=0
 for _a in "\$@"; do
