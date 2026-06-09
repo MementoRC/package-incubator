@@ -135,11 +135,17 @@ is_not_unix && {
       -DHAVE_C_ATOMICS64_WITHOUT_LIB=ON
       # zig lld-link rejects /version:0.0 (zero minor) with InvalidVersion.
       # CMake emits /version:0.0 by default for Windows executables/DLLs when
-      # no version is specified. Override to 1.0 for all real targets here;
-      # NATIVE sub-project is handled separately in _cross_compile.sh via
+      # no version is specified. Override for all real targets here; NATIVE
+      # sub-project is handled separately in _cross_compile.sh via
       # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY (which avoids linking).
-      -DCMAKE_EXE_LINKER_FLAGS_INIT="-Wl,/version:1.0"
-      -DCMAKE_SHARED_LINKER_FLAGS_INIT="-Wl,/version:1.0"
+      #
+      # Round-2 (4f2472e) used /version:1.0 (dot-decimal) — zig lld rejected
+      # it with InvalidVersion. Round-3 experiment: use integer-only /version:1.
+      # For SHARED libs, also override CMake's auto-injected
+      # --major-image-version,0,--minor-image-version,0 defaults with non-zero
+      # values; without this CMake emits a second /version:0.0 that wins.
+      -DCMAKE_EXE_LINKER_FLAGS_INIT="-Wl,/version:1"
+      -DCMAKE_SHARED_LINKER_FLAGS_INIT="-Wl,--major-image-version,1,--minor-image-version,0 -Wl,/version:1"
     )
 }
 
