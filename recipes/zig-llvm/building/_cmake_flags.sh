@@ -159,12 +159,12 @@ fi
 # zig-libcxx installs its shared libraries. Inject -L so ld.real.orig can
 # locate libc++.so / libunwind.so in the zig-libcxx output tree.
 #
-# Mechanism: cmake -DCMAKE_SHARED_LINKER_FLAGS / -DCMAKE_EXE_LINKER_FLAGS.
-# cmake 4.x does NOT read ENV{LDFLAGS} into linker flags, so exporting LDFLAGS
-# has no effect; the -D flags are the correct injection point. These variables
-# are distinct from CMAKE_*_LINKER_FLAGS_INIT (set in _cross_compile.sh for
-# rpath-link): cmake appends _INIT at toolchain-load time then appends the
-# plain CMAKE_*_LINKER_FLAGS on top — both coexist without clobbering.
+# Mechanism: cmake -DCMAKE_*_LINKER_FLAGS_INIT (the _INIT form, not the plain
+# form). cmake 4.x does NOT read ENV{LDFLAGS} into linker flags, so exporting
+# LDFLAGS has no effect. The _INIT form is used because _cross_compile.sh
+# already sets CMAKE_*_LINKER_FLAGS_INIT for rpath-link; CMake concatenates
+# multiple -DCMAKE_*_INIT values from different -D flags, whereas a plain
+# -DCMAKE_*_LINKER_FLAGS would override (not extend) the _INIT value.
 #
 # Path: zig-libcxx (build dep) installs shared libs to ${PREFIX}/lib/zig-llvm/lib/
 # (same location used by ZIG_LIBCXX_DIR in _cross_compile.sh; confirmed by
@@ -172,10 +172,10 @@ fi
 if [[ "${target_platform}" == "linux-ppc64le" ]]; then
     _zig_libcxx_lib="${PREFIX}/lib/zig-llvm/lib"
     CMAKE_PLATFORM_FLAGS+=(
-        -DCMAKE_SHARED_LINKER_FLAGS="-L${_zig_libcxx_lib}"
-        -DCMAKE_EXE_LINKER_FLAGS="-L${_zig_libcxx_lib}"
+        -DCMAKE_SHARED_LINKER_FLAGS_INIT="-L${_zig_libcxx_lib}"
+        -DCMAKE_EXE_LINKER_FLAGS_INIT="-L${_zig_libcxx_lib}"
     )
-    echo "  ppc64le: CMAKE_*_LINKER_FLAGS=-L${_zig_libcxx_lib} (ld.real.orig -lc++/-lc++abi/-lunwind resolution)"
+    echo "  ppc64le: CMAKE_*_LINKER_FLAGS_INIT=-L${_zig_libcxx_lib} (ld.real.orig -lc++/-lc++abi/-lunwind resolution)"
     unset _zig_libcxx_lib
 fi
 
