@@ -19,7 +19,7 @@ context:
       "x86_64-linux-gnu." ~ c_stdlib_version        if cross_target_platform_ == "linux-64"      else
       "aarch64-linux-gnu." ~ c_stdlib_version       if cross_target_platform_ == "linux-aarch64" else
       "powerpc64le-linux-gnu." ~ c_stdlib_version   if cross_target_platform_ == "linux-ppc64le" else
-      "riscv64-linux-gnu." ~ c_stdlib_version       if cross_target_platform_ == "linux-riscv64" else
+      "riscv64-linux-gnu.2.39"                       if cross_target_platform_ == "linux-riscv64" else
       "s390x-linux-gnu." ~ c_stdlib_version         if cross_target_platform_ == "linux-s390x"   else
       "x86_64-macos." ~ c_stdlib_version            if cross_target_platform_ == "osx-64"        else
       "aarch64-macos." ~ c_stdlib_version           if cross_target_platform_ == "osx-arm64"     else
@@ -35,7 +35,7 @@ context:
       "x86_64-linux-gnu." ~ c_stdlib_version        if cross_target_platform_ == "linux-64"      else
       "aarch64-linux-gnu." ~ c_stdlib_version       if cross_target_platform_ == "linux-aarch64" else
       "powerpc64le-linux-gnu." ~ c_stdlib_version   if cross_target_platform_ == "linux-ppc64le" else
-      "riscv64-linux-gnu." ~ c_stdlib_version       if cross_target_platform_ == "linux-riscv64" else
+      "riscv64-linux-gnu.2.39"                       if cross_target_platform_ == "linux-riscv64" else
       "s390x-linux-gnu." ~ c_stdlib_version         if cross_target_platform_ == "linux-s390x"   else
       "x86_64-macos." ~ c_stdlib_version            if cross_target_platform_ == "osx-64"        else
       "aarch64-macos." ~ c_stdlib_version           if cross_target_platform_ == "osx-arm64"     else

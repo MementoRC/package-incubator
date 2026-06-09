@@ -9,9 +9,12 @@ c_stdlib:
     then:
       - vs
 c_stdlib_version:
-  - if: linux
+  - if: linux and not riscv64
     then:
       - "2.17"
+  - if: riscv64
+    then:
+      - "2.39"
   - if: osx
     then:
       - "11.3"
