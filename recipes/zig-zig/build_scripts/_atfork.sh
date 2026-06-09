@@ -7,6 +7,11 @@ function create_pthread_atfork_stub() {
   local cc_compiler="${2}"
   local output_dir="${3:-${SRC_DIR}}"
   local zig_triplet="${4:-}"
+  # Strip glibc version suffix for zig cc -target (clang driver doesn't accept .X.Y)
+  local _clang_target="${zig_triplet}"
+  if [[ "${_clang_target}" =~ ^(.*-gnu[a-z]*)\.[0-9]+\.[0-9]+$ ]]; then
+    _clang_target="${BASH_REMATCH[1]}"
+  fi
 
   echo "=== Creating pthread_atfork stub for glibc 2.28 ${arch_name} ==="
 
@@ -24,7 +29,7 @@ int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(vo
 }
 EOF
 
-  "${cc_compiler}" -c ${zig_triplet:+-target "${zig_triplet}"} "${output_dir}/pthread_atfork_stub.c" -o "${output_dir}/pthread_atfork_stub.o" || {
+  "${cc_compiler}" -c ${_clang_target:+-target "${_clang_target}"} "${output_dir}/pthread_atfork_stub.c" -o "${output_dir}/pthread_atfork_stub.o" || {
     echo "ERROR: Failed to compile pthread_atfork stub" >&2
     return 1
   }
@@ -49,6 +54,11 @@ function create_libc_single_threaded_stub() {
   local cc_compiler="${2}"
   local output_dir="${3:-${SRC_DIR}}"
   local zig_triplet="${4:-}"
+  # Strip glibc version suffix for zig cc -target (clang driver doesn't accept .X.Y)
+  local _clang_target="${zig_triplet}"
+  if [[ "${_clang_target}" =~ ^(.*-gnu[a-z]*)\.[0-9]+\.[0-9]+$ ]]; then
+    _clang_target="${BASH_REMATCH[1]}"
+  fi
 
   echo "=== Creating __libc_single_threaded stub for ${arch_name} ==="
 
@@ -60,7 +70,7 @@ __attribute__((weak))
 char __libc_single_threaded = 0;
 EOF
 
-  "${cc_compiler}" -c ${zig_triplet:+-target "${zig_triplet}"} "${output_dir}/libc_single_threaded_stub.c" -o "${output_dir}/libc_single_threaded_stub.o" || {
+  "${cc_compiler}" -c ${_clang_target:+-target "${_clang_target}"} "${output_dir}/libc_single_threaded_stub.c" -o "${output_dir}/libc_single_threaded_stub.o" || {
     echo "ERROR: Failed to compile __libc_single_threaded stub" >&2
     return 1
   }
