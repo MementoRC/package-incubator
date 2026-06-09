@@ -133,6 +133,13 @@ is_not_unix && {
       -DHAVE_CXX_ATOMICS64_WITHOUT_LIB=ON
       -DHAVE_C_ATOMICS_WITHOUT_LIB=ON
       -DHAVE_C_ATOMICS64_WITHOUT_LIB=ON
+      # zig lld-link rejects /version:0.0 (zero minor) with InvalidVersion.
+      # CMake emits /version:0.0 by default for Windows executables/DLLs when
+      # no version is specified. Override to 1.0 for all real targets here;
+      # NATIVE sub-project is handled separately in _cross_compile.sh via
+      # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY (which avoids linking).
+      -DCMAKE_EXE_LINKER_FLAGS_INIT="-Wl,/version:1.0"
+      -DCMAKE_SHARED_LINKER_FLAGS_INIT="-Wl,/version:1.0"
     )
 }
 
