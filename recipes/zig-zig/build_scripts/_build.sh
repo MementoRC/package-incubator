@@ -102,12 +102,16 @@ function configure_cmake_zigcpp() {
   local install_dir=$2
   local zig=${3:-}
 
-  # Cross-build (Linux): ZIG_CC/ZIG_CXX are BUILD-host wrappers (e.g. x86_64-...-zig-cxx).
+  # Cross-build (Linux/macOS): ZIG_CC/ZIG_CXX are BUILD-host wrappers (e.g. x86_64-...-zig-cxx).
   # Without -target, cmake compiles zigcpp objects for BUILD arch, not TARGET arch,
   # causing an "incompatible" error at final link (e.g. x86_64 .o linked into aarch64 zig).
-  # macOS is excluded: force-load shims already inject -target via ZIG_TARGET_HOST.
+  # macOS cross also needs -target: cmake's compiler-ABI TryCompile probe invokes the compiler
+  # directly (bypassing force-load shims), so the wrapper deduces target from its own filename
+  # (arm64) instead of the intended target — fails with "unknown target CPU 'apple-m1'" on x86_64.
   # Windows is excluded: the cmake cache seed sets CMAKE_C/CXX_FLAGS with -target.
   if is_linux && is_cross; then
+    EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}")
+  elif is_osx && is_cross; then
     EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}")
   fi
 

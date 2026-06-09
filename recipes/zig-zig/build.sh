@@ -1245,6 +1245,8 @@ fi
 # Clean up build-time artifacts from zig-llvm that shouldn't be in the final package.
 # The .a aliases were created for zig's gnu-target linker; the .dll.a originals
 # remain (they're part of zig-llvm). llvm-config.exe is only needed during cmake.
+# liblldZig.a and xml2.lib were staged for link-time use; installed binary uses
+# the DLL at runtime, so remove them to satisfy package_contents: strict.
 if is_not_unix; then
   echo "=== Cleaning build-time artifacts from zig-llvm ==="
   for _a in "${ZIG_LLVM_ROOT}/lib/"*.a; do
@@ -1256,6 +1258,11 @@ if is_not_unix; then
     rm -v "${_a}"
   done
   rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config"
+  # Clean up build-time-only staging files (link inputs); installed binary
+  # uses the DLL at runtime, not these .a/.lib copies. Avoids package_contents
+  # strict-mode rejection for zig-zig_impl.
+  rm -f "${ZIG_LLVM_ROOT}/lib/liblldZig.a"
+  rm -f "${ZIG_LLVM_ROOT}/lib/xml2.lib"
 fi
 
 # Workaround for ziglang/zig#14919: add synchronization.def so zig can generate
