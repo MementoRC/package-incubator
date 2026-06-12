@@ -99,6 +99,8 @@ _args=("--sysroot=${_ppc_sysroot_early}")
 # 'libstdc++.so.6 not found' + undefined references to @GLIBCXX_3.4 symbols.
 _args+=(-L"${_ppc_sysroot_early}/usr/lib64" -L"${_ppc_sysroot_early}/usr/lib")
 _args+=(-L"${PREFIX}/lib/zig-llvm/lib")
+_args+=(-L"${PREFIX}/lib")                          # libz/libzstd/libxml2 from $PREFIX/lib
+_args+=(-rpath-link "${PREFIX}/lib")                # transitive DT_NEEDED resolution for libLLVM.so
 _args+=(-rpath-link "${_ppc_sysroot_early}/usr/lib64" -rpath-link "${_ppc_sysroot_early}/usr/lib")
 _is_shared=0
 for _a in "\$@"; do
