@@ -139,13 +139,13 @@ is_not_unix && {
       # sub-project is handled separately in _cross_compile.sh via
       # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY (which avoids linking).
       #
-      # Round-2 (4f2472e) used /version:1.0 (dot-decimal) — zig lld rejected
-      # it with InvalidVersion. Round-3 experiment: use integer-only /version:1.
-      # For SHARED libs, also override CMake's auto-injected
-      # --major-image-version,0,--minor-image-version,0 defaults with non-zero
-      # values; without this CMake emits a second /version:0.0 that wins.
-      -DCMAKE_EXE_LINKER_FLAGS_INIT="-Wl,/version:1"
-      -DCMAKE_SHARED_LINKER_FLAGS_INIT="-Wl,--major-image-version,1,--minor-image-version,0 -Wl,/version:1"
+      # /version:N in ALL forms (dot-decimal /version:1.0 round-3, integer-only
+      # /version:1 round-4) is rejected by zig lld with InvalidVersion — zig lld
+      # does not implement the MSVC lld-link /version parser.
+      # GNU-ld style --major-image-version,N,--minor-image-version,N is accepted.
+      # Drop /version entirely; use GNU-ld form for both EXE and SHARED.
+      -DCMAKE_EXE_LINKER_FLAGS_INIT="-Wl,--major-image-version,1,--minor-image-version,0"
+      -DCMAKE_SHARED_LINKER_FLAGS_INIT="-Wl,--major-image-version,1,--minor-image-version,0"
     )
 }
 
