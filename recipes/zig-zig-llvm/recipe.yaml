@@ -10,6 +10,7 @@ context:
   m2: ${{ "m2-" if not unix else "" }}
   sh: ${{ ".bat" if not unix else ".sh" }}
   so: ${{ ".so" if linux else ".dylib" if osx else ".dll.a" }}
+  zig: ${{ "zig-" if riscv64 else "" }}
 
   # Zig triplet mapping (for zig -target flag)
   zig_triplet: >-
