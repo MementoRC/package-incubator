@@ -4,14 +4,10 @@ function create_pthread_atfork_stub() {
   # (x86_64 glibc 2.28 has it, but PowerPC64LE and aarch64 don't)
 
   local arch_name="${1}"
-  local cc_compiler="${2}"
+  local cc_compiler="${2}"   # unused; kept for call-site back-compat
   local output_dir="${3:-${SRC_DIR}}"
   local zig_triplet="${4:-}"
-  # Strip glibc version suffix for zig cc -target (clang driver doesn't accept .X.Y)
-  local _clang_target="${zig_triplet}"
-  if [[ "${_clang_target}" =~ ^(.*-gnu[a-z]*)\.[0-9]+\.[0-9]+$ ]]; then
-    _clang_target="${BASH_REMATCH[1]}"
-  fi
+  local zig_bin="${5:-}"
 
   echo "=== Creating pthread_atfork stub for glibc 2.28 ${arch_name} ==="
 
@@ -29,7 +25,7 @@ int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(vo
 }
 EOF
 
-  "${cc_compiler}" -c ${_clang_target:+-target "${_clang_target}"} "${output_dir}/pthread_atfork_stub.c" -o "${output_dir}/pthread_atfork_stub.o" || {
+  "${zig_bin}" cc -target "${zig_triplet}" -c "${output_dir}/pthread_atfork_stub.c" -o "${output_dir}/pthread_atfork_stub.o" || {
     echo "ERROR: Failed to compile pthread_atfork stub" >&2
     return 1
   }
@@ -51,14 +47,10 @@ function create_libc_single_threaded_stub() {
   # Value 0 = multi-threaded (conservative/safe default for a stub).
 
   local arch_name="${1}"
-  local cc_compiler="${2}"
+  local cc_compiler="${2}"   # unused; kept for call-site back-compat
   local output_dir="${3:-${SRC_DIR}}"
   local zig_triplet="${4:-}"
-  # Strip glibc version suffix for zig cc -target (clang driver doesn't accept .X.Y)
-  local _clang_target="${zig_triplet}"
-  if [[ "${_clang_target}" =~ ^(.*-gnu[a-z]*)\.[0-9]+\.[0-9]+$ ]]; then
-    _clang_target="${BASH_REMATCH[1]}"
-  fi
+  local zig_bin="${5:-}"
 
   echo "=== Creating __libc_single_threaded stub for ${arch_name} ==="
 
@@ -70,7 +62,7 @@ __attribute__((weak))
 char __libc_single_threaded = 0;
 EOF
 
-  "${cc_compiler}" -c ${_clang_target:+-target "${_clang_target}"} "${output_dir}/libc_single_threaded_stub.c" -o "${output_dir}/libc_single_threaded_stub.o" || {
+  "${zig_bin}" cc -target "${zig_triplet}" -c "${output_dir}/libc_single_threaded_stub.c" -o "${output_dir}/libc_single_threaded_stub.o" || {
     echo "ERROR: Failed to compile __libc_single_threaded stub" >&2
     return 1
   }
