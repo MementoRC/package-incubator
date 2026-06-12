@@ -585,13 +585,18 @@ if is_linux; then
   _lld_lib="${PREFIX}/lib/zig-llvm/lib"
   if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
     # liblldZig.so is not built on these platforms (no shared zstd/xml2/z available
-    # from conda-forge); link the 6 lld static archives directly with --whole-archive
-    # to preserve all driver entry-point symbols.
-    _lld_static_tokens="-Wl,--whole-archive"
+    # from conda-forge); link the 6 lld static archives directly without --whole-archive.
+    # --whole-archive is intentionally omitted: zig's build.zig passes ZIG_LLVM_LIBRARIES
+    # tokens via addLinkArgs (direct ELF-linker args, not through the CC driver), so
+    # -Wl,--whole-archive reaches zig's self-hosted ELF linker as a literal flag which
+    # it does not recognise ("unrecognized parameter: '-Wl,--whole-archive'").  Symbol
+    # inclusion is safe without the flag because zig's build.zig explicitly references
+    # all lld driver entry points, so the ELF linker pulls them from the archives.
+    _lld_static_tokens=""
     for _a in liblldELF.a liblldCOFF.a liblldMachO.a liblldWasm.a liblldMinGW.a liblldCommon.a; do
-      _lld_static_tokens="${_lld_static_tokens};${_lld_lib}/${_a}"
+      _lld_static_tokens="${_lld_static_tokens:+${_lld_static_tokens};}${_lld_lib}/${_a}"
     done
-    _lld_static_tokens="${_lld_static_tokens};-Wl,--no-whole-archive;-lzstd;-lxml2;-lz;-lpthread;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
+    _lld_static_tokens="${_lld_static_tokens};-lzstd;-lxml2;-lz;-lpthread;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
     # Remove all six individual liblld*.a references (cmake wrote them with full paths);
     # then append the static-archive token list.
     perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
