@@ -440,7 +440,7 @@ jobs:
   # builds gcc - llvm - zig for the cross target.
 
   build-cross-linux:
-    needs: build-native-linux
+    needs: [build-native-linux, build-native-linux-phase2]
     strategy:
       matrix:
         include:
@@ -609,7 +609,7 @@ jobs:
           done
 
   build-cross-macos:
-    needs: build-native-macos
+    needs: [build-native-macos, build-native-macos-phase2]
     name: osx-64 (cross)
     runs-on: macos-14
     steps:
@@ -689,7 +689,7 @@ jobs:
           done
 
   build-cross-windows:
-    needs: build-native-windows
+    needs: [build-native-windows, build-native-windows-phase2]
     name: win-arm64 (cross)
     runs-on: windows-latest
     steps:
