@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: ${{ 110 if arm64 else 108 }}
+  build_number: ${{ 111 if arm64 else 109 }}
   name: zig-llvm
   version: 20.1.8
 
@@ -124,7 +124,7 @@ outputs:
         - cmake >=3.19,<4
         - git
         - ninja
-        - zig_${{ build_platform }} ==0.15.2 *_27
+        - zig_${{ build_platform }} ==0.15.2 *_28
         # - zstd
         - if: not osx
           then:
@@ -143,7 +143,7 @@ outputs:
             # NOTE: no _${{ build_platform }} suffix — that variant doesn't exist
             # for zig-libcxx (only zig has the multi-platform variant).
             - zig-libcxx
-            - zig_${{ target_platform }} ==0.15.2 *_27
+            - zig_${{ target_platform }} ==0.15.2 *_28
             - if: osx
               then:
                 - libxml2-devel
