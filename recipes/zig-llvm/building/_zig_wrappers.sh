@@ -23,7 +23,14 @@ if [[ ! -x "${_probe_cc}" ]]; then
   ls "${_zig_bindir}/"*zig* 2>/dev/null || true
   exit 1
 fi
-"${_probe_cc}" cc --version
+# Build 28's compiled C wrapper derives -target from argv[0] for --version path,
+# producing -target ${conda_triplet}-zig which clang reports as invalid (cosmetic,
+# only affects --version probe; baked ZIG_TARGET handles actual compilation).
+# Check clang ran by looking for "clang version" in stdout; ignore stderr/exit.
+if ! "${_probe_cc}" cc --version 2>/dev/null | grep -q "clang version"; then
+  echo "ERROR: zig-cc probe failed (no clang version in output)" >&2
+  exit 1
+fi
 
 export ZIG_CC="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
 export ZIG_CXX="${_zig_bindir}/${CONDA_BUILD_ZIG}-cxx${_ext}"
