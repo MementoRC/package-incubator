@@ -71,8 +71,18 @@ post_install() {
     for _lib in "${LLVM_INSTALL}/lib/libLLVM"*.so.* "${LLVM_INSTALL}/lib/libclang-cpp"*.so.*; do
       [[ -L "${_lib}" ]] && continue
       [[ ! -f "${_lib}" ]] && continue
-      _bind=$(nm -a "${_lib}" 2>/dev/null | grep 'generic_category' | head -1 || true)
+      # Exclude ppc64le PLT call stubs: ld.bfd generates local symbols named
+      # plt_call._ZNSt3__16xxx for each cross-DSO call site. These stubs appear
+      # as type 't' (local text) in `nm -a` output but are NOT static copies of
+      # the symbol — they are call thunks that resolve the symbol dynamically via
+      # PLT. Filtering them out prevents false-positive static-merge detection.
+      _bind=$(nm -a "${_lib}" 2>/dev/null | grep 'generic_category' | grep -v 'plt_call\.' | head -1 || true)
+      # Also report all generic_category matches (including PLT stubs) for diagnostics.
+      _all_bind=$(nm -a "${_lib}" 2>/dev/null | grep 'generic_category' || true)
       echo "  $(basename ${_lib}): ${_bind:-not found}"
+      if [[ -n "${_all_bind}" && -z "${_bind}" ]]; then
+        echo "    (only PLT stubs found — correct dynamic resolution via libc++.so)"
+      fi
       if echo "${_bind}" | grep -q '^[0-9a-f]* t '; then
         echo "  FAIL: LOCAL_DEFINED — static libc++ merged in"
         _fail=1
