@@ -228,12 +228,13 @@ outputs:
             - ${{ library }}lib/zig-llvm/include/{__libu,libu,u}nwind*.h
             - ${{ library }}lib/zig-llvm/include/libunwind.modulemap
             - ${{ library }}lib/zig-llvm/lib/libc++*${{ so }}*
-            - ${{ library }}lib/zig-llvm/lib/libunwind*${{ so }}*
             - ${{ library }}lib/zig-llvm/lib/libc++.modules.json
+            - if: unix
+              then:
+                - ${{ library }}lib/zig-llvm/lib/libunwind*${{ so }}*
             - if: not unix
               then:
                 - ${{ library }}lib/zig-llvm/bin/libc++*.dll
-                - ${{ library }}lib/zig-llvm/bin/libunwind*.dll
 
   # === zig-llvm: full LLVM installation (shared libs, headers, cmake) ===
   - package:
