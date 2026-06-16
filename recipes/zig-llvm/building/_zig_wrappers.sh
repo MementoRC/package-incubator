@@ -27,7 +27,7 @@ fi
 # producing -target ${conda_triplet}-zig which clang reports as invalid (cosmetic,
 # only affects --version probe; baked ZIG_TARGET handles actual compilation).
 # Check clang ran by looking for "clang version" in stdout; ignore stderr/exit.
-if ! "${_probe_cc}" cc --version 2>/dev/null | grep -q "clang version"; then
+if ! "${_probe_cc}" cc --version 2>&1 | grep -q "clang version"; then
   echo "ERROR: zig-cc probe failed (no clang version in output)" >&2
   exit 1
 fi
