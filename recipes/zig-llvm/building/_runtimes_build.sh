@@ -213,6 +213,7 @@ EOF
       -DCMAKE_C_COMPILER_TARGET="${ZIG_LLVM_TRIPLET}"
       -DCMAKE_CXX_COMPILER_TARGET="${ZIG_LLVM_TRIPLET}"
       -DCMAKE_ASM_COMPILER_TARGET="${ZIG_LLVM_TRIPLET}"
+      "-DCMAKE_ASM_FLAGS=--target=${ZIG_LLVM_TRIPLET}"
       # Skip cmake's ABI detection — it runs in EXECUTABLE mode and fails for cross-builds,
       # leaving cmake architecturally blind and poisoning all check_cxx_compiler_flag probes.
       # Without this, libunwind's CXX_SUPPORTS_FUNWIND_TABLES_FLAG probe fails and the
