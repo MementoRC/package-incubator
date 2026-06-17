@@ -110,12 +110,16 @@ function configure_cmake_zigcpp() {
   # (arm64) instead of the intended target — fails with "unknown target CPU 'apple-m1'" on x86_64.
   # Windows is excluded: the cmake cache seed sets CMAKE_C/CXX_FLAGS with -target.
   if is_linux && is_cross; then
-    EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}")
+    # The cmake compiler check otherwise links a test executable, making zig-cc
+    # invoke the cross-GCC linker driver (e.g. powerpc64le-conda-linux-gnu-gcc),
+    # absent on the build host ("Failed to spawn GCC: FileNotFound"), so config.h
+    # is never generated. STATIC_LIBRARY makes the check compile-only.
+    EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY)
   elif is_osx && is_cross; then
     EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}")
   fi
 
-  configure_cmake "${build_dir}" "${install_dir}" "${zig}"
+  configure_cmake "${build_dir}" "${install_dir}" "${zig}" || return 1
   pushd "${build_dir}"
     cmake --build . --target zigcpp -- -j"${CPU_COUNT}"
   popd
