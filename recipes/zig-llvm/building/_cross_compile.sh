@@ -236,9 +236,10 @@ PPCLD
     # Use _SRC_DIR (forward-slash path from build.bat) to avoid CMake 4.2
     # backslash escape bug; fall back to bash-normalised SRC_DIR.
     _fwd_src_dir="${_SRC_DIR:-${SRC_DIR//\\//}}"
-    _native_project_include_fwd="${_fwd_src_dir}/_native_cmake_project_include.cmake"
-    # Write with literal SRC_DIR (backslashes are fine for the 'cat' call itself).
-    cat > "${SRC_DIR}/_native_cmake_project_include.cmake" << 'NATIVE_CMINIT'
+    # Native Windows cmake.exe needs D:/a/... (forward-slash drive form), not the /d/a/... MSYS form from _SRC_DIR.
+    _native_project_include_fwd="${SRC_DIR//\\//}/_native_cmake_project_include.cmake"
+    # Write to the same path that will be passed to cmake, so write-path == passed-path.
+    cat > "${_native_project_include_fwd}" << 'NATIVE_CMINIT'
 # Fix: zig lld-link rejects /version:0.0 for Windows executables built in the
 # NATIVE cross-build sub-project (llvm-min-tblgen.exe etc.).
 #
