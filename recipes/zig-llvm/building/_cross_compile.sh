@@ -214,14 +214,80 @@ PPCLD
     _host_ar_bat="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-ar.exe"
     _host_ranlib_bat="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-ranlib.exe"
 
+    # Write a CMake project-include file for the NATIVE sub-project.
+    # This file patches the link rule templates after platform detection.
+    #
+    # Root cause: CMake's Windows-GNU.cmake sets CMAKE_GNULD_IMAGE_VERSION to
+    #   "-Wl,--major-image-version,<TARGET_VERSION_MAJOR>,--minor-image-version,<TARGET_VERSION_MINOR>"
+    # For executables without an explicit VERSION property, <TARGET_VERSION_MAJOR>
+    # and <TARGET_VERSION_MINOR> evaluate to 0 (the CMake default). Zig cc converts
+    # --major-image-version,0,--minor-image-version,0 to lld-link /version:0.0,
+    # which zig's lld-link rejects with InvalidVersion.
+    #
+    # CMAKE_EXE_LINKER_FLAGS_INIT (tried in rounds 3-8) is appended to the link
+    # command, but CMake's link rule template ALSO appends ${CMAKE_GNULD_IMAGE_VERSION}
+    # AFTER <LINK_FLAGS>. Zig's lld-link uses the last --major-image-version, so the
+    # 0,0 from the template wins over our 1,0 from LINKER_FLAGS_INIT.
+    #
+    # CMAKE_PROJECT_INCLUDE runs at the END of project() (after platform module sets
+    # the link rule vars). We use string(REPLACE) to patch the 0-version generator
+    # expressions with hardcoded 1,0 before CMake generates build.ninja.
+    #
+    # Use _SRC_DIR (forward-slash path from build.bat) to avoid CMake 4.2
+    # backslash escape bug; fall back to bash-normalised SRC_DIR.
+    _fwd_src_dir="${_SRC_DIR:-${SRC_DIR//\\//}}"
+    _native_project_include_fwd="${_fwd_src_dir}/_native_cmake_project_include.cmake"
+    # Write with literal SRC_DIR (backslashes are fine for the 'cat' call itself).
+    cat > "${SRC_DIR}/_native_cmake_project_include.cmake" << 'NATIVE_CMINIT'
+# Fix: zig lld-link rejects /version:0.0 for Windows executables built in the
+# NATIVE cross-build sub-project (llvm-min-tblgen.exe etc.).
+#
+# CMake's Windows-GNU.cmake defines:
+#   CMAKE_GNULD_IMAGE_VERSION =
+#     "-Wl,--major-image-version,<TARGET_VERSION_MAJOR>,--minor-image-version,<TARGET_VERSION_MINOR>"
+# and bakes it into CMAKE_${lang}_LINK_EXECUTABLE via ${CMAKE_GNULD_IMAGE_VERSION}.
+# Executables without explicit VERSION property get <TARGET_VERSION_MAJOR>=0,
+# <TARGET_VERSION_MINOR>=0. Zig translates --major-image-version,0,... to
+# lld-link /version:0.0, which zig lld-link rejects as InvalidVersion.
+#
+# This file runs via CMAKE_PROJECT_INCLUDE (last step of project(), after all
+# platform modules have set the link rule variables). string(REPLACE) patches the
+# zero-version generator expressions with hardcoded 1,0 before CMake generates
+# build.ninja. Handles both Windows-GNU format (--major-image-version) and
+# Windows-Clang format (/version:) for robustness.
+message(STATUS ">>> NATIVE CMAKE_PROJECT_INCLUDE: patching link rules for zig lld-link /version:0.0 fix")
+if(WIN32)
+  foreach(_native_lang IN ITEMS C CXX ASM)
+    foreach(_native_rule IN ITEMS
+        CMAKE_${_native_lang}_LINK_EXECUTABLE
+        CMAKE_${_native_lang}_CREATE_SHARED_LIBRARY
+        CMAKE_${_native_lang}_CREATE_SHARED_MODULE)
+      if(DEFINED ${_native_rule})
+        string(REPLACE
+          "--major-image-version,<TARGET_VERSION_MAJOR>,--minor-image-version,<TARGET_VERSION_MINOR>"
+          "--major-image-version,1,--minor-image-version,0"
+          ${_native_rule} "${${_native_rule}}")
+        string(REPLACE
+          "/version:<TARGET_VERSION_MAJOR>.<TARGET_VERSION_MINOR>"
+          "/version:1.0"
+          ${_native_rule} "${${_native_rule}}")
+      endif()
+    endforeach()
+  endforeach()
+  message(STATUS ">>> NATIVE CMAKE_PROJECT_INCLUDE: link rules patched (version 1.0)")
+endif()
+NATIVE_CMINIT
+    echo "  NATIVE cmake project include: ${_native_project_include_fwd}"
+
     # CMake compiler probe builds an exe by default, which on Windows injects
     # -Xlinker /version:0.0 — zig lld-link rejects bare 0.0 as InvalidVersion.
     # Build a static lib for the probe instead (no link, no /version: flag).
     CMAKE_CROSS_FLAGS+=(
-      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024;-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_EXE_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DLLVM_VERSION_MAJOR=1;-DLLVM_VERSION_MINOR=0;-DCMAKE_PROJECT_VERSION=1.0"
+      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024;-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_EXE_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_PROJECT_INCLUDE=${_native_project_include_fwd}"
     )
     echo "  HOST_CC: ${_host_cc_exe}"
     echo "  HOST_CXX: ${_host_cxx_exe}"
+    unset _fwd_src_dir _native_project_include_fwd
   fi
 
   # Zig parses compiler target queries in 3-component format (<arch>-<os>-<abi>);
