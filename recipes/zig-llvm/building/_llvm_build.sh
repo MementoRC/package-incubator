@@ -263,6 +263,13 @@ if [[ "${target_platform}" == "linux-"* ]]; then
   trap '_zstd_diag' EXIT
 fi
 
+# CMake's compiler check runs the zig wrapper -> build-arch host zig, which is
+# dynamically linked to libc++.so.1 from the zig-libcxx build dep. Put that dir
+# on the loader path BEFORE configure (the existing export later only covers build).
+if is_linux; then
+  export LD_LIBRARY_PATH="${BUILD_PREFIX}/lib/zig-llvm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 cmake "-C${_cmake_init}" \
   -S "${LLVM_SRC}" -B "${LLVM_BUILD}" \
   -DCMAKE_PROJECT_INCLUDE="${_cmake_project_include}" \

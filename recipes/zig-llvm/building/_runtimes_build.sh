@@ -235,6 +235,11 @@ EOF
   echo "  Building runtimes: ${_RUNTIMES_LIST}..."
   mkdir -p "${SRC_DIR}/conda-runtimes-build"
 
+  # zig wrapper needs build-arch libc++.so.1 on the loader path for the compiler check.
+  if is_linux; then
+    export LD_LIBRARY_PATH="${BUILD_PREFIX}/lib/zig-llvm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+
   # Runtimes build is now fatal on all platforms — no silent failures.
   cmake -S "${LIBCXX_SRC}" -B "${SRC_DIR}/conda-runtimes-build" \
     "${_RUNTIMES_CMAKE[@]}" \
