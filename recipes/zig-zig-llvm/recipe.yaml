@@ -139,6 +139,12 @@ requirements:
         - zig-llvm >=${{ version }}
         - zlib
         - zstd
+        # zig-llvm (build dep above) contains llvm-tblgen, dynamically linked against
+        # libc++.so.1; pull zig-libcxx so the loader finds it at build time
+        # (needed for ARMTargetParserDef.inc generation on cross-builds).
+        # NOTE: no _${{ build_platform }} suffix — that variant doesn't exist
+        # for zig-libcxx (only zig has the multi-platform variant).
+        - zig-libcxx
         - if: osx
           then:
             - libxml2-devel

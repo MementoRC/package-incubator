@@ -947,15 +947,23 @@ if is_unix || is_not_unix; then
     _probe_dir="${BUILD_PREFIX}/lib/zig-llvm/lib"
   fi
   mkdir -p "${_probe_dir}"
-  echo "  Creating zig _14 libc++ probe copies at ${_probe_dir}"
-  for _libcxx in "${LLVM_INSTALL}/lib/"libc++*; do
-    [[ -f "${_libcxx}" ]] || continue
-    _name=$(basename "${_libcxx}")
-    # Use cp instead of ln -sf: Windows native zig binary may not follow
-    # MSYS2 Unix symlinks when probing for libc++.dll.a
-    cp -f "${_libcxx}" "${_probe_dir}/${_name}"
-    echo "    ${_name} ($(wc -c < "${_probe_dir}/${_name}") bytes)"
-  done
+  if is_cross; then
+    # Cross-compile: ${LLVM_INSTALL}/lib/libc++* is TARGET-arch (e.g. aarch64);
+    # copying it over ${_probe_dir} would overwrite the BUILD-arch libc++ that
+    # the solver-installed zig-libcxx (recipe.yaml requirements.build cross block)
+    # placed there. Host tools (e.g. llvm-tblgen) need build-arch libc++ to load.
+    echo "  Cross-compile: skipping libc++ copy to ${_probe_dir} (build-arch libc++ from zig-libcxx dep is already there)"
+  else
+    echo "  Creating zig _14 libc++ probe copies at ${_probe_dir}"
+    for _libcxx in "${LLVM_INSTALL}/lib/"libc++*; do
+      [[ -f "${_libcxx}" ]] || continue
+      _name=$(basename "${_libcxx}")
+      # Use cp instead of ln -sf: Windows native zig binary may not follow
+      # MSYS2 Unix symlinks when probing for libc++.dll.a
+      cp -f "${_libcxx}" "${_probe_dir}/${_name}"
+      echo "    ${_name} ($(wc -c < "${_probe_dir}/${_name}") bytes)"
+    done
+  fi
 
 fi
 
@@ -1210,6 +1218,13 @@ if is_linux; then
     fi
   }
   trap '_zstd_diag' EXIT
+fi
+
+# CMake's compiler check runs the zig wrapper -> build-arch host zig, dynamically
+# linked to libc++.so.1 from the zig-libcxx build dep at $BUILD_PREFIX/lib/zig-llvm/lib.
+# Put that dir on the loader path BEFORE configure (mirrors zig-llvm/_llvm_build.sh).
+if is_linux; then
+  export LD_LIBRARY_PATH="${BUILD_PREFIX}/lib/zig-llvm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
 cmake "-C${_cmake_init}" \

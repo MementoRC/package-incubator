@@ -456,6 +456,21 @@ if is_linux && is_cross; then
   )
 fi
 
+# riscv64/s390x: conda-forge does not ship zlib/zstd/libxml2 for these arches.
+# Instead, custom zig-zlib/zig-zstd/zig-libxml2 outputs install shared libs under
+# $PREFIX/lib/zig-{zlib,zstd,xml2}/lib/. Zig's paths_first library search uses
+# --search-prefix roots, so add these subdirs explicitly so -lz/-lzstd/-lxml2 resolve.
+if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
+  for _zigpkg in zig-zlib zig-zstd zig-xml2; do
+    _zigpkg_dir="${PREFIX}/lib/${_zigpkg}"
+    if [[ -d "${_zigpkg_dir}" ]]; then
+      EXTRA_ZIG_ARGS+=(--search-prefix "${_zigpkg_dir}")
+      echo "  riscv64/s390x: added --search-prefix ${_zigpkg_dir}"
+    fi
+  done
+  unset _zigpkg _zigpkg_dir
+fi
+
 # --- libzigcpp Configuration ---
 
 if is_linux; then
@@ -603,7 +618,7 @@ if is_linux; then
     for _a in liblldELF.a liblldCOFF.a liblldMachO.a liblldWasm.a liblldMinGW.a liblldCommon.a; do
       _lld_static_tokens="${_lld_static_tokens:+${_lld_static_tokens};}${_lld_lib}/${_a}"
     done
-    _lld_static_tokens="${_lld_static_tokens};${PREFIX}/lib/zig-zstd/lib/libzstd.so;${PREFIX}/lib/zig-xml2/lib/libxml2.so;${PREFIX}/lib/zig-zlib/lib/libz.so;-lpthread;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
+    _lld_static_tokens="${_lld_static_tokens};${PREFIX}/lib/zig-zstd/lib/libzstd.so;${PREFIX}/lib/zig-xml2/lib/libxml2.so;${PREFIX}/lib/zig-zlib/lib/libz.so;-lpthread;-L${PREFIX}/lib/zig-zlib/lib;-L${PREFIX}/lib/zig-zstd/lib;-L${PREFIX}/lib/zig-xml2/lib;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
     # Remove all six individual liblld*.a references (cmake wrote them with full paths);
     # then append the static-archive token list.
     perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h

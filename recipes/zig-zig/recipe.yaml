@@ -122,6 +122,16 @@ context:
   is_native: ${{ build_platform == target_platform and cross_target_platform_ == build_platform }}
   is_cross_compiler: ${{ is_hosted_xcompiler or is_unhosted_xcompiler }}
   is_cross_target: ${{ build_platform != target_platform and cross_target_platform_ == target_platform }}
+
+  # Keyword that `file` prints for each Linux target arch (for cross-build arch verification).
+  # `file` output differs from conda platform names: PowerPC (not ppc64le), RISC-V (not riscv64).
+  file_arch_keyword: >-
+    ${{
+      "PowerPC"  if cross_target_platform_ == "linux-ppc64le" else
+      "RISC-V"   if cross_target_platform_ == "linux-riscv64" else
+      "IBM S/390" if cross_target_platform_ == "linux-s390x"  else
+      cross_target_platform_ | replace("linux-", "")
+    }}
   
 recipe:
   name: zig-package
@@ -350,7 +360,7 @@ outputs:
           - if: linux
             then:
               - file $PREFIX/bin/${{ conda_triplet }}-zig
-              - file $PREFIX/bin/${{ conda_triplet }}-zig | grep -q '${{ target_platform | replace("linux-", "") }}'
+              - file $PREFIX/bin/${{ conda_triplet }}-zig | grep -qi '${{ file_arch_keyword }}'
           - if: osx
             then:
               # Fix zig-llvm dylib refs: test env gets a fresh zig-llvm install
@@ -359,8 +369,8 @@ outputs:
               - python testing/debug_libcxx_isolation.py
           # Skip exec on cross-build: rattler-build doesn't activate the test
           # build env, so qemu-execve's binfmt_misc hook never fires and
-          # cross-arch binaries fail with exit 126. File checks at lines 350-351
-          # already verify the binary arch on cross-build.
+          # cross-arch binaries fail with exit 126. File checks above verify
+          # the binary arch on cross-build.
           - if: build_platform == target_platform
             then:
               - ${{ conda_triplet }}-zig version
@@ -475,7 +485,7 @@ outputs:
       - script:
           - if: linux and build_platform != target_platform
             then:
-              - file $PREFIX/bin/${{ conda_triplet }}-zig | grep -q '${{ target_platform | replace("linux-", "") }}'
+              - file $PREFIX/bin/${{ conda_triplet }}-zig | grep -qi '${{ file_arch_keyword }}'
           - if: build_platform == target_platform
             then:
               - ${{ conda_triplet }}-zig version
@@ -558,7 +568,7 @@ outputs:
               - bash testing/fix_zigllvm_dylibs.sh
           - if: linux and build_platform != target_platform
             then:
-              - file $PREFIX/bin/zig | grep -q '${{ target_platform | replace("linux-", "") }}'
+              - file $PREFIX/bin/zig | grep -qi '${{ file_arch_keyword }}'
           - if: build_platform == target_platform
             then:
               - zig version
