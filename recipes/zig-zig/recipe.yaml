@@ -265,6 +265,12 @@ outputs:
         # Wrappers are staged at build time from RECIPE_DIR/scripts/ by build.sh,
         # replacing the former zig-gcc build dependency (kept as fallback recipe).
         - zig >=0.15.2,<0.16
+        - if: ppc64le
+          then:
+            # ppc64le patches redirect zig linking to powerpc64le-conda-linux-gnu-gcc
+            # (LLD lacks PowerPC64 relocation support); cross-gcc must be on PATH at build time
+            - gcc_impl_${{ target_platform }} >=14.3
+            - binutils_impl_${{ target_platform }} >=2.45
       host:
         # --- Development ---
         - zig-llvm ${{ llvm_version }}.*
