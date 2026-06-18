@@ -594,15 +594,16 @@ if is_linux; then
     # all lld driver entry points, so the ELF linker pulls them from the archives.
     #
     # Use absolute paths for libz/libzstd/libxml2 instead of bare -l flags.
-    # zig's paths_first strategy searches --search-prefix dirs for .so/.a files but
-    # conda may only install versioned .so.X.Y symlinks without an unversioned .so,
-    # causing "unable to find dynamic system library 'z' using strategy 'paths_first'".
-    # Absolute static archive paths bypass the search entirely (same approach as lld).
+    # riscv64/s390x use custom outputs that install shared libs under subdirs:
+    #   $PREFIX/lib/zig-zstd/lib/libzstd.so
+    #   $PREFIX/lib/zig-xml2/lib/libxml2.so
+    #   $PREFIX/lib/zig-zlib/lib/libz.so
+    # (conda-forge top-level $PREFIX/lib/libz.so etc. do not exist on these arches.)
     _lld_static_tokens=""
     for _a in liblldELF.a liblldCOFF.a liblldMachO.a liblldWasm.a liblldMinGW.a liblldCommon.a; do
       _lld_static_tokens="${_lld_static_tokens:+${_lld_static_tokens};}${_lld_lib}/${_a}"
     done
-    _lld_static_tokens="${_lld_static_tokens};${PREFIX}/lib/libzstd.a;${PREFIX}/lib/libxml2.a;${PREFIX}/lib/libz.a;-lpthread;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
+    _lld_static_tokens="${_lld_static_tokens};${PREFIX}/lib/zig-zstd/lib/libzstd.so;${PREFIX}/lib/zig-xml2/lib/libxml2.so;${PREFIX}/lib/zig-zlib/lib/libz.so;-lpthread;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
     # Remove all six individual liblld*.a references (cmake wrote them with full paths);
     # then append the static-archive token list.
     perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
