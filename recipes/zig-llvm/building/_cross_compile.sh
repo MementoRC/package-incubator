@@ -268,14 +268,23 @@ if(WIN32)
           "--major-image-version,<TARGET_VERSION_MAJOR>,--minor-image-version,<TARGET_VERSION_MINOR>"
           "--major-image-version,1,--minor-image-version,0"
           ${_native_rule} "${${_native_rule}}")
+        # MSVC /version: form — zig lld-link rejects /version:X.Y as InvalidVersion.
+        # The image version is already set via the GNU --major-image-version path
+        # above (and CMAKE_EXE_LINKER_FLAGS_INIT), so STRIP the redundant /version:
+        # token entirely. Strip with the -Xlinker prefix first (clang driver form),
+        # then any bare occurrence, to avoid leaving a dangling -Xlinker.
+        string(REPLACE
+          "-Xlinker /version:<TARGET_VERSION_MAJOR>.<TARGET_VERSION_MINOR>"
+          ""
+          ${_native_rule} "${${_native_rule}}")
         string(REPLACE
           "/version:<TARGET_VERSION_MAJOR>.<TARGET_VERSION_MINOR>"
-          "/version:1.0"
+          ""
           ${_native_rule} "${${_native_rule}}")
       endif()
     endforeach()
   endforeach()
-  message(STATUS ">>> NATIVE CMAKE_PROJECT_INCLUDE: link rules patched (version 1.0)")
+  message(STATUS ">>> NATIVE CMAKE_PROJECT_INCLUDE: link rules patched (version stripped; GNU image-version retained)")
 endif()
 NATIVE_CMINIT
     echo "  NATIVE cmake project include: ${_native_project_include_fwd}"
