@@ -32,6 +32,7 @@ is_osx() { [[ "${target_platform}" == "osx-"* ]]; }
 is_unix() { [[ "${target_platform}" == "linux-"* || "${target_platform}" == "osx-"* ]]; }
 is_not_unix() { ! is_unix; }
 is_cross() { [[ "${build_platform}" != "${target_platform}" ]]; }
+is_riscv64() { [[ "${target_platform:-}" == "linux-riscv64" ]]; }
 
 is_debug() { [[ "${DEBUG_ZIG_BUILD:-0}" == "1" ]]; }
 
@@ -175,7 +176,7 @@ export AR="${ZIG_AR}"
 export RANLIB="${ZIG_RANLIB}"
 # CONDA_BUILD_SYSROOT is normally set by compiler("c") activation (gcc/clang).
 # Since we use zig as compiler, set it manually from stdlib("c") sysroot.
-if is_linux; then
+if is_linux && ! is_riscv64; then
   export CONDA_BUILD_SYSROOT="${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot"
 fi
 
@@ -449,11 +450,15 @@ EXTRA_CMAKE_ARGS+=(-DCMAKE_IGNORE_PATH="${_ignore_paths}")
 
 
 if is_linux && is_cross; then
-  EXTRA_ZIG_ARGS+=(
-    -fqemu
-    --libc "${zig_build_dir}"/libc_file
-    --libc-runtimes "${CONDA_BUILD_SYSROOT}/lib64"
-  )
+  if is_riscv64; then
+    EXTRA_ZIG_ARGS+=(-fqemu)
+  else
+    EXTRA_ZIG_ARGS+=(
+      -fqemu
+      --libc "${zig_build_dir}"/libc_file
+      --libc-runtimes "${CONDA_BUILD_SYSROOT}/lib64"
+    )
+  fi
 fi
 
 # riscv64/s390x: conda-forge does not ship zlib/zstd/libxml2 for these arches.
@@ -710,7 +715,9 @@ if is_linux && is_cross; then
   source "${RECIPE_DIR}/build_scripts/_sysroot_fix.sh"
   fix_sysroot_libc_scripts "${BUILD_PREFIX}"
 
-  create_zig_linux_libc_file "${zig_build_dir}/libc_file"
+  if ! is_riscv64; then
+    create_zig_linux_libc_file "${zig_build_dir}/libc_file"
+  fi
 
   remove_failing_langref "${zig_build_dir}"
   perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/pthread_atfork_stub.o\"|g" "${cmake_build_dir}/config.h"

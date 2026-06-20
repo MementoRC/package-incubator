@@ -379,8 +379,22 @@ if is_not_unix; then
   # Add libc++ DLL location to PATH so build-time executables (llvm-min-tblgen etc.)
   # can find libc++.dll at runtime.  With zig _14's libc++ probe, zig links
   # executables against shared libc++ — but the DLL must be discoverable via PATH.
-  export PATH="${LLVM_INSTALL}/bin:${LLVM_INSTALL}/lib:${PATH}"
-  echo "  Added ${LLVM_INSTALL}/bin and lib to PATH for runtime DLL discovery"
+  #
+  # win-arm64 cross-build: the runtimes build (Phase 0) installs an ARM64 libc++.dll
+  # to ${LLVM_INSTALL}/bin/ = ${PREFIX}/Library/lib/zig-llvm/bin/. Adding that path
+  # first causes NATIVE x86_64 tools (llvm-min-tblgen.exe, llvm-config.exe) to find
+  # the ARM64 DLL and fail with STATUS_INVALID_IMAGE_FORMAT (0xc000007b) at launch.
+  # Fix: for cross-builds, prepend the BUILD-arch (x86_64) libc++ path first so
+  # NATIVE tools load the correct x86_64 libc++.dll from the zig-libcxx build dep.
+  if is_cross; then
+    _build_libcxx_dir="${BUILD_PREFIX}/Library/lib/zig-llvm"
+    export PATH="${_build_libcxx_dir}/lib:${_build_libcxx_dir}/bin:${LLVM_INSTALL}/bin:${LLVM_INSTALL}/lib:${PATH}"
+    echo "  Cross: build-arch libc++ (${_build_libcxx_dir}/lib) prepended before target-arch libc++ (${LLVM_INSTALL}/bin)"
+    unset _build_libcxx_dir
+  else
+    export PATH="${LLVM_INSTALL}/bin:${LLVM_INSTALL}/lib:${PATH}"
+    echo "  Added ${LLVM_INSTALL}/bin and lib to PATH for runtime DLL discovery"
+  fi
 
   # Phase 1: Build libLLVM DLL only.
   # win-arm64: two-stage pre-link approach to generate libLLVM.def before the dll

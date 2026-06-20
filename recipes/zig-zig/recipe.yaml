@@ -246,7 +246,9 @@ outputs:
     requirements:
       build:
         # --- Common build deps (all cases) ---
-        - ${{ stdlib('c') }}
+        - if: not riscv64
+          then:
+            - ${{ stdlib('c') }}
         - ${{ m2 }}bash >=5.2
         - ${{ m2 }}file
         - cmake >=3.5
@@ -273,13 +275,10 @@ outputs:
         # Wrappers are staged at build time from RECIPE_DIR/scripts/ by build.sh,
         # replacing the former zig-gcc build dependency (kept as fallback recipe).
         - zig >=0.15.2,<0.16
-        - if: ppc64le or riscv64
+        - if: ppc64le
           then:
             # ppc64le patches redirect zig linking to powerpc64le-conda-linux-gnu-gcc
-            # (LLD lacks PowerPC64 relocation support); cross-gcc must be on PATH at build time.
-            # riscv64 needs gcc_impl for CRT objects + the real C sysroot (sysroot_linux-riscv64
-            # is only installed when stdlib('c') is present; libc headers live under
-            # ${BUILD_PREFIX}/riscv64-conda-linux-gnu/sysroot/usr/include).
+            # (LLD lacks PowerPC64 relocation support); cross-gcc must be on PATH at build time
             - gcc_impl_${{ target_platform }} >=14.3
             - binutils_impl_${{ target_platform }} >=2.45
       host:
