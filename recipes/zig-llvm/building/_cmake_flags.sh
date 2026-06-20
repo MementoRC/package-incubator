@@ -159,29 +159,32 @@ if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
     dbg "win-arm64: LLVM_ARM64_EXPORT_DEF=${LLVM_BUILD}/libLLVM.def (PE 65535 export-cap workaround)"
 fi
 
-# ppc64le: zig's lld lacks ppc64le ELF relocation support and falls back to the
-# conda cross-gcc linker driver (ld.real.orig). That binary resolves -lc++ /
-# -lc++abi / -lunwind by name (-l flags), but has no knowledge of where
-# zig-libcxx installs its shared libraries. Inject -L so ld.real.orig can
-# locate libc++.so / libunwind.so in the zig-libcxx output tree.
+# linux cross builds (aarch64, ppc64le, riscv64, s390x): libLLVM.so is linked
+# with -nostdlib++ and -Wl,-z,defs. The whole-archive LLVM .a files pull in
+# libc++ symbols (operator new, std::__1::*, __cxxabiv1 vtables) that are
+# undefined at link time unless libc++ is explicitly on the link line.
+# libc++abi is statically merged into libc++.so.1 (LIBCXX_STATICALLY_LINK_ABI
+# _IN_SHARED_LIBRARY=ON), so -lc++ alone resolves all __cxxabiv1 vtable symbols.
+# libunwind is a separate shared lib (LIBUNWIND_ENABLE_SHARED=ON); its unversioned
+# linker symlink (libunwind.so) is installed by the Phase-1 runtimes build.
 #
-# Mechanism: cmake -DCMAKE_*_LINKER_FLAGS_INIT (the _INIT form, not the plain
-# form). cmake 4.x does NOT read ENV{LDFLAGS} into linker flags, so exporting
-# LDFLAGS has no effect. The _INIT form is used because _cross_compile.sh
-# already sets CMAKE_*_LINKER_FLAGS_INIT for rpath-link; CMake concatenates
-# multiple -DCMAKE_*_INIT values from different -D flags, whereas a plain
-# -DCMAKE_*_LINKER_FLAGS would override (not extend) the _INIT value.
+# CMAKE_CXX_STANDARD_LIBRARIES: cmake appends this variable at the END of every
+# C++ link line (after the archives), which is the correct slot for -lc++ when
+# -nostdlib++ is active. An explicit -lc++ passes through -nostdlib++.
+#
+# This supersedes the broken ppc64le-only CMAKE_SHARED/EXE_LINKER_FLAGS_INIT
+# block (which was overridden by _cross_compile.sh's rpath-link INIT and never
+# appeared on the shlib link). CMAKE_CXX_STANDARD_LIBRARIES is not set anywhere
+# else in this recipe, so there is no override risk.
 #
 # Path: zig-libcxx (build dep) installs shared libs to ${PREFIX}/lib/zig-llvm/lib/
-# (same location used by ZIG_LIBCXX_DIR in _cross_compile.sh; confirmed by
-# _runtimes_build.sh _probe_dir variable and zig-libcxx package layout).
-if [[ "${target_platform}" == "linux-ppc64le" ]]; then
+# (same location used by ZIG_LIBCXX_DIR in _cross_compile.sh and ld.bfd wrapper).
+if is_linux && [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
     _zig_libcxx_lib="${PREFIX}/lib/zig-llvm/lib"
     CMAKE_PLATFORM_FLAGS+=(
-        -DCMAKE_SHARED_LINKER_FLAGS_INIT="-L${_zig_libcxx_lib}"
-        -DCMAKE_EXE_LINKER_FLAGS_INIT="-L${_zig_libcxx_lib}"
+        "-DCMAKE_CXX_STANDARD_LIBRARIES=-L${_zig_libcxx_lib} -lc++ -lunwind"
     )
-    echo "  ppc64le: CMAKE_*_LINKER_FLAGS_INIT=-L${_zig_libcxx_lib} (ld.real.orig -lc++/-lc++abi/-lunwind resolution)"
+    echo "  linux cross: CMAKE_CXX_STANDARD_LIBRARIES=-L${_zig_libcxx_lib} -lc++ -lunwind (libLLVM.so -nostdlib++ undefined sym fix)"
     unset _zig_libcxx_lib
 fi
 
