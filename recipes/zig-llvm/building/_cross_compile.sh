@@ -213,6 +213,7 @@ PPCLD
     # build host, not the aarch64 target. CONDA_BUILD_ZIG resolves to the TARGET
     # triple (aarch64-w64-mingw32-zig), so we hard-code the build-host triple here.
     _native_host_triple="x86_64-w64-mingw32"
+    _native_zig_target="x86_64-windows-gnu"   # zig target query for the NATIVE build (mingw32 OS token is rejected by zig)
     _host_cc_exe="${BUILD_PREFIX}/Library/bin/${_native_host_triple}-zig-cc.exe"
     _host_cxx_exe="${BUILD_PREFIX}/Library/bin/${_native_host_triple}-zig-cxx.exe"
     _host_ar_bat="${BUILD_PREFIX}/Library/bin/${_native_host_triple}-zig-ar.exe"
@@ -297,7 +298,7 @@ NATIVE_CMINIT
     # -Xlinker /version:0.0 — zig lld-link rejects bare 0.0 as InvalidVersion.
     # Build a static lib for the probe instead (no link, no /version: flag).
     CMAKE_CROSS_FLAGS+=(
-      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_ASM_COMPILER=${_host_cc_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DCMAKE_C_COMPILER_TARGET=${_native_host_triple};-DCMAKE_CXX_COMPILER_TARGET=${_native_host_triple};-DCMAKE_ASM_COMPILER_TARGET=${_native_host_triple};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024;-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_EXE_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_PROJECT_INCLUDE=${_native_project_include_fwd}"
+      "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_ASM_COMPILER=${_host_cc_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DCMAKE_C_COMPILER_TARGET=${_native_zig_target};-DCMAKE_CXX_COMPILER_TARGET=${_native_zig_target};-DCMAKE_ASM_COMPILER_TARGET=${_native_zig_target};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024;-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_EXE_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_PROJECT_INCLUDE=${_native_project_include_fwd}"
     )
     echo "  HOST_CC: ${_host_cc_exe}"
     echo "  HOST_CXX: ${_host_cxx_exe}"
