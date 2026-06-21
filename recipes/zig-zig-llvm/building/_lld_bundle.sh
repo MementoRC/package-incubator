@@ -1,8 +1,3 @@
-# zig-zig-llvm variant of _lld_bundle.sh — no arch skip for riscv64/s390x.
-# Unlike zig-llvm, zig-zig-llvm declares conda-forge zstd/xml2/z as host deps
-# on all linux targets (including riscv64 and s390x), so the bundle can be
-# built on every supported platform.
-
 function build_lld_bundle() {
   set -x  # DIAGNOSTIC: trace all commands to stderr
   # Bundle prebuilt liblld*.a archives into a platform-native shared library.
@@ -20,6 +15,13 @@ function build_lld_bundle() {
   #            ${LLVM_INSTALL}/lib/liblldZig.dll.a  (import lib)
 
   echo "=== Building liblldZig bundle for ${target_platform} ==="
+
+  # No conda-forge zstd/xml2/z packages for riscv64/s390x — skip the bundle.
+  # zig consumers on these platforms link the static .a archives directly.
+  if [[ "${target_platform:-}" == "linux-riscv64" || "${target_platform:-}" == "linux-s390x" ]]; then
+    echo "  Skipping liblldZig.so for ${target_platform} (no conda-forge zstd/xml2/z available)"
+    return 0
+  fi
 
   local _lld_lib="${LLVM_INSTALL}/lib"
 
@@ -39,7 +41,11 @@ function build_lld_bundle() {
 
   if is_linux; then
     local _out="${_lld_lib}/liblldZig.so"
-    "${ZIG_CXX}" -shared -fPIC \
+    # Pass -target so zig-cc links for TARGET arch, not the build-host arch.
+    # On native (linux-64) this is a no-op; on cross (aarch64, ppc64le, …) it
+    # prevents ld.lld rejecting TARGET .a members as "incompatible with elf_x86_64".
+    # ZIG_TARGET_HOST is the bare zig triple for target_platform (set by recipe.yaml).
+    "${ZIG_CXX}" -target "${ZIG_TARGET_HOST}" -shared -fPIC \
       -Wl,--whole-archive \
         "${_lld_lib}/liblldELF.a" \
         "${_lld_lib}/liblldCOFF.a" \
@@ -52,6 +58,9 @@ function build_lld_bundle() {
       -Wl,-rpath,'$ORIGIN' \
       -L"${_lld_lib}" \
       -L"${PREFIX}/lib" \
+      -L"${PREFIX}/lib/zig-zstd/lib" \
+      -L"${PREFIX}/lib/zig-zlib/lib" \
+      -L"${PREFIX}/lib/zig-libxml2/lib" \
       "${_lld_lib}/libLLVM-20.so" \
       -lzstd -lxml2 -lz -lpthread \
       -o "${_out}" || {
@@ -96,7 +105,10 @@ function build_lld_bundle() {
     echo "DEBUG: target_platform=${target_platform:-unset} ZIG_CXX=${ZIG_CXX:-unset} LLVM_INSTALL=${LLVM_INSTALL:-unset} _lld_lib=${_lld_lib:-unset}" >&2
     local _out="${LLVM_INSTALL}/bin/liblldZig.dll"
     local _implib="${_lld_lib}/liblldZig.dll.a"
-    "${ZIG_CXX}" -shared \
+    # Use LLVM's patched cxxabi.h to prevent type_info collision in zig's bundled libcxxabi
+    # (zig's bundled copy lacks the _LIBCXXABI_BUILDING_LIBRARY guard from our patch 0003)
+    local _cxxabi_idir="-I${PREFIX}/lib/zig-llvm/include/c++/v1"
+    "${ZIG_CXX}" ${_cxxabi_idir} -shared \
       -Wl,--whole-archive \
         "${_lld_lib}/liblldELF.a" \
         "${_lld_lib}/liblldCOFF.a" \

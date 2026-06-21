@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: ${{ 111 if arm64 else 109 }}
+  build_number: ${{ 113 if arm64 else 111 }}
   name: zig-llvm
   version: 20.1.8
 
@@ -78,6 +78,7 @@ source:
       - patches/0006-fix-cmake-cfg-intdir-windows.patch
       - if: not unix
         then:
+          - patches/0003-fix-cxxabi-type_info-msvc-14.51-mingw-conflict.patch
           - patches/0004-add-llvm-dylib-export-all-symbols-mingw.patch
           - patches/0005-disable-clang-interpreter-dllexport-mingw.patch
 
@@ -124,7 +125,7 @@ outputs:
         - cmake >=3.19,<4
         - git
         - ninja
-        - zig_${{ build_platform }} ==0.15.2 *_28
+        - zig_${{ build_platform }} ==0.15.2
         # - zstd
         - if: not osx
           then:
@@ -143,7 +144,7 @@ outputs:
             # NOTE: no _${{ build_platform }} suffix — that variant doesn't exist
             # for zig-libcxx (only zig has the multi-platform variant).
             - zig-libcxx
-            - zig_${{ target_platform }} ==0.15.2 *_28
+            - zig_${{ target_platform }} ==0.15.2
             - if: osx
               then:
                 - libxml2-devel
@@ -162,6 +163,7 @@ outputs:
           then:
             - ${{ zig }}libxml2
           else:
+            - libxml2
             - libxml2-devel
 
   # === zig-llvm-tblgen: lightweight native tools for cross-compilation ===

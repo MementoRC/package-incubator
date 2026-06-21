@@ -134,11 +134,14 @@ if [[ -z "${ZIG_CC:-}" ]] && [[ -n "${zig}" ]]; then
         "${_src}" > "${_wrapper_dir}/${_helper}"
   done
 
-  # Install triple-prefixed wrapper scripts (drop .sh extension, add triple prefix)
+  # Install triple-prefixed wrapper scripts (drop .sh extension, add conda triplet prefix)
+  # Filename uses CONDA_TRIPLET (e.g. x86_64-conda-linux-gnu) so consumers using the
+  # conda prefix convention can find them; @ZIG_TARGET@ inside the script remains _cc_target
+  # (the zig -target triplet, e.g. x86_64-linux-gnu) — do NOT conflate the two.
   for _name in zig-cc zig-cxx zig-ar zig-ranlib zig-asm zig-rc zig-lld zig-force-load-cc zig-force-load-cxx; do
     _src="${RECIPE_DIR}/scripts/${_name}.sh"
     [[ -f "${_src}" ]] || continue
-    _dst="${_wrapper_dir}/${_cc_target}-${_name}"
+    _dst="${_wrapper_dir}/${CONDA_TRIPLET}-${_name}"
     sed -e "s|@ZIG_BIN@|${zig}|g" \
         -e "s|@ZIG_TARGET@|${_cc_target}|g" \
         -e "s|@ZIG_TARGET_ARCH@|${_cc_target_arch}|g" \
@@ -146,14 +149,14 @@ if [[ -z "${ZIG_CC:-}" ]] && [[ -n "${zig}" ]]; then
     chmod +x "${_dst}"
   done
 
-  export ZIG_CC="${_wrapper_dir}/${_cc_target}-zig-cc"
-  export ZIG_CXX="${_wrapper_dir}/${_cc_target}-zig-cxx"
-  export ZIG_AR="${_wrapper_dir}/${_cc_target}-zig-ar"
-  export ZIG_RANLIB="${_wrapper_dir}/${_cc_target}-zig-ranlib"
-  export ZIG_ASM="${_wrapper_dir}/${_cc_target}-zig-asm"
-  export ZIG_RC="${_wrapper_dir}/${_cc_target}-zig-rc"
+  export ZIG_CC="${_wrapper_dir}/${CONDA_TRIPLET}-zig-cc"
+  export ZIG_CXX="${_wrapper_dir}/${CONDA_TRIPLET}-zig-cxx"
+  export ZIG_AR="${_wrapper_dir}/${CONDA_TRIPLET}-zig-ar"
+  export ZIG_RANLIB="${_wrapper_dir}/${CONDA_TRIPLET}-zig-ranlib"
+  export ZIG_ASM="${_wrapper_dir}/${CONDA_TRIPLET}-zig-asm"
+  export ZIG_RC="${_wrapper_dir}/${CONDA_TRIPLET}-zig-rc"
 
-  echo "Self-staged zig-cc wrappers in ${_wrapper_dir} (cc_target=${_cc_target})"
+  echo "Self-staged zig-cc wrappers in ${_wrapper_dir} (conda_triplet=${CONDA_TRIPLET}, zig_target=${_cc_target})"
   echo "ZIG_CC: ${ZIG_CC}"
 fi
 

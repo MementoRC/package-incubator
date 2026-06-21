@@ -58,6 +58,9 @@ function build_lld_bundle() {
       -Wl,-rpath,'$ORIGIN' \
       -L"${_lld_lib}" \
       -L"${PREFIX}/lib" \
+      -L"${PREFIX}/lib/zig-zstd/lib" \
+      -L"${PREFIX}/lib/zig-zlib/lib" \
+      -L"${PREFIX}/lib/zig-libxml2/lib" \
       "${_lld_lib}/libLLVM-20.so" \
       -lzstd -lxml2 -lz -lpthread \
       -o "${_out}" || {
@@ -102,7 +105,19 @@ function build_lld_bundle() {
     echo "DEBUG: target_platform=${target_platform:-unset} ZIG_CXX=${ZIG_CXX:-unset} LLVM_INSTALL=${LLVM_INSTALL:-unset} _lld_lib=${_lld_lib:-unset}" >&2
     local _out="${LLVM_INSTALL}/bin/liblldZig.dll"
     local _implib="${_lld_lib}/liblldZig.dll.a"
-    "${ZIG_CXX}" -shared \
+    # Pass -target so zig-cc links/compiles for the TARGET arch (aarch64-windows-gnu),
+    # not the x86_64 build host.  Mirrors the is_linux branch above.  Without it, zig
+    # defaults to the build-host triple and, on the VS2022 runner, auto-compiles its OWN
+    # bundled libcxxabi (cxa_exception.cpp) against the native MSVC SDK — whose
+    # vcruntime_typeinfo.h:137 `using ::type_info` collides with zig's bundled
+    # cxxabi.h:30 `class type_info`.  Under aarch64-windows-gnu zig uses its bundled
+    # MinGW/libc++ headers instead, so no MSVC header is pulled and the collision cannot
+    # occur (and the produced DLL matches the aarch64 liblld*.a archives it bundles).
+    # ZIG_TARGET_HOST = aarch64-windows-gnu here (recipe.yaml zig_target).
+    # The -I shim keeps LLVM's patched libc++ headers ahead of zig's for any residual
+    # inclusion; harmless once -target removes the MSVC path.
+    local _cxxabi_idir="-I${PREFIX}/lib/zig-llvm/include/c++/v1"
+    "${ZIG_CXX}" -target "${ZIG_TARGET_HOST}" ${_cxxabi_idir} -shared \
       -Wl,--whole-archive \
         "${_lld_lib}/liblldELF.a" \
         "${_lld_lib}/liblldCOFF.a" \

@@ -206,15 +206,35 @@ def main():
         if rpath:
             print(f"  RPATH/RUNPATH: {rpath}")
 
-    # --- Check liblld ---
+    # --- Check liblldZig (bundled shared library) ---
     print("\n=== liblld ===")
-    lld_libs = find_libs(libdir, "liblld*.a")
+    lld_libs = find_shared_libs(libdir, "liblldZig")
     if not lld_libs:
-        errors.append("No liblld static libraries found")
+        errors.append("No liblldZig shared library found")
     else:
-        for lib in lld_libs[:5]:
-            print(f"  {os.path.basename(lib)}")
-        print(f"  Total: {len(lld_libs)} archive(s)")
+        for lib in lld_libs[:3]:
+            name = os.path.basename(lib)
+            valid, fmt = check_binary_type(lib)
+            print(f"  {name}: {fmt} {'OK' if valid else 'INVALID'}")
+            if not valid:
+                errors.append(f"{name} is not a valid {fmt} shared library")
+
+        main_lib = lld_libs[0]
+        needed = get_needed(main_lib)
+        has_stdcxx = any("libstdc++" in n or "stdc++" in n.lower() for n in needed)
+        print(f"  Dependencies: {sorted(needed)}")
+        if has_stdcxx:
+            errors.append("liblldZig depends on libstdc++ (must use libc++)")
+        else:
+            print("  No libstdc++ dependency: OK")
+
+        if PLATFORM == "linux":
+            glibc = get_glibc_versions(main_lib)
+            print(f"  GLIBC versions: {glibc}")
+
+        rpath = get_rpath(main_lib)
+        if rpath:
+            print(f"  RPATH/RUNPATH: {rpath}")
 
     # --- Summary ---
     print(f"\n--- Summary ---")

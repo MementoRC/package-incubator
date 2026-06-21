@@ -246,19 +246,21 @@ def install_zig_cc_wrappers(
         wrapper_dir = prefix / "Library" / "share" / "zig" / "wrappers"
 
         # Compile zig-cc.exe and zig-cxx.exe (native .exe with flag filtering)
+        # Filename prefix uses conda_triplet (e.g. x86_64-w64-mingw32); @ZIG_TARGET@ inside
+        # the compiled source remains cc_target (the zig -target triplet, e.g. x86_64-windows-gnu).
         cc_src = recipe_dir / "building" / "zig-cc-win.c"
         if cc_src.exists():
             # Extract zig binary filename from full %CONDA_PREFIX%\... path
             zig_bin_name = zig_bin.rsplit("\\", 1)[-1]
             for mode, exe_name in [("cc", "zig-cc"), ("c++", "zig-cxx")]:
                 mode_replacements = {**replacements, "@ZIG_CC_MODE@": mode, "@ZIG_BIN_NAME@": zig_bin_name}
-                _compile_c_shim(cc_src, wrapper_dir / f"{cc_target}-{exe_name}.exe", mode_replacements)
+                _compile_c_shim(cc_src, wrapper_dir / f"{conda_triplet}-{exe_name}.exe", mode_replacements)
 
         # Keep .bat for simple pass-through tools (no flag filtering needed)
         for name in ["zig-ar", "zig-ranlib", "zig-asm", "zig-rc", "zig-lld"]:
             src = scripts_dir / f"{name}.bat"
             if src.exists():
-                _install_template(src, wrapper_dir / f"{cc_target}-{name}.bat", replacements)
+                _install_template(src, wrapper_dir / f"{conda_triplet}-{name}.bat", replacements)
 
     else:
         wrapper_dir = prefix / "share" / "zig" / "wrappers"
@@ -267,11 +269,14 @@ def install_zig_cc_wrappers(
             src = scripts_dir / helper
             if src.exists():
                 _install_template(src, wrapper_dir / helper, replacements)
+        # Filename prefix uses conda_triplet (e.g. x86_64-conda-linux-gnu) so consumers
+        # using the conda prefix convention can find them.  @ZIG_TARGET@ inside each script
+        # stays cc_target (the zig -target triplet, e.g. x86_64-linux-gnu).
         wrappers = ["zig-cc", "zig-cxx", "zig-ar", "zig-ranlib", "zig-asm", "zig-rc", "zig-lld", "zig-force-load-cc", "zig-force-load-cxx"]
         for name in wrappers:
             src = scripts_dir / f"{name}.sh"
             if src.exists():
-                _install_template(src, wrapper_dir / f"{cc_target}-{name}", replacements, executable=True)
+                _install_template(src, wrapper_dir / f"{conda_triplet}-{name}", replacements, executable=True)
 
 
 def install_unix_cross_wrappers(

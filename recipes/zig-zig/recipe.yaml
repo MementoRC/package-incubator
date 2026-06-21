@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: 107
+  build_number: 108
   name: zig-zig
   version: "0.15.2"
 
@@ -360,7 +360,7 @@ outputs:
           - if: linux
             then:
               - file $PREFIX/bin/${{ conda_triplet }}-zig
-              - file $PREFIX/bin/${{ conda_triplet }}-zig | grep -qi '${{ file_arch_keyword }}'
+              - file -L $PREFIX/bin/${{ conda_triplet }}-zig | grep -qi '${{ file_arch_keyword }}'
           - if: osx
             then:
               # Fix zig-llvm dylib refs: test env gets a fresh zig-llvm install
@@ -466,26 +466,26 @@ outputs:
             - etc/conda/activate.d/zig_activate${{ sh }}
             - etc/conda/deactivate.d/zig_deactivate${{ sh }}
             
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-cc${{ exe }}
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-cxx${{ exe }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-cc${{ exe }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-cxx${{ exe }}
 
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-ar${{ bat }}
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-ranlib${{ bat }}
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-asm${{ bat }}
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-rc${{ bat }}
-            - ${{ library }}share/zig/wrappers/${{ zig_target }}-zig-lld${{ bat }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-ar${{ bat }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-ranlib${{ bat }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-asm${{ bat }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-rc${{ bat }}
+            - ${{ library }}share/zig/wrappers/${{ conda_triplet }}-zig-lld${{ bat }}
             - if: unix
               then:
                 - share/zig/wrappers/_zig-cc-common.sh
                 - share/zig/wrappers/_zig-force-load-common.sh
-                - share/zig/wrappers/${{ zig_target }}-zig-force-load-cc
-                - share/zig/wrappers/${{ zig_target }}-zig-force-load-cxx
+                - share/zig/wrappers/${{ conda_triplet }}-zig-force-load-cc
+                - share/zig/wrappers/${{ conda_triplet }}-zig-force-load-cxx
             # Post-install tests
             - etc/conda/test-files/zig*
       - script:
           - if: linux and build_platform != target_platform
             then:
-              - file $PREFIX/bin/${{ conda_triplet }}-zig | grep -qi '${{ file_arch_keyword }}'
+              - file -L $PREFIX/bin/${{ conda_triplet }}-zig | grep -qi '${{ file_arch_keyword }}'
           - if: build_platform == target_platform
             then:
               - ${{ conda_triplet }}-zig version
@@ -517,7 +517,14 @@ outputs:
               then:
                 - qemu-execve-${{ target_platform | replace("linux-", "") }}
           run:
-            - python >=3.10
+            # python runs the test_zig_toolchain.py script, but only when
+            # build_platform == target_platform (see script guards above). On a
+            # linux-riscv64 cross-build no python command executes, and conda-forge
+            # ships no python for linux-riscv64, so the test-env solve fails. Skip
+            # the requirement for riscv64 (the script never invokes python there).
+            - if: not riscv64
+              then:
+                - python >=3.10
             - if: ppc64le
               then:
                 - bash >=5.2
@@ -568,7 +575,7 @@ outputs:
               - bash testing/fix_zigllvm_dylibs.sh
           - if: linux and build_platform != target_platform
             then:
-              - file $PREFIX/bin/zig | grep -qi '${{ file_arch_keyword }}'
+              - file -L $PREFIX/bin/zig | grep -qi '${{ file_arch_keyword }}'
           - if: build_platform == target_platform
             then:
               - zig version
@@ -597,8 +604,10 @@ outputs:
     requirements:
       run:
         - ${{ pin_subpackage("zig-zig", exact=True) }}
-        - c-compiler
-        - if: linux
+        - if: not riscv64
+          then:
+            - c-compiler
+        - if: linux and not riscv64
           then:
             - binutils_impl_${{ target_platform }}
         - if: osx

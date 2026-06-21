@@ -1,6 +1,6 @@
 --- a/src/link/Lld.zig
 +++ b/src/link/Lld.zig
-@@ -894,6 +894,390 @@
+@@ -894,6 +894,401 @@
              .{},
          );
      } else {
@@ -304,7 +304,7 @@
 +                // libc++ dependency
 +                if (comp.config.link_libcpp) {
 +                    if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
-+                        if (is_dyn_lib) {
++                        if (link_mode == .dynamic) {
 +                            // Shared library output: use dynamic -lc++ / -lc++abi.
 +                            // Don't inject zig's bundled static archives -- they have
 +                            // hidden visibility which conflicts with .so output.
@@ -346,6 +346,17 @@
 +                    try argv.append("-Wl,--no-as-needed");
 +                    try argv.append("-Wl,-lpthread");
 +                    try argv.append("-Wl,-ldl");
++                    try argv.append("-Wl,--as-needed");
++                }
++
++                // ppc64le DSO builds: inject -lm/-lrt unconditionally. The GCC redirect
++                // reconstructs the linker command from zig's internal state, bypassing
++                // CMake's -lm/-lrt passthrough; use_zig_crt is false for zig-cc DSO
++                // builds (no libc_installation), so these must be added explicitly.
++                if (link_mode == .dynamic) {
++                    try argv.append("-Wl,--no-as-needed");
++                    try argv.append("-lm");
++                    try argv.append("-lrt");
 +                    try argv.append("-Wl,--as-needed");
 +                }
 +
