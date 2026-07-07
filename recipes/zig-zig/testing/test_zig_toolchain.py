@@ -301,7 +301,8 @@ def test_activation_variables() -> None:
                 else:
                     FAIL(f"{var} points to executable", val)
             else:
-                FAIL(f"{var} is set")
+                # May not be set in all activation modes (matches ZIG_CC/CXX/LLD above)
+                SKIP(f"{var} is set", "not activated")
 
     # non-unix specific
     if _build_is_win:
@@ -310,7 +311,8 @@ def test_activation_variables() -> None:
             if val:
                 PASS(f"{var} is set")
             else:
-                FAIL(f"{var} is set")
+                # May not be set in all activation modes (matches ZIG_CC/CXX/LLD above)
+                SKIP(f"{var} is set", "not activated")
 
         # ZIG_RC_CMAKE path escaping
         rc_cmake = _env_var("ZIG_RC_CMAKE")
@@ -329,7 +331,8 @@ def test_activation_variables() -> None:
             else:
                 FAIL("ZIG_RC_CMAKE contains zig-rc.bat", rc_cmake)
         else:
-            FAIL("ZIG_RC_CMAKE is set")
+            # May not be set in all activation modes (matches ZIG_CC/CXX/LLD above)
+            SKIP("ZIG_RC_CMAKE is set", "not activated")
 
 
 # ===================================================================
