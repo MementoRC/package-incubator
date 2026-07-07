@@ -562,35 +562,12 @@ fi
 # ZIG_LLVM_ROOT) and hardcoded MSYS2 paths. For cross-builds, we copied
 # the native llvm-config.exe into ZIG_LLVM_ROOT/bin above so it's found.
 
-# Diagnostic: show zig-llvm cmake config availability
-echo "=== zig-llvm cmake config check ==="
-for _cm_dir in llvm clang lld; do
-  _cm_path="${ZIG_LLVM_ROOT}/lib/cmake/${_cm_dir}"
-  if [[ -d "${_cm_path}" ]]; then
-    echo "  ${_cm_dir}: $(ls "${_cm_path}"/*.cmake 2>/dev/null | wc -l) cmake files"
-  else
-    echo "  ${_cm_dir}: MISSING (${_cm_path})"
-  fi
-done
-echo "  Libraries: $(ls "${ZIG_LLVM_ROOT}/lib/"*.a "${ZIG_LLVM_ROOT}/lib/"*.dll.a "${ZIG_LLVM_ROOT}/lib/"*.dylib "${ZIG_LLVM_ROOT}/lib/"*.so* 2>/dev/null | wc -l) files"
 
 _cmake_configure_rc=0
 configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}" || _cmake_configure_rc=$?
 
 # Dump llvm-config wrapper invocation log so we can see what CMake actually called.
 # Gated to cross-unix builds where the wrapper exists.
-if is_cross && is_unix && [[ -f "${cmake_build_dir}/llvm-config-wrapper.log" ]]; then
-  echo "=== llvm-config wrapper invocations (${cmake_build_dir}/llvm-config-wrapper.log) ==="
-  cat "${cmake_build_dir}/llvm-config-wrapper.log" || true
-  echo "=================================================="
-fi
-# Enumerate all llvm-config that CMake might find (in case it's bypassing our wrapper)
-if is_cross && is_unix; then
-  echo "=== all llvm-config under PREFIX and BUILD_PREFIX ==="
-  find "${PREFIX}" -name 'llvm-config*' 2>/dev/null | head -20
-  find "${BUILD_PREFIX}" -name 'llvm-config*' 2>/dev/null | head -20
-  echo "====================================================="
-fi
 if [[ ${_cmake_configure_rc} -ne 0 ]]; then
   exit ${_cmake_configure_rc}
 fi
@@ -661,8 +638,6 @@ elif is_not_unix; then
   perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.(?:a|dll\.a)@@g" "${cmake_build_dir}"/config.h
   perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
   perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${_lld_bundle_path};-lzstd;-lxml2;-lz;-L${_zig_llvm_lib};-lc++\"@" "${cmake_build_dir}"/config.h
-  echo "  AFTER ZIG_LLVM_LIBRARIES:"
-  grep 'ZIG_LLVM_LIBRARIES' "${cmake_build_dir}"/config.h | head -1
 fi
 
 # Create a C++ compiler wrapper that responds to -print-file-name queries.
@@ -1276,7 +1251,6 @@ if is_not_unix; then
   # Clean .pdb from shim compilation
   ls "${_zig_bin}"/*.pdb
   rm -f "${_zig_bin}"/*.pdb
-  ls "${_zig_bin}"/*.pdb || true
 fi
 
 # Clean up build-time artifacts from zig-llvm that shouldn't be in the final package.

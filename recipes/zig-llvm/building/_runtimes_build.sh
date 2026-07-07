@@ -257,13 +257,6 @@ EOF
 
   echo "  libc++ runtimes installed to ${LLVM_INSTALL}/lib"
 
-  # === Verify libc++ runtimes ===
-  echo "=== Verifying libc++ runtime installation ==="
-  ls -la "${LLVM_INSTALL}/lib/"libc++* 2>/dev/null || true
-  if is_not_unix; then
-    # Windows: expect .dll + .dll.a (import library)
-    ls -la "${LLVM_INSTALL}/bin/"libc++* 2>/dev/null || true
-  fi
 
   # === zig _14 libc++ probe: make shared libc++ visible at BUILD_PREFIX ===
   # zig _14's libcxx_shared.zig probes for shared libc++ relative to zig_lib_dir:
@@ -300,8 +293,6 @@ EOF
   # platforms); if absent, zig falls back to its bundled static libc++.a from zig-cache,
   # causing static merge of libc++ into every .so we build (failing the post-install
   # LOCAL_DEFINED check).
-  echo "=== libc++ probe state at ${_probe_dir} ==="
-  ls -la "${_probe_dir}/" 2>&1 | head -30 || echo "  (probe dir missing or unlistable)"
   # Platform-aware probe filename (matches what zig's libcxx_shared.zig actually probes for):
   # Linux → libc++.so.1, macOS → libc++.1.dylib, Windows → libc++.dll.a
   if is_not_unix; then

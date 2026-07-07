@@ -62,8 +62,6 @@ post_install() {
       else
         echo "    already has libc++.so.1"
       fi
-      echo "    NEEDED entries:"
-      readelf -d "${_lib}" | grep NEEDED || true
     done
 
     echo "=== Quick check: libc++ symbol binding ==="

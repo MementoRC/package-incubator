@@ -10,7 +10,6 @@ function build_zig_with_zig() {
 
   if [[ -d "${build_dir}" ]]; then
     cd "${build_dir}" || return 1
-      echo "zig build command: ${zig} build --prefix ${install_dir} ${EXTRA_ZIG_ARGS[@]+"${EXTRA_ZIG_ARGS[@]}"} -Dversion-string=${PKG_VERSION}"
       local rc=0
       "${zig}" build \
         --prefix "${install_dir}" \

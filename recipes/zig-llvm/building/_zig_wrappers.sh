@@ -20,7 +20,6 @@ _probe_cc="${_zig_bindir}/${CONDA_BUILD_ZIG}-cc${_ext}"
 if [[ ! -x "${_probe_cc}" ]]; then
   echo "ERROR: zig cc wrapper not found at ${_probe_cc}"
   echo "  Is zig_${build_platform} ==0.15.2 *_28 a build dependency?"
-  ls "${_zig_bindir}/"*zig* 2>/dev/null || true
   exit 1
 fi
 # Sanity check that the wrapper produces a clang version banner.

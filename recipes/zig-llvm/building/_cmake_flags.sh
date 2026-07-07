@@ -5,13 +5,8 @@
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS CMAKE_ARGS
 export CFLAGS="" CXXFLAGS="" LDFLAGS="" CPPFLAGS=""
 
-dbg "ZIG_TRIPLET: ${ZIG_TRIPLET}"
-dbg "ZIG_CC: ${ZIG_CC}"
-dbg "ZIG_CXX: ${ZIG_CXX}"
-dbg "ZIG_AR: ${ZIG_AR}"
 
 # LLVM_TRIPLET is set by recipe.yaml env (standard LLVM triple, no glibc version suffix)
-dbg "LLVM_TRIPLET: ${LLVM_TRIPLET}"
 
 # Platform-specific CMake flags
 CMAKE_PLATFORM_FLAGS=()
@@ -156,7 +151,6 @@ if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
     CMAKE_PLATFORM_FLAGS+=(
       -DLLVM_ARM64_EXPORT_DEF="${LLVM_BUILD}/libLLVM.def"
     )
-    dbg "win-arm64: LLVM_ARM64_EXPORT_DEF=${LLVM_BUILD}/libLLVM.def (PE 65535 export-cap workaround)"
 fi
 
 # linux cross builds (aarch64, ppc64le, riscv64, s390x): libLLVM.so is linked
@@ -231,9 +225,6 @@ elif [[ -d "${CACHE_DIR}" ]]; then
   echo "=== Cache found but incomplete, rebuilding ==="
 else
   echo "=== No cache found, building from source ==="
-  dbg "To speed up future builds, populate cache after successful build:"
-  dbg "  mkdir -p ${RECIPE_DIR}/cache"
-  dbg "  cp -r \${PREFIX}/lib/zig-llvm ${RECIPE_DIR}/cache/"
 fi
 
 

@@ -71,7 +71,6 @@ if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
       mkdir -p "${_ppc_bin}"
       ln -sf "${_ppc_gcc}" "${_ppc_bin}/cc"
       export PATH="${_ppc_bin}:${PATH}"
-      echo "  ppc64le: cc -> ${_ppc_gcc}"
 
       # Wrap ld.bfd to inject --sysroot automatically.
       # zig's self-hosted linker calls ld.bfd directly from GCC's libexec path
@@ -151,7 +150,6 @@ _args=("\${_swap_args[@]}")
 exec "${_ppc_ld_bin}.real" "\${_args[@]}"
 PPCLD
         chmod +x "${_ppc_ld_bin}"
-        echo "  ppc64le: ld.bfd wrapped at ${_ppc_ld_bin} -> injects --sysroot + -lpthread -ldl for shared"
       fi
     fi
   fi
@@ -163,7 +161,6 @@ PPCLD
       \( -name llvm-tblgen -o -name llvm-tblgen.exe \) \
       ! -name 'llvm-min-tblgen' ! -name 'llvm-min-tblgen.exe' \
       -type f 2>/dev/null | head -1)
-  echo "  LLVM_TBLGEN resolved to: ${LLVM_TBLGEN:-<not found>}"
   CLANG_TBLGEN=$(find "${BUILD_PREFIX}" \
       \( -name clang-tblgen -o -name clang-tblgen.exe \) \
       -type f 2>/dev/null | head -1)
@@ -292,7 +289,6 @@ if(WIN32)
   message(STATUS ">>> NATIVE CMAKE_PROJECT_INCLUDE: link rules patched (version stripped; GNU image-version retained)")
 endif()
 NATIVE_CMINIT
-    echo "  NATIVE cmake project include: ${_native_project_include_fwd}"
 
     # CMake compiler probe builds an exe by default, which on Windows injects
     # -Xlinker /version:0.0 — zig lld-link rejects bare 0.0 as InvalidVersion.
@@ -300,8 +296,6 @@ NATIVE_CMINIT
     CMAKE_CROSS_FLAGS+=(
       "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=${_host_cc_exe};-DCMAKE_CXX_COMPILER=${_host_cxx_exe};-DCMAKE_ASM_COMPILER=${_host_cc_exe};-DCMAKE_AR=${_host_ar_bat};-DCMAKE_RANLIB=${_host_ranlib_bat};-DCMAKE_C_COMPILER_TARGET=${_native_zig_target};-DCMAKE_CXX_COMPILER_TARGET=${_native_zig_target};-DCMAKE_ASM_COMPILER_TARGET=${_native_zig_target};-DLLVM_ENABLE_ZSTD=OFF;-DCMAKE_OBJECT_PATH_MAX=1024;-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY;-DCMAKE_EXE_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,--major-image-version,1,--minor-image-version,0;-DCMAKE_PROJECT_INCLUDE=${_native_project_include_fwd}"
     )
-    echo "  HOST_CC: ${_host_cc_exe}"
-    echo "  HOST_CXX: ${_host_cxx_exe}"
     unset _fwd_src_dir _native_project_include_fwd
   fi
 
@@ -329,9 +323,5 @@ NATIVE_CMINIT
     )
   fi
 
-  echo "  CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}"
-  echo "  LLVM_TABLEGEN: ${LLVM_TBLGEN}"
-  echo "  CLANG_TABLEGEN: ${CLANG_TBLGEN}"
-  echo "  LLVM_NATIVE_TOOL_DIR: ${_tblgen_dir:-<not set>}"
 fi
 

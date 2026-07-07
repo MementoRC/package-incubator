@@ -117,25 +117,8 @@ def member_name(hdr):
     return hdr[:16].decode('ascii', errors='replace')
 
 
-def is_first_linker(hdr):
-    name = member_name(hdr).rstrip()
-    return name == '/'
 
 
-def is_second_linker(hdr):
-    name = member_name(hdr).rstrip()
-    # Second linker member also has name "/" but is the second occurrence
-    return name == '/'
-
-
-def is_longnames(hdr):
-    name = member_name(hdr).rstrip()
-    return name == '//'
-
-
-def is_special(hdr):
-    name = member_name(hdr).rstrip()
-    return name in ('/', '//') or name.startswith('#')
 
 
 def has_atexit(body):

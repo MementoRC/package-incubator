@@ -52,7 +52,6 @@ function create_libc_single_threaded_stub() {
   local zig_triplet="${4:-}"
   local zig_bin="${5:-}"
 
-  echo "=== Creating __libc_single_threaded stub for ${arch_name} ==="
 
   cat > "${output_dir}/libc_single_threaded_stub.c" << 'EOF'
 // Weak stub for __libc_single_threaded when targeting glibc < 2.32
@@ -72,6 +71,5 @@ EOF
     return 1
   fi
 
-  echo "=== __libc_single_threaded stub created: ${output_dir}/libc_single_threaded_stub.o ==="
   return 0
 }

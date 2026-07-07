@@ -22,7 +22,6 @@ from pathlib import Path
 
 
 def main():
-    print("=== Installing Zig Activation Package ===")
 
     prefix = Path(os.environ.get("PREFIX", sys.prefix))
     recipe_dir = Path(os.environ.get("RECIPE_DIR", Path(__file__).parent))
@@ -41,13 +40,6 @@ def main():
     conda_zig_build = os.environ.get("CONDA_ZIG_BUILD", "")
     conda_zig_host = os.environ.get("CONDA_ZIG_HOST", "")
 
-    print(f"PKG_NAME: {os.environ.get('PKG_NAME', 'unknown')}")
-    print(f"zig_triplet: {zig_triplet}")
-    print(f"conda_triplet: {conda_triplet}")
-    print(f"CROSS_COMPILER: {cross_compiler}")
-    print(f"CONDA_ZIG_BUILD: {conda_zig_build}")
-    print(f"CONDA_ZIG_HOST: {conda_zig_host}")
-    print(f"Platform: {'Non-Unix' if is_nonunix else 'Unix'}")
 
     # 1. Install activation/deactivation scripts
     install_activation_scripts(
@@ -78,7 +70,6 @@ def main():
         else:
             install_unix_cross_wrappers(prefix, recipe_dir, native_triplet, target_triplet, zig_triplet)
 
-    print("=== Zig Activation Package Installation Complete ===")
 
 
 def _install_template(src: Path, dst: Path, replacements: dict, executable: bool = False):
@@ -155,7 +146,6 @@ def _compile_c_shim(src: Path, dst: Path, replacements: dict):
         pdb.unlink()
         print(f"  Removed: {pdb}")
 
-    print(f"  Compiled: {dst}")
 
 
 def _strip_glibc_version(triplet: str) -> str:

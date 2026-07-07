@@ -10,9 +10,6 @@ is_cross() { [[ "${build_platform}" != "${target_platform}" ]]; }
 _debug() { [[ "${ZIG_LLVM_DEBUG:-0}" == "1" ]]; }
 dbg() { _debug && echo "  [DBG] $*" || true; }
 
-echo "=== Building zig-llvmdev with zig cc ==="
-echo "  LLVM source: ${SRC_DIR}/llvm-source"
-echo "  Target: ${target_platform}"
 
 LLVM_SRC="${SRC_DIR}/llvm"
 LLVM_BUILD="${SRC_DIR}/conda-llvm-build"

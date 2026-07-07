@@ -245,10 +245,6 @@ elif [[ -n "${ZIG_RC:-}" ]]; then
 fi
 
 ulimit -n 4096 2>/dev/null || true
-echo "=== cmake initial-cache file (${_cmake_init}) ==="
-sed 's/^/  /' "${_cmake_init}" || true
-echo "=== cmake project include file (${_cmake_project_include}) ==="
-sed 's/^/  /' "${_cmake_project_include}" || true
 
 # Tail-visible zstd diagnostic via EXIT trap so it fires on both success and
 # ninja failure (set -e otherwise exits before our inline diagnostic).
@@ -283,11 +279,6 @@ cmake "-C${_cmake_init}" \
   "${_LLVM[@]}" \
   -G Ninja
 
-  # Diagnostic: confirm CMake resolved zstd to the riscv64 zig-zstd, not BUILD_PREFIX x86_64.
-  # If this regresses, the link will fail with 'incompatible with elf64lriscv'.
-  echo "=== zstd CMake resolution ==="
-  grep -i '^zstd' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true
-  echo "============================="
 
   # === ppc64le ld.real shim (Option A diagnostic) ===
   if [[ "${target_platform}" == "linux-ppc64le" ]]; then
@@ -311,22 +302,6 @@ LDSHIM
     fi
   fi
 
-  # === ppc64le SONAME probe (Option B diagnostic) ===
-  if [[ "${target_platform}" == "linux-ppc64le" ]]; then
-    echo "=== ppc64le pre-link SONAME probe ==="
-    for _dir in "${PREFIX}/lib" "${PREFIX}/lib/zig-zstd/lib" \
-                "${PREFIX}/lib/zig-zlib/lib" "${PREFIX}/lib/zig-libxml2/lib" \
-                "${PREFIX}/lib/zig-xml2/lib" "${BUILD_PREFIX}/lib"; do
-      echo "--- ${_dir} ---"
-      if [[ -d "${_dir}" ]]; then
-        ls -la "${_dir}"/libzstd* "${_dir}"/libz.so* "${_dir}"/libxml2.so* \
-          2>/dev/null | sed 's/^/  /' || echo "  (no matching SONAMEs)"
-      else
-        echo "  (directory does not exist)"
-      fi
-    done
-    echo "===================================="
-  fi
 
 # === Quick-fail: verify --export-all-symbols in ALL shared library link rules ===
 # libLLVM and libclang-cpp each get their own CXX_SHARED_LIBRARY_LINKER rule in

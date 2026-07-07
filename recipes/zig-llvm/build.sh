@@ -48,7 +48,6 @@ for _zigdep in zig-zstd zig-zlib zig-libxml2; do
     if [[ -d "${PREFIX}/lib/${_zigdep}" ]]; then
         mkdir -p "${PREFIX}/lib/${_zigdep}/include"
         : > "${PREFIX}/lib/${_zigdep}/include/.keep"
-        echo "  workaround: ensured ${PREFIX}/lib/${_zigdep}/include (with .keep)"
     else
         echo "  workaround: parent ${PREFIX}/lib/${_zigdep} not found, skipping"
     fi

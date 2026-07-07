@@ -6,7 +6,6 @@ function remove_unneeded() {
   # and linux-s390x where liblldZig.so is not built (no shared zstd/xml2/z
   # available from conda-forge for those arches).  On those platforms keep the
   # six individual liblld*.a archives so zig-zig can link them statically.
-  echo "=== Removing static libraries ==="
   if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
     find "${LLVM_INSTALL}/lib" -name "*.a" ! -name "*.dll.a" ! -name "liblld*.a" -type f -delete
     echo "  Removed .a files from ${LLVM_INSTALL}/lib (kept .dll.a import libs; kept liblld*.a — no liblldZig.so on ${target_platform})"
@@ -42,7 +41,6 @@ function remove_unneeded() {
   # Remove all tools except llvm-config (other tools come from conda-forge llvm-tools)
   # Many LLVM tools are symlinks, so delete both files and symlinks
   # On Windows, keep DLLs in bin/ (cmake installs .dll runtime there)
-  echo "=== Removing tools except llvm-config ==="
   # llvm-dlltool is a symlink to llvm-ar — resolve it to a standalone copy before deleting llvm-ar
   if [[ -L "${LLVM_INSTALL}/bin/llvm-dlltool" ]]; then
     _target="$(readlink -f "${LLVM_INSTALL}/bin/llvm-dlltool")"
@@ -50,19 +48,11 @@ function remove_unneeded() {
     cp "${_target}" "${LLVM_INSTALL}/bin/llvm-dlltool"
   fi
   find "${LLVM_INSTALL}/bin" \( -type f -o -type l \) ! \( -name "llvm-config*" -o -name "*-tblgen" -o -name "*-tblgen.exe" -o -name "llvm-dlltool*" -o -name "*.dll" \) -delete
-  ls "${LLVM_INSTALL}/bin/"
-  echo "  Kept llvm-config, llvm-dlltool, tblgen (and DLLs on Windows) in ${LLVM_INSTALL}/bin"
 
   # Remove share/ directory (clang-format helpers, cmake modules we don't need)
-  echo "=== Removing share/ directory ==="
   rm -rf "${LLVM_INSTALL}/share"
   echo "  Removed ${LLVM_INSTALL}/share"
 
-  # Remove C API headers (zig uses C++ API, not C bindings)
-  # echo "=== Removing C API headers ==="
-  # rm -rf "${LLVM_INSTALL}/include/llvm-c"
-  # rm -rf "${LLVM_INSTALL}/include/clang-c"
-  # echo "  Removed llvm-c/ and clang-c/ headers"
 
   # Remove Clang builtin headers (zig bundles its own libc headers)
   # echo "=== Removing Clang builtin headers ==="
@@ -126,5 +116,4 @@ done
 echo "$output"
 WRAPPER_EOF
   chmod +x "${LLVM_INSTALL}/bin/llvm-config"
-  echo "  Created wrapper: ${LLVM_INSTALL}/bin/llvm-config"
 }
