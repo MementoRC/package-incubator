@@ -23,8 +23,14 @@ _CLANG=(
 # zig doesn't target GPU code generation on win-arm64.
 _llvm_targets="X86;AArch64;ARM;PowerPC;RISCV;WebAssembly;SystemZ;AMDGPU;AVR;NVPTX"
 if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
-    _llvm_targets="X86;AArch64;WebAssembly"
-    echo "  win-arm64: pruned LLVM_TARGETS_TO_BUILD (dropped ARM, RISCV, AVR, AMDGPU, NVPTX, PowerPC, SystemZ) to fit PE/COFF 65535 export limit"
+    # zig requires AArch64;ARM;PowerPC;RISCV;SystemZ;WebAssembly;X86 to be built
+    # (see recipes/zig-zig/patches/relax-llvm-required-targets.patch's
+    # ZIG_LLVM_REQUIRED_TARGETS). Only the GPU backends (AMDGPU, NVPTX) and AVR
+    # are dropped -- their huge TableGen instruction-selection tables were the
+    # actual cause of exceeding the PE/COFF 65535 export-ordinal limit, not
+    # ARM/PowerPC/RISCV/SystemZ.
+    _llvm_targets="X86;AArch64;ARM;PowerPC;RISCV;SystemZ;WebAssembly"
+    echo "  win-arm64: pruned LLVM_TARGETS_TO_BUILD (dropped AVR, AMDGPU, NVPTX) to fit PE/COFF 65535 export limit"
 fi
 
 _LLVM=(
@@ -410,16 +416,21 @@ if is_not_unix; then
     # Strategy: build a representative set of LLVM* static lib targets that pull in
     # all transitive LLVM* static archives via ninja dependency resolution.
     # These are always present regardless of LLVM_TARGETS_TO_BUILD pruning.
-    # AArch64/X86/WebAssembly backends are included because our pruned target list
-    # is exactly X86;AArch64;WebAssembly for win-arm64 (see _llvm_targets above).
+    # Backends are included because our pruned target list is exactly
+    # X86;AArch64;ARM;PowerPC;RISCV;SystemZ;WebAssembly for win-arm64 (see
+    # _llvm_targets above). Only each backend's top-level CodeGen target is
+    # listed explicitly -- ninja transitively builds its AsmParser/Desc/Info/
+    # Disassembler/Utils dependencies as real .a files regardless of whether
+    # they're separately named here.
     cmake --build "${LLVM_BUILD}" --config Release -- \
       LLVMSupport LLVMCore LLVMMC LLVMAnalysis LLVMTransformUtils LLVMCodeGen \
       LLVMTarget LLVMMCParser LLVMBinaryFormat LLVMBitWriter LLVMBitReader \
       LLVMAArch64CodeGen LLVMAArch64AsmParser LLVMAArch64Desc LLVMAArch64Info LLVMAArch64Utils \
       LLVMX86CodeGen LLVMX86AsmParser LLVMX86Desc LLVMX86Info \
-      LLVMWebAssemblyCodeGen LLVMWebAssemblyAsmParser LLVMWebAssemblyDesc LLVMWebAssemblyInfo
+      LLVMWebAssemblyCodeGen LLVMWebAssemblyAsmParser LLVMWebAssemblyDesc LLVMWebAssemblyInfo \
+      LLVMARMCodeGen LLVMPowerPCCodeGen LLVMRISCVCodeGen LLVMSystemZCodeGen
     # ninja resolves transitive deps; this populates ${LLVM_BUILD}/lib/*.lib with all
-    # LLVM core + 3-target backend statics.
+    # LLVM core + 7-target backend statics.
 
     # Stage 2: generate libLLVM.def from the static archives.
     # === win-arm64: libLLVM.def diagnostics + multi-attempt extraction ===
