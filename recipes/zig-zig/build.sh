@@ -500,6 +500,24 @@ if is_not_unix; then
     rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe"
     cp "${LLVM_CONFIG}" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
     echo "  Copied native llvm-config to ${ZIG_LLVM_ROOT}/bin/ for cmake"
+
+    # This copied binary is conda-forge llvmdev's static-only native-arch
+    # llvm-config - it cannot answer --link-shared queries for zig-llvm's
+    # actual (shared) target build, so Findllvm.cmake's runtime probe of
+    # it fails with "does not support linking as a shared library". Compute
+    # the values manually instead (mirrors the answer the --link-shared
+    # bash wrapper above gives on unix cross builds) and hand them to
+    # Findllvm.cmake's override branch via the cmake cache-seed below.
+    _zig_llvm_implib="$(find "${ZIG_LLVM_ROOT}/lib" -maxdepth 1 \( -iname 'libLLVM*.dll.a' -o -iname 'LLVM*.dll.a' \) 2>/dev/null | head -1)"
+    if [[ -z "${_zig_llvm_implib}" ]]; then
+      echo "ERROR: could not find zig-llvm's shared-library import lib under ${ZIG_LLVM_ROOT}/lib"
+      exit 1
+    fi
+    export ZIG_LLVM_MANUAL_OVERRIDE=1
+    export ZIG_LLVM_MANUAL_LIBRARIES="${_zig_llvm_implib}"
+    export ZIG_LLVM_MANUAL_LIBDIRS="${ZIG_LLVM_ROOT}/lib"
+    export ZIG_LLVM_MANUAL_INCLUDE_DIRS="${ZIG_LLVM_ROOT}/include"
+    echo "  ZIG_LLVM_MANUAL_LIBRARIES: ${ZIG_LLVM_MANUAL_LIBRARIES}"
   elif [[ -f "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" ]]; then
     cp "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
   fi
@@ -555,6 +573,18 @@ set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
 # Pin llvm-config so cmake doesn't find BUILD_PREFIX's conda-forge copy
 set(LLVM_CONFIG "${LLVM_CONFIG//\\//}" CACHE FILEPATH "")
 TCEOF
+  if [[ -n "${ZIG_LLVM_MANUAL_OVERRIDE:-}" ]]; then
+    # Windows cross-build: bypass Findllvm.cmake's llvm-config --link-shared
+    # probe entirely (see cmake/Findllvm.cmake patch) since the only
+    # runnable llvm-config on the build machine can't answer it for
+    # zig-llvm's actual build.
+    cat >> "${_cache_seed}" << OVEOF
+set(ZIG_LLVM_MANUAL_OVERRIDE ON CACHE BOOL "")
+set(ZIG_LLVM_MANUAL_LIBRARIES "${ZIG_LLVM_MANUAL_LIBRARIES//\\//}" CACHE STRING "")
+set(ZIG_LLVM_MANUAL_LIBDIRS "${ZIG_LLVM_MANUAL_LIBDIRS//\\//}" CACHE STRING "")
+set(ZIG_LLVM_MANUAL_INCLUDE_DIRS "${ZIG_LLVM_MANUAL_INCLUDE_DIRS//\\//}" CACHE STRING "")
+OVEOF
+  fi
   EXTRA_CMAKE_ARGS+=(-C "${_cache_seed}")
 fi
 
