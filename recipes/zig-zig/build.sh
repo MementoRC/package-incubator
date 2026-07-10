@@ -1303,8 +1303,11 @@ if is_not_unix; then
     echo "  ${_base}.exe (shim) -> ${_base}.real.exe (DLL path: zig-llvm/bin)"
   done
   rm -f "${_shim_hdr}"
-  # Clean .pdb from shim compilation
-  ls "${_zig_bin}"/*.pdb
+  # Clean .pdb from shim compilation. MinGW-target zig cc builds typically
+  # don't emit .pdb files (PDB is an MSVC/PE debug format) so the glob may
+  # not match anything -- guard with || true like the check below, since
+  # set -e would otherwise abort the whole script on a no-match ls.
+  ls "${_zig_bin}"/*.pdb || true
   rm -f "${_zig_bin}"/*.pdb
   ls "${_zig_bin}"/*.pdb || true
 fi
