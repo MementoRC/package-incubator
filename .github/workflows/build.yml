@@ -14,78 +14,765 @@ on:
       - main
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - { target: linux-64, os: ubuntu-latest, build: linux-64 }
-          - { target: win-64, os: windows-latest, build: win-64 }
-          # - { target: win-arm64, os: windows-latest, build: win-64 }
-          # - { target: win-64, os: windows-11-arm, build: win-arm64 }
-          # - { target: win-arm64, os: windows-11-arm, build: win-arm64 }
-          # - { target: osx-64, os: macos-15-intel, build: osx-arm64 }
-          - { target: osx-64, os: macos-14, build: osx-arm64 }
-          - { target: osx-arm64, os: macos-14, build: osx-arm64 }
-      fail-fast: false
+  # Phase 1: Native builds (gcc, llvm, zig, sequential)
+  # Each native platform builds all three packages, then uploads
+  # artifacts so cross-build jobs can consume them.
 
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+  build-native-linux:
+    name: linux-64 (native)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          pixi-version: v0.65.0
-
+          pixi-version: v0.68.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+
+
+
+      # - name: Restore zig-gcc cache
+      #   uses: actions/cache/restore@v4
+      #   with:
+      #     path: output/linux-64/*.conda
+      #     key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
+      #     restore-keys: zig-gcc-linux-64-
+      # - name: Build zig-gcc
+      #   shell: bash
+      #   run: |
+      #     rattler-build build --recipe recipes/zig-gcc \
+      #       --skip-existing=local --target-platform=linux-64 \
+      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      # - name: Prune stale zig-gcc artifacts
+      #   shell: bash
+      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
+      # - name: Save zig-gcc cache
+      #   if: ${{ !cancelled() }}
+      #   uses: actions/cache/save@v4
+      #   with:
+      #     path: output/linux-64/*.conda
+      #     key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
+
+
+
+
+      - name: Restore zig-llvm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/linux-64/*.conda
+          key: zig-llvm-linux-64-${{ hashFiles('recipes/zig-llvm/**') }}
+          restore-keys: zig-llvm-linux-64-
+      - name: Build zig-llvm
+        shell: bash
         run: |
-          echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+          rattler-build build --recipe recipes/zig-llvm \
+            --skip-existing=local --target-platform=linux-64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+      - name: Save zig-llvm cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/linux-64/*.conda
+          key: zig-llvm-linux-64-${{ hashFiles('recipes/zig-llvm/**') }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-64-phase1
+          path: output/linux-64/*.conda
+          retention-days: 1
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+
+
+
+  build-native-linux-phase2:
+    needs: build-native-linux
+    name: linux-64 (native PHASE 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Download native linux-64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-64-phase1
+          path: output/linux-64/
+
+      - name: Restore zig-zig cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/linux-64/zig-zig*.conda
+          key: zig-zig-linux-64-${{ hashFiles('recipes/zig-zig/**') }}
+          restore-keys: zig-zig-linux-64-
+      - name: Build zig-zig
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zig \
+            --skip-existing=local --target-platform=linux-64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
+      - name: Save zig-zig cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/linux-64/zig-zig*.conda
+          key: zig-zig-linux-64-${{ hashFiles('recipes/zig-zig/**') }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-64-phase2
+          path: output/linux-64/zig-zig*.conda
+          retention-days: 1
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+
+
+
+  build-native-macos:
+    name: osx-arm64 (native)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+
+
+      # - name: Restore zig-gcc cache
+      #   uses: actions/cache/restore@v4
+      #   with:
+      #     path: output/osx-arm64/*.conda
+      #     key: zig-gcc-osx-arm64-${{ hashFiles('recipes/zig-gcc/**') }}
+      #     # restore-keys: zig-gcc-osx-arm64-
+      # - name: Build zig-gcc
+      #   shell: bash
+      #   run: |
+      #     rattler-build build --recipe recipes/zig-gcc \
+      #       --skip-existing=local --target-platform=osx-arm64 \
+      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      # - name: Prune stale zig-gcc artifacts
+      #   shell: bash
+      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
+      # - name: Save zig-gcc cache
+      #   if: ${{ !cancelled() }}
+      #   uses: actions/cache/save@v4
+      #   with:
+      #     path: output/osx-arm64/*.conda
+      #     key: zig-gcc-osx-arm64-${{ hashFiles('recipes/zig-gcc/**') }}
+
+
+
+
+      - name: Restore zig-llvm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/osx-arm64/*.conda
+          key: zig-llvm-osx-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+          restore-keys: zig-llvm-osx-arm64-
+      - name: Build zig-llvm
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-llvm \
+            --skip-existing=local --target-platform=osx-arm64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+      - name: Save zig-llvm cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/osx-arm64/*.conda
+          key: zig-llvm-osx-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-arm64-phase1
+          path: output/osx-arm64/*.conda
+          retention-days: 1
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+
+
+
+  build-native-macos-phase2:
+    name: osx-arm64 (native PHASE 2)
+    needs: build-native-macos
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Download native osx-arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-osx-arm64-phase1
+          path: output/osx-arm64/
+
+      - name: Restore zig-zig cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/osx-arm64/zig-zig*.conda
+          key: zig-zig-osx-arm64-${{ hashFiles('recipes/zig-zig/**') }}
+          restore-keys: zig-zig-osx-arm64-
+      - name: Build zig-zig
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zig \
+            --skip-existing=local --target-platform=osx-arm64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
+      - name: Save zig-zig cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/osx-arm64/zig-zig*.conda
+          key: zig-zig-osx-arm64-${{ hashFiles('recipes/zig-zig/**') }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-arm64-phase2
+          path: output/osx-arm64/zig-zig*.conda
+          retention-days: 1
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+
+
+
+  build-native-windows:
+    name: win-64 (native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+
+
+      # - name: Restore zig-gcc cache
+      #   uses: actions/cache/restore@v4
+      #   with:
+      #     path: output/win-64/*.conda
+      #     key: zig-gcc-win-64-${{ hashFiles('recipes/zig-gcc/**') }}
+      #     restore-keys: zig-gcc-win-64-
+      # - name: Build zig-gcc
+      #   shell: bash
+      #   run: |
+      #     rattler-build build --recipe recipes/zig-gcc \
+      #       --skip-existing=local --target-platform=win-64 \
+      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      # - name: Prune stale zig-gcc artifacts
+      #   shell: bash
+      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
+      # - name: Save zig-gcc cache
+      #   if: ${{ !cancelled() }}
+      #   uses: actions/cache/save@v4
+      #   with:
+      #     path: output/win-64/*.conda
+      #     key: zig-gcc-win-64-${{ hashFiles('recipes/zig-gcc/**') }}
+
+
+
+      - name: Restore zig-llvm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/win-64/*.conda
+          key: zig-llvm-win-64-${{ hashFiles('recipes/zig-llvm/**') }}
+          restore-keys: zig-llvm-win-64-
+      - name: Build zig-llvm
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-llvm \
+            --skip-existing=local --target-platform=win-64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+      - name: Save zig-llvm cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/win-64/*.conda
+          key: zig-llvm-win-64-${{ hashFiles('recipes/zig-llvm/**') }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-win-64-phase1
+          path: output/win-64/*.conda
+          retention-days: 1
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+
+
+
+  build-native-windows-phase2:
+    needs: build-native-windows
+    name: win-64 (native PHASE 2)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Download native win-64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-win-64-phase1
+          path: output/win-64/
+
+      - name: Restore zig-zig cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/win-64/zig-zig*.conda
+          key: zig-zig-win-64-${{ hashFiles('recipes/zig-zig/**') }}
+          restore-keys: zig-zig-win-64-
+      - name: Build zig-zig
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zig \
+            --skip-existing=local --target-platform=win-64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
+      - name: Save zig-zig cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/win-64/zig-zig*.conda
+          key: zig-zig-win-64-${{ hashFiles('recipes/zig-zig/**') }}
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-win-64-phase2
+          path: output/win-64/zig-zig*.conda
+          retention-days: 1
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+
+
+
+  # Phase 2: Cross builds (need native artifacts)
+  # Each cross job downloads native packages from Phase 1, then
+  # builds gcc - llvm - zig for the cross target.
+
+  build-cross-linux:
+    needs: [build-native-linux, build-native-linux-phase2]
+    strategy:
+      matrix:
+        include:
+          - { target: linux-aarch64 }
+          - { target: linux-ppc64le }
+          - { target: linux-riscv64 }
+      fail-fast: false
+    name: ${{ matrix.target }} (cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Download native linux-64 artifacts (phase 1 + phase 2)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-linux-64-*
+          path: output/linux-64/
+          merge-multiple: true
+
+      - name: Index local channel
+        run: pixi run python -m conda_index output/
+
+      - name: Debug - list downloaded artifacts
+        run: find output/linux-64/ -type f | sort
+
+      - name: Restore zig-zlib cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-zlib-${{ matrix.target }}-${{ hashFiles('recipes/zig-zlib/**') }}
+          restore-keys: zig-zlib-${{ matrix.target }}-
+      - name: Build zig-zlib
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zlib \
+            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            -c file://${{ github.workspace }}/output \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zlib artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zlib-*'
+      - name: Save zig-zlib cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/${{ matrix.target }}/zig-zlib*.conda
+          key: zig-zlib-${{ matrix.target }}-${{ hashFiles('recipes/zig-zlib/**') }}
+
+      - name: Restore zig-zstd cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-zstd-${{ matrix.target }}-${{ hashFiles('recipes/zig-zstd/**') }}
+          restore-keys: zig-zstd-${{ matrix.target }}-
+      - name: Build zig-zstd
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zstd \
+            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            -c file://${{ github.workspace }}/output \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zstd artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zstd-*'
+      - name: Save zig-zstd cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/${{ matrix.target }}/zig-zstd*.conda
+          key: zig-zstd-${{ matrix.target }}-${{ hashFiles('recipes/zig-zstd/**') }}
+
+      - name: Restore zig-libxml2 cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-libxml2-${{ matrix.target }}-${{ hashFiles('recipes/zig-libxml2/**') }}
+          restore-keys: zig-libxml2-${{ matrix.target }}-
+      - name: Build zig-libxml2
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-libxml2 \
+            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            -c file://${{ github.workspace }}/output \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-libxml2 artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-libxml2-*'
+      - name: Save zig-libxml2 cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/${{ matrix.target }}/zig-libxml2*.conda
+          key: zig-libxml2-${{ matrix.target }}-${{ hashFiles('recipes/zig-libxml2/**') }}
 
       - name: Restore zig-llvm cache
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
           key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: |
-            zig-llvm-${{ matrix.target }}-
-
-      - name: Build zig-llvm (skips if cached package matches)
+          restore-keys: zig-llvm-${{ matrix.target }}-
+      - name: Build zig-llvm
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm \
-            --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
+            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/${{ matrix.target }}/*.conda
+          path: output/${{ matrix.target }}/zig-llvm*.conda
           key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
 
+      - name: Restore zig-zig cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
+          restore-keys: zig-zig-${{ matrix.target }}-
       - name: Build zig-zig
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-zig \
-            --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
+            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
+      - name: Save zig-zig cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/${{ matrix.target }}/zig-zig*.conda
+          key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
 
-      - name: Build QEMU user
+      - name: Build zig-zig-llvm
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-qemu \
-            --skip-existing=all --build-platform=${{ matrix.build }} --target-platform=${{ matrix.target }} \
+          rattler-build build --recipe recipes/zig-zig-llvm \
+            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-
-      - name: Upload all packages
+      - name: Prune stale zig-zig-llvm artifacts
         shell: bash
-        # do not upload on PR
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-llvm-*'
+
+      - name: Upload packages to prefix.dev
         if: github.event_name == 'push'
+        shell: bash
         run: |
-          # uses trusted publishers for the upload
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+  build-cross-macos:
+    needs: [build-native-macos, build-native-macos-phase2]
+    name: osx-64 (cross)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Download native osx-arm64 artifacts (phase 1 + phase 2)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-osx-arm64-*
+          path: output/osx-arm64/
+          merge-multiple: true
+
+      - name: Index local channel
+        run: pixi run python -m conda_index output/
+
+      - name: Debug - list downloaded artifacts
+        run: find output/osx-arm64/ -type f | sort
+
+      - name: Restore zig-llvm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/osx-64/*.conda
+          key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
+          restore-keys: zig-llvm-osx-64-
+      - name: Build zig-llvm
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-llvm \
+            --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+      - name: Save zig-llvm cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/osx-64/zig-llvm*.conda
+          key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
+
+      - name: Restore zig-zig cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/osx-64/*.conda
+          key: zig-zig-osx-64-${{ hashFiles('recipes/zig-zig/**') }}
+          restore-keys: zig-zig-osx-64-
+      - name: Build zig-zig
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zig \
+            --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
+      - name: Save zig-zig cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/osx-64/zig-zig*.conda
+          key: zig-zig-osx-64-${{ hashFiles('recipes/zig-zig/**') }}
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
+
+  build-cross-windows:
+    needs: [build-native-windows, build-native-windows-phase2]
+    name: win-arm64 (cross)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.68.1
+      - name: Add .pixi/envs/default/bin to the $PATH
+        shell: bash
+        run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Download native win-64 artifacts (phase 1 + phase 2)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-win-64-*
+          path: output/win-64/
+          merge-multiple: true
+
+      - name: Index local channel
+        run: pixi run python -m conda_index output/
+
+      - name: Debug - list downloaded artifacts
+        run: ls output/win-64/
+
+      - name: Restore zig-llvm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/win-arm64/*.conda
+          key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+          restore-keys: zig-llvm-win-arm64-
+      - name: Build zig-llvm
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-llvm \
+            --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-llvm artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+      - name: Save zig-llvm cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/win-arm64/zig-llvm*.conda
+          key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+
+      - name: Restore zig-zig cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/win-arm64/*.conda
+          key: zig-zig-win-arm64-${{ hashFiles('recipes/zig-zig/**') }}
+          restore-keys: zig-zig-win-arm64-
+      - name: Build zig-zig
+        shell: bash
+        run: |
+          rattler-build build --recipe recipes/zig-zig \
+            --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
+            -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: Prune stale zig-zig artifacts
+        shell: bash
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
+      - name: Save zig-zig cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/win-arm64/zig-zig*.conda
+          key: zig-zig-win-arm64-${{ hashFiles('recipes/zig-zig/**') }}
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
           for file in output/**/*.conda; do
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done

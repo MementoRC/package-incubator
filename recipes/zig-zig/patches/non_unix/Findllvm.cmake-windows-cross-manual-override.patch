@@ -1,0 +1,37 @@
+# Windows cross-builds (win-arm64 built on win-64) cannot run llvm-config
+# for the actual (shared, target-arch) LLVM build: only a static-only
+# native-arch llvm-config from conda-forge llvmdev is runnable on the
+# build machine. This adds a ZIG_LLVM_MANUAL_OVERRIDE escape hatch that,
+# when CACHE-defined, uses recipe build.sh-computed LLVM_LIBRARIES/
+# LLVM_LIBDIRS/LLVM_INCLUDE_DIRS values instead of probing llvm-config.
+# It is a no-op everywhere else, including native win-64 builds, since
+# build.sh only defines ZIG_LLVM_MANUAL_OVERRIDE for Windows CROSS builds.
+--- a/cmake/Findllvm.cmake
++++ b/cmake/Findllvm.cmake
+@@ -10,6 +10,18 @@
+
+
+ if(ZIG_USE_LLVM_CONFIG)
++  if(DEFINED ZIG_LLVM_MANUAL_OVERRIDE)
++    # Windows cross-builds: the only llvm-config runnable on the build
++    # machine is conda-forge llvmdev's static-only native-arch binary,
++    # which cannot answer --link-shared queries for zig-llvm's actual
++    # (shared) target build. Use the values the recipe build script
++    # already computed instead of probing llvm-config at configure time.
++    set(LLVM_LIBRARIES "${ZIG_LLVM_MANUAL_LIBRARIES}")
++    set(LLVM_LIBDIRS "${ZIG_LLVM_MANUAL_LIBDIRS}")
++    set(LLVM_INCLUDE_DIRS "${ZIG_LLVM_MANUAL_INCLUDE_DIRS}")
++    set(LLVM_LINK_MODE "shared")
++    link_directories("${LLVM_LIBDIRS}")
++  else()
+   set(LLVM_CONFIG_ERROR_MESSAGES "")
+   while(1)
+     # If this variable is not unset, the same result is returned even though
+@@ -182,6 +194,7 @@
+   string(REPLACE " " ";" LLVM_INCLUDE_DIRS "${LLVM_INCLUDE_DIRS_SPACES}")
+
+   link_directories("${LLVM_LIBDIRS}")
++  endif()
+ else()
+   # Here we assume that we're cross compiling with Zig, of course. No reason
+   # to support more complicated setups.

@@ -28,17 +28,21 @@ if not exist "%_wrapper_dir%" (
 )
 
 REM === Export variables ===
-if exist "%_wrapper_dir%\zig-cc.exe"          set "ZIG_CC=%_wrapper_dir%\zig-cc.exe"
-if exist "%_wrapper_dir%\zig-cxx.exe"         set "ZIG_CXX=%_wrapper_dir%\zig-cxx.exe"
-if exist "%_wrapper_dir%\zig-ar.bat"          set "ZIG_AR=%_wrapper_dir%\zig-ar.bat"
-if exist "%_wrapper_dir%\zig-ranlib.bat"      set "ZIG_RANLIB=%_wrapper_dir%\zig-ranlib.bat"
-if exist "%_wrapper_dir%\zig-asm.bat"         set "ZIG_ASM=%_wrapper_dir%\zig-asm.bat"
-if exist "%_wrapper_dir%\zig-rc.bat" (
-    set "ZIG_RC=%_wrapper_dir%\zig-rc.bat"
-    set "ZIG_RC_CMAKE=%_wrapper_dir:\=/%/zig-rc.bat"
+set "_zig_bin=%CONDA_PREFIX%\Library\bin\@CONDA_TRIPLET@-zig.exe"
+if exist "%_zig_bin%" set "ZIG=%_zig_bin%"
+
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-cc.exe"     set "ZIG_CC=%_wrapper_dir%\@ZIG_TARGET@-zig-cc.exe"
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-cxx.exe"    set "ZIG_CXX=%_wrapper_dir%\@ZIG_TARGET@-zig-cxx.exe"
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-ar.bat"     set "ZIG_AR=%_wrapper_dir%\@ZIG_TARGET@-zig-ar.bat"
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-ranlib.bat" set "ZIG_RANLIB=%_wrapper_dir%\@ZIG_TARGET@-zig-ranlib.bat"
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-asm.bat"    set "ZIG_ASM=%_wrapper_dir%\@ZIG_TARGET@-zig-asm.bat"
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-rc.bat" (
+    set "ZIG_RC=%_wrapper_dir%\@ZIG_TARGET@-zig-rc.bat"
+    set "ZIG_RC_CMAKE=%_wrapper_dir:\=/%/@ZIG_TARGET@-zig-rc.bat"
 )
-if exist "%_wrapper_dir%\zig-cxx-shared.exe"  set "ZIG_CXX_SHARED=%_wrapper_dir%\zig-cxx-shared.exe"
+if exist "%_wrapper_dir%\@ZIG_TARGET@-zig-lld.bat" set "ZIG_LLD=%_wrapper_dir%\@ZIG_TARGET@-zig-lld.bat"
 
 :cleanup
 set "_CROSS_TARGET_TRIPLET="
 set "_wrapper_dir="
+set "_zig_bin="

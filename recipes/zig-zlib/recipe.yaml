@@ -1,0 +1,62 @@
+# schema_version: 1
+
+context:
+  build_number: 105
+  version: "1.3.2"
+  library: ${{ "Library/" if not unix else "" }}
+
+  sh: ${{ ".bat" if not unix else ".sh" }}
+  
+package:
+  name: zig-zlib
+  version: ${{ version }}
+
+source:
+  url:
+    - https://github.com/madler/zlib/releases/download/v${{ version }}/zlib-${{ version }}.tar.xz
+    - https://zlib.net/zlib-${{ version }}.tar.xz
+  sha256: d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3
+
+build:
+  number: ${{ build_number }}
+  skip: not riscv64
+  script:
+    file: build${{ sh }}
+    env:
+      CONDA_BUILD_ZIG: >-
+        ${{
+          "x86_64-conda-linux-gnu"                  if build_platform == "linux-64"          else
+          "x86_64-apple-darwin13.4.0"               if build_platform == "osx-64"            else
+          "arm64-apple-darwin20.0.0"                if build_platform == "osx-arm64"         else
+          "aarch64-w64-mingw32"                     if not unix and arm64                    else
+          "x86_64-w64-mingw32"                      if not unix                              else
+          "unknown"
+        }}-zig
+      ZIG_TARGET: "riscv64-linux-musl"
+
+requirements:
+  build:
+    - ${{ compiler("zig") }}
+    - cmake
+    - ninja
+
+tests:
+  - package_contents:
+      strict: true
+      files:
+        - ${{ library }}lib/zig-zlib/lib/libz.so
+        - ${{ library }}lib/zig-zlib/lib/libz.so.*
+
+about:
+  homepage: https://zlib.net/
+  license: Zlib
+  license_file: LICENSE
+  summary: Massively spiffy yet delicately unobtrusive compression library
+  description: |
+    zlib is designed to be a free, general-purpose, lossless data-compression
+    library for use on virtually any computer hardware and operating system.
+  repository: https://github.com/madler/zlib
+
+extra:
+  recipe-maintainers:
+    - MementoRC

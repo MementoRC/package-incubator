@@ -87,12 +87,39 @@ function configure_cmake() {
   ) || return 1
 }
 
+# Disable langref/doctest build for cross-compilation targets where running
+# the compiled doctests is unreliable (sysroot-free libc, limited qemu fidelity).
+# Matches zig-gcc's -Dno-langref flag used when qemu is absent or unreliable.
+# Takes build_dir as argument (unused here; kept for call-site compatibility).
+function remove_failing_langref() {
+  local _build_dir="${1:-}"
+  echo "Disabling langref doctests for cross-build (-Dno-langref)"
+  EXTRA_ZIG_ARGS+=(-Dno-langref)
+}
+
 function configure_cmake_zigcpp() {
   local build_dir=$1
   local install_dir=$2
   local zig=${3:-}
 
-  configure_cmake "${build_dir}" "${install_dir}" "${zig}"
+  # Cross-build (Linux/macOS): ZIG_CC/ZIG_CXX are BUILD-host wrappers (e.g. x86_64-...-zig-cxx).
+  # Without -target, cmake compiles zigcpp objects for BUILD arch, not TARGET arch,
+  # causing an "incompatible" error at final link (e.g. x86_64 .o linked into aarch64 zig).
+  # macOS cross also needs -target: cmake's compiler-ABI TryCompile probe invokes the compiler
+  # directly (bypassing force-load shims), so the wrapper deduces target from its own filename
+  # (arm64) instead of the intended target — fails with "unknown target CPU 'apple-m1'" on x86_64.
+  # Windows is excluded: the cmake cache seed sets CMAKE_C/CXX_FLAGS with -target.
+  if is_linux && is_cross; then
+    # The cmake compiler check otherwise links a test executable, making zig-cc
+    # invoke the cross-GCC linker driver (e.g. powerpc64le-conda-linux-gnu-gcc),
+    # absent on the build host ("Failed to spawn GCC: FileNotFound"), so config.h
+    # is never generated. STATIC_LIBRARY makes the check compile-only.
+    EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY)
+  elif is_osx && is_cross; then
+    EXTRA_CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-target ${ZIG_TRIPLET}" -DCMAKE_CXX_FLAGS="-target ${ZIG_TRIPLET}")
+  fi
+
+  configure_cmake "${build_dir}" "${install_dir}" "${zig}" || return 1
   pushd "${build_dir}"
     cmake --build . --target zigcpp -- -j"${CPU_COUNT}"
   popd

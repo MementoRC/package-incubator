@@ -1,0 +1,65 @@
+# schema_version: 1
+
+context:
+  build_number: 105
+  version: "2.15.3"
+  sover: "16"
+  library: ${{ "Library/" if not unix else "" }}
+
+  sh: ${{ ".bat" if not unix else ".sh" }}
+  
+package:
+  name: zig-libxml2
+  version: ${{ version }}
+
+source:
+  url: https://gitlab.gnome.org/GNOME/libxml2/-/archive/v${{ version }}/libxml2-v${{ version }}.tar.gz
+  sha256: 0da50c1415f4ec0364569d2119b1436ba837b31df44af28569d234272c23cf1f
+
+build:
+  number: ${{ build_number }}
+  skip: not riscv64
+  script:
+    file: build${{ sh }}
+    env:
+      CONDA_BUILD_ZIG: >-
+        ${{
+          "x86_64-conda-linux-gnu"                  if build_platform == "linux-64"          else
+          "x86_64-apple-darwin13.4.0"               if build_platform == "osx-64"            else
+          "arm64-apple-darwin20.0.0"                if build_platform == "osx-arm64"         else
+          "aarch64-w64-mingw32"                     if not unix and arm64                    else
+          "x86_64-w64-mingw32"                      if not unix                              else
+          "unknown"
+        }}-zig
+      ZIG_TARGET: "riscv64-linux-musl"
+
+requirements:
+  build:
+    - ${{ compiler("zig") }}
+    - cmake
+    - ninja
+  host:
+    - zig-zlib
+
+tests:
+  - package_contents:
+      strict: true
+      files:
+        - ${{ library }}lib/zig-xml2/lib/libxml2.so
+        - ${{ library }}lib/zig-xml2/lib/libxml2.so.*
+
+about:
+  homepage: http://xmlsoft.org/
+  license: MIT
+  license_family: MIT
+  license_file: Copyright
+  summary: The XML C parser and toolkit of Gnome
+  description: |
+    Though libxml2 is written in C a variety of language
+    bindings make it available in other environments.
+  documentation: http://xmlsoft.org/html/index.html
+  repository: https://git.gnome.org/browse/libxml2/
+
+extra:
+  recipe-maintainers:
+    - MementoRC

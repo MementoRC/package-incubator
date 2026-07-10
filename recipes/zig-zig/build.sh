@@ -3,6 +3,15 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# LC_ALL=C avoids 'bash: warning: setlocale: LC_ALL: cannot change locale
+# (C.UTF-8)' from bash's startup when conda activates the env with
+# LC_ALL=C.UTF-8 but the runner's locale-archive lacks C.UTF-8 (macOS
+# specifically). Findllvm.cmake captures the llvm-config wrapper's stderr
+# via ERROR_VARIABLE and treats the warning as 'shared library not
+# supported', so any bash invocation chain that goes through cmake's
+# captured-stderr path must run with LC_ALL=C.
+export LC_ALL=C
+
 if [[ ${BASH_VERSINFO[0]} -lt 5 || (${BASH_VERSINFO[0]} -eq 5 && ${BASH_VERSINFO[1]} -lt 2) ]]; then
   if [[ -x "${BUILD_PREFIX}/bin/bash" ]]; then
     exec "${BUILD_PREFIX}/bin/bash" "$0" "$@"
@@ -23,6 +32,7 @@ is_osx() { [[ "${target_platform}" == "osx-"* ]]; }
 is_unix() { [[ "${target_platform}" == "linux-"* || "${target_platform}" == "osx-"* ]]; }
 is_not_unix() { ! is_unix; }
 is_cross() { [[ "${build_platform}" != "${target_platform}" ]]; }
+is_riscv64() { [[ "${target_platform:-}" == "linux-riscv64" ]]; }
 
 is_debug() { [[ "${DEBUG_ZIG_BUILD:-0}" == "1" ]]; }
 
@@ -85,6 +95,10 @@ zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" \( -name "${COND
 if [[ -z "${zig}" ]]; then
   zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" -name '*-zig' -o -name '*-zig.exe' 2>/dev/null | head -1 || true)"
 fi
+# Fallback: conda-forge zig installs a plain `zig` binary (no triplet prefix)
+if [[ -z "${zig}" ]]; then
+  zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" \( -name 'zig' -o -name 'zig.exe' \) 2>/dev/null | head -1 || true)"
+fi
 
 echo "CONDA_ZIG_BUILD: ${CONDA_ZIG_BUILD:-NOT FOUND}"
 echo "CONDA_ZIG_HOST: ${CONDA_ZIG_HOST:-NOT FOUND}"
@@ -93,6 +107,58 @@ echo "ZIG_CC: ${ZIG_CC:-NOT SET}"
 echo "ZIG_CXX: ${ZIG_CXX:-NOT SET}"
 echo "ZIG_AR: ${ZIG_AR:-NOT SET}"
 echo "ZIG_RANLIB: ${ZIG_RANLIB:-NOT SET}"
+
+# Self-stage zig-cc wrappers (formerly provided by zig-gcc build dep; now
+# using conda-forge zig + self-staging the wrapper scripts from RECIPE_DIR/scripts/).
+# Wrappers provide flag filtering and sysroot detection that bare `zig cc` lacks.
+if [[ -z "${ZIG_CC:-}" ]] && [[ -n "${zig}" ]]; then
+  _wrapper_dir="${BUILD_PREFIX}/share/zig/wrappers"
+  mkdir -p "${_wrapper_dir}"
+
+  # Derive cc_target: ZIG_WRAPPER_TRIPLET with glibc version suffix stripped.
+  # Mirrors install_zig_activation.py _strip_glibc_version(): removes .X.Y from
+  # -gnu* triplets only (e.g. aarch64-linux-gnu.2.17 → aarch64-linux-gnu).
+  _cc_target="${ZIG_WRAPPER_TRIPLET}"
+  if [[ "${_cc_target}" =~ ^(.*-gnu[a-z]*)\.[0-9]+\.[0-9]+$ ]]; then
+    _cc_target="${BASH_REMATCH[1]}"
+  fi
+  _cc_target_arch="${_cc_target%%-*}"
+
+  # Install shared helper scripts (sourced by wrappers; installed unprefixed)
+  for _helper in "_zig-cc-common.sh" "_zig-force-load-common.sh"; do
+    _src="${RECIPE_DIR}/scripts/${_helper}"
+    [[ -f "${_src}" ]] || continue
+    sed -e "s|@ZIG_BIN@|${zig}|g" \
+        -e "s|@ZIG_TARGET@|${_cc_target}|g" \
+        -e "s|@ZIG_TARGET_ARCH@|${_cc_target_arch}|g" \
+        "${_src}" > "${_wrapper_dir}/${_helper}"
+  done
+
+  # Install triple-prefixed wrapper scripts (drop .sh extension, add conda triplet prefix)
+  # Filename uses CONDA_TRIPLET (e.g. x86_64-conda-linux-gnu) so consumers using the
+  # conda prefix convention can find them; @ZIG_TARGET@ inside the script remains _cc_target
+  # (the zig -target triplet, e.g. x86_64-linux-gnu) — do NOT conflate the two.
+  for _name in zig-cc zig-cxx zig-ar zig-ranlib zig-asm zig-rc zig-lld zig-force-load-cc zig-force-load-cxx; do
+    _src="${RECIPE_DIR}/scripts/${_name}.sh"
+    [[ -f "${_src}" ]] || continue
+    _dst="${_wrapper_dir}/${CONDA_TRIPLET}-${_name}"
+    sed -e "s|@ZIG_BIN@|${zig}|g" \
+        -e "s|@ZIG_TARGET@|${_cc_target}|g" \
+        -e "s|@ZIG_TARGET_ARCH@|${_cc_target_arch}|g" \
+        "${_src}" > "${_dst}"
+    chmod +x "${_dst}"
+  done
+
+  export ZIG_CC="${_wrapper_dir}/${CONDA_TRIPLET}-zig-cc"
+  export ZIG_CXX="${_wrapper_dir}/${CONDA_TRIPLET}-zig-cxx"
+  export ZIG_AR="${_wrapper_dir}/${CONDA_TRIPLET}-zig-ar"
+  export ZIG_RANLIB="${_wrapper_dir}/${CONDA_TRIPLET}-zig-ranlib"
+  export ZIG_ASM="${_wrapper_dir}/${CONDA_TRIPLET}-zig-asm"
+  export ZIG_RC="${_wrapper_dir}/${CONDA_TRIPLET}-zig-rc"
+
+  echo "Self-staged zig-cc wrappers in ${_wrapper_dir} (conda_triplet=${CONDA_TRIPLET}, zig_target=${_cc_target})"
+  echo "ZIG_CC: ${ZIG_CC}"
+fi
 
 if [[ -z "${ZIG_CC:-}" ]]; then
   echo "Activation did not set ZIG_CC, using zig binary directly"
@@ -113,7 +179,7 @@ export AR="${ZIG_AR}"
 export RANLIB="${ZIG_RANLIB}"
 # CONDA_BUILD_SYSROOT is normally set by compiler("c") activation (gcc/clang).
 # Since we use zig as compiler, set it manually from stdlib("c") sysroot.
-if is_linux; then
+if is_linux && ! is_riscv64; then
   export CONDA_BUILD_SYSROOT="${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot"
 fi
 
@@ -141,6 +207,8 @@ export LLVM_CONFIG=$(find "${_llvm_config_search[@]}" \( -name 'llvm-config.real
 echo "LLVM_CONFIG: ${LLVM_CONFIG:-NOT SET}"
 
 # Verify zig-llvm is available
+# Ensure llvm-config.real can find libunwind.so.1 and libc++ from zig-llvm runtimes
+export LD_LIBRARY_PATH="${ZIG_LLVM_ROOT}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # For cross-builds, llvm-config.real.exe may be the wrong architecture (e.g. ARM64
 # on x86_64 host). Detect this and fall back to extracting version from headers.
 _llvm_config_works=1
@@ -183,12 +251,84 @@ if [[ ${_llvm_config_works} -eq 1 ]] && [[ "${LLVM_CONFIG}" != *"zig-llvm"* ]]; 
     _wrapper="${ZIG_LLVM_ROOT}/bin/llvm-config"
     cat > "${_wrapper}" << WRAPEOF
 #!/usr/bin/env bash
-# Cross-build llvm-config wrapper: runs the host llvm-config (BUILD_PREFIX)
-# but rewrites all paths to point at the target zig-llvm installation.
-output="\$("${_real_llvm_config}" "\$@" 2>&1)" || { echo "\$output" >&2; exit 1; }
+# Cross-build llvm-config wrapper for osx-64 cross from osx-arm64.
+
+# Suppress 'setlocale: LC_ALL: cannot change locale (C.UTF-8)' warnings on
+# stderr — Findllvm.cmake captures wrapper stderr and treats non-empty as
+# 'shared library not supported'.
+export LC_ALL=C
+
+# The "real" llvm-config is conda-forge llvmdev's host-arch binary at
+# ${BUILD_PREFIX}/bin/llvm-config — static-only. zig's Findllvm.cmake
+# probes shared linkability via:
+#   1. llvm-config --libs --link-shared       (precondition; static llvm-config errors)
+#   2. llvm-config --shared-mode --link-shared (would return 'shared' if reached)
+#   3. llvm-config --shared-mode               (fallback)
+# zig-llvm IS built shared (libLLVM.dylib at \${ZIG_LLVM_ROOT}/lib), so we
+# answer those queries directly and only delegate the path/version queries
+# to the static llvm-config (with --link-shared stripped).
+
+# Per-invocation log so we can see exactly what CMake calls.
+{
+  echo "[\$(date +%H:%M:%S)] llvm-config-wrapper called: \$*"
+} >> "${cmake_build_dir}/llvm-config-wrapper.log" 2>/dev/null || true
+
+# Classify args
+_has_shared_mode=0
+_has_libs=0
+_has_system_libs=0
+_has_link_shared=0
+_has_link_static=0
+for arg in "\$@"; do
+  case "\$arg" in
+    --shared-mode)  _has_shared_mode=1 ;;
+    --libs)         _has_libs=1 ;;
+    --system-libs)  _has_system_libs=1 ;;
+    --link-shared)  _has_link_shared=1 ;;
+    --link-static)  _has_link_static=1 ;;
+  esac
+done
+
+# Short-circuit: --shared-mode (regardless of --link-shared/static)
+if (( _has_shared_mode )); then
+  echo "shared"
+  exit 0
+fi
+
+# Short-circuit: --libs --link-shared → zig-llvm ships libLLVM.dylib as a
+# combined shared library; the static llvm-config can't answer this.
+if (( _has_libs && _has_link_shared )); then
+  echo "-lLLVM"
+  exit 0
+fi
+
+# Short-circuit: --system-libs --link-shared → no extra system libs needed
+# beyond what -lLLVM already pulls; return empty.
+if (( _has_system_libs && _has_link_shared )); then
+  echo ""
+  exit 0
+fi
+
+# For all other queries, delegate to the real (static-only) llvm-config
+# with --link-shared stripped (it would otherwise error). Strip
+# --link-static too if present alongside --link-shared (defensive).
+_args=()
+for arg in "\$@"; do
+  case "\$arg" in
+    --link-shared) : ;;  # drop
+    *) _args+=("\$arg") ;;
+  esac
+done
+
+output="\$("${_real_llvm_config}" "\${_args[@]}" 2>&1)" || {
+  echo "\$output" >&2
+  exit 1
+}
+
 # Rewrite BUILD_PREFIX paths → ZIG_LLVM_ROOT
 output="\${output//${BUILD_PREFIX//\//\\/}/${ZIG_LLVM_ROOT//\//\\/}}"
-# Filter flags unsupported by zig's linker (same as zig-llvm wrapper)
+
+# Filter linker flags zig's lld doesn't accept (preserve existing behavior)
 for arg in "\$@"; do
   case "\$arg" in
     --ldflags|--system-libs|--libs|--link-static|--link-shared)
@@ -202,6 +342,7 @@ for arg in "\$@"; do
       break ;;
   esac
 done
+
 echo "\$output"
 WRAPEOF
     chmod +x "${_wrapper}"
@@ -266,6 +407,10 @@ if is_osx; then
     -DZIG_SYSTEM_LIBCXX=c++
     -DCMAKE_C_FLAGS="-Wno-incompatible-pointer-types"
     -DCMAKE_OSX_ARCHITECTURES="${_osx_arch}"
+    # cmake fallback for zig2 link: zig's paths_first linker only searches the
+    # -L paths cmake adds; CMAKE_LIBRARY_PATH covers ZIG_LLVM_ROOT/lib but not
+    # $PREFIX/lib where libz/libzstd/libxml2 from conda-forge live.
+    -DCMAKE_EXE_LINKER_FLAGS="-L${PREFIX}/lib"
   )
 
   # Cross-builds: zig_$cross_target_platform_ activation provides wrappers
@@ -273,7 +418,14 @@ if is_osx; then
 fi
 
 # Override zig's default max_rss (7.8GB) which exceeds CI runner memory
-EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
+if [[ "${target_platform}" == osx-* ]]; then
+  # macos-14 runner has ~14 GB RAM; 7.5 GB is the proven-working value for
+  # zig 0.15.2 ReleaseSafe (the compile-exe-zig step declares a 7 GB internal
+  # upper bound, so anything below 7 GB triggers a build-runner assert panic).
+  EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
+else
+  EXTRA_ZIG_ARGS+=(--maxrss 7500000000)
+fi
 
 
 # zig-llvm builds a monolithic shared library on all platforms.
@@ -301,10 +453,30 @@ EXTRA_CMAKE_ARGS+=(-DCMAKE_IGNORE_PATH="${_ignore_paths}")
 
 
 if is_linux && is_cross; then
-  EXTRA_ZIG_ARGS+=(
-    -fqemu
-    --libc "${zig_build_dir}"/libc_file
-  )
+  if is_riscv64; then
+    EXTRA_ZIG_ARGS+=(-fqemu)
+  else
+    EXTRA_ZIG_ARGS+=(
+      -fqemu
+      --libc "${zig_build_dir}"/libc_file
+      --libc-runtimes "${CONDA_BUILD_SYSROOT}/lib64"
+    )
+  fi
+fi
+
+# riscv64/s390x: conda-forge does not ship zlib/zstd/libxml2 for these arches.
+# Instead, custom zig-zlib/zig-zstd/zig-libxml2 outputs install shared libs under
+# $PREFIX/lib/zig-{zlib,zstd,xml2}/lib/. Zig's paths_first library search uses
+# --search-prefix roots, so add these subdirs explicitly so -lz/-lzstd/-lxml2 resolve.
+if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
+  for _zigpkg in zig-zlib zig-zstd zig-xml2; do
+    _zigpkg_dir="${PREFIX}/lib/${_zigpkg}"
+    if [[ -d "${_zigpkg_dir}" ]]; then
+      EXTRA_ZIG_ARGS+=(--search-prefix "${_zigpkg_dir}")
+      echo "  riscv64/s390x: added --search-prefix ${_zigpkg_dir}"
+    fi
+  done
+  unset _zigpkg _zigpkg_dir
 fi
 
 # --- libzigcpp Configuration ---
@@ -313,6 +485,7 @@ if is_linux; then
   is_cross && is_osx && ${INSTALL_NAME_TOOL:-install_name_tool} -add_rpath "${BUILD_PREFIX}"/lib "${PREFIX}"/bin/llvm-config
 fi
 
+mkdir -p "${PREFIX}/${_library}bin"
 rm -f "${PREFIX}/${_library}bin"/llvm-config*
 if is_not_unix; then
   # On Windows: remove bash wrapper, restore real exe for native builds.
@@ -327,6 +500,24 @@ if is_not_unix; then
     rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe"
     cp "${LLVM_CONFIG}" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
     echo "  Copied native llvm-config to ${ZIG_LLVM_ROOT}/bin/ for cmake"
+
+    # This copied binary is conda-forge llvmdev's static-only native-arch
+    # llvm-config - it cannot answer --link-shared queries for zig-llvm's
+    # actual (shared) target build, so Findllvm.cmake's runtime probe of
+    # it fails with "does not support linking as a shared library". Compute
+    # the values manually instead (mirrors the answer the --link-shared
+    # bash wrapper above gives on unix cross builds) and hand them to
+    # Findllvm.cmake's override branch via the cmake cache-seed below.
+    _zig_llvm_implib="$(find "${ZIG_LLVM_ROOT}/lib" -maxdepth 1 \( -iname 'libLLVM*.dll.a' -o -iname 'LLVM*.dll.a' \) 2>/dev/null | head -1)"
+    if [[ -z "${_zig_llvm_implib}" ]]; then
+      echo "ERROR: could not find zig-llvm's shared-library import lib under ${ZIG_LLVM_ROOT}/lib"
+      exit 1
+    fi
+    export ZIG_LLVM_MANUAL_OVERRIDE=1
+    export ZIG_LLVM_MANUAL_LIBRARIES="${_zig_llvm_implib}"
+    export ZIG_LLVM_MANUAL_LIBDIRS="${ZIG_LLVM_ROOT}/lib"
+    export ZIG_LLVM_MANUAL_INCLUDE_DIRS="${ZIG_LLVM_ROOT}/include"
+    echo "  ZIG_LLVM_MANUAL_LIBRARIES: ${ZIG_LLVM_MANUAL_LIBRARIES}"
   elif [[ -f "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" ]]; then
     cp "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
   fi
@@ -382,6 +573,18 @@ set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
 # Pin llvm-config so cmake doesn't find BUILD_PREFIX's conda-forge copy
 set(LLVM_CONFIG "${LLVM_CONFIG//\\//}" CACHE FILEPATH "")
 TCEOF
+  if [[ -n "${ZIG_LLVM_MANUAL_OVERRIDE:-}" ]]; then
+    # Windows cross-build: bypass Findllvm.cmake's llvm-config --link-shared
+    # probe entirely (see cmake/Findllvm.cmake patch) since the only
+    # runnable llvm-config on the build machine can't answer it for
+    # zig-llvm's actual build.
+    cat >> "${_cache_seed}" << OVEOF
+set(ZIG_LLVM_MANUAL_OVERRIDE ON CACHE BOOL "")
+set(ZIG_LLVM_MANUAL_LIBRARIES "${ZIG_LLVM_MANUAL_LIBRARIES//\\//}" CACHE STRING "")
+set(ZIG_LLVM_MANUAL_LIBDIRS "${ZIG_LLVM_MANUAL_LIBDIRS//\\//}" CACHE STRING "")
+set(ZIG_LLVM_MANUAL_INCLUDE_DIRS "${ZIG_LLVM_MANUAL_INCLUDE_DIRS//\\//}" CACHE STRING "")
+OVEOF
+  fi
   EXTRA_CMAKE_ARGS+=(-C "${_cache_seed}")
 fi
 
@@ -401,28 +604,93 @@ for _cm_dir in llvm clang lld; do
 done
 echo "  Libraries: $(ls "${ZIG_LLVM_ROOT}/lib/"*.a "${ZIG_LLVM_ROOT}/lib/"*.dll.a "${ZIG_LLVM_ROOT}/lib/"*.dylib "${ZIG_LLVM_ROOT}/lib/"*.so* 2>/dev/null | wc -l) files"
 
-configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}"
+_cmake_configure_rc=0
+configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}" || _cmake_configure_rc=$?
+
+# Dump llvm-config wrapper invocation log so we can see what CMake actually called.
+# Gated to cross-unix builds where the wrapper exists.
+if is_cross && is_unix && [[ -f "${cmake_build_dir}/llvm-config-wrapper.log" ]]; then
+  echo "=== llvm-config wrapper invocations (${cmake_build_dir}/llvm-config-wrapper.log) ==="
+  cat "${cmake_build_dir}/llvm-config-wrapper.log" || true
+  echo "=================================================="
+fi
+# Enumerate all llvm-config that CMake might find (in case it's bypassing our wrapper)
+if is_cross && is_unix; then
+  echo "=== all llvm-config under PREFIX and BUILD_PREFIX ==="
+  find "${PREFIX}" -name 'llvm-config*' 2>/dev/null | head -20
+  find "${BUILD_PREFIX}" -name 'llvm-config*' 2>/dev/null | head -20
+  echo "====================================================="
+fi
+if [[ ${_cmake_configure_rc} -ne 0 ]]; then
+  exit ${_cmake_configure_rc}
+fi
 
 rm -f "${PREFIX}/${_library}bin"/llvm-config*
 
 # --- Post CMake Configuration ---
 
+# Replace individual liblld*.a archive paths in ZIG_LLVM_LIBRARIES with the
+# single liblldZig bundle produced by zig-llvm's build_lld_bundle step.
+# cmake's LLDConfig.cmake populates ZIG_LLVM_LIBRARIES with absolute paths to
+# each of the six lld archives.  We substitute them all with the bundle path.
 # Add zig-llvm's bundled libc++ to ensure same C++ stdlib is used
 if is_linux; then
-  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;-lzstd;-lxml2;-lz;-L${PREFIX}/lib/zig-llvm/lib;-lc++;-lc++abi;-lunwind\"@" "${cmake_build_dir}"/config.h
+  _lld_lib="${PREFIX}/lib/zig-llvm/lib"
+  if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
+    # liblldZig.so is not built on these platforms; link the 6 lld static archives
+    # directly without --whole-archive.
+    # --whole-archive is intentionally omitted: zig's build.zig passes ZIG_LLVM_LIBRARIES
+    # tokens via addLinkArgs (direct ELF-linker args, not through the CC driver), so
+    # -Wl,--whole-archive reaches zig's self-hosted ELF linker as a literal flag which
+    # it does not recognise ("unrecognized parameter: '-Wl,--whole-archive'").  Symbol
+    # inclusion is safe without the flag because zig's build.zig explicitly references
+    # all lld driver entry points, so the ELF linker pulls them from the archives.
+    #
+    # Use absolute paths for libz/libzstd/libxml2 instead of bare -l flags.
+    # riscv64/s390x use custom outputs that install shared libs under subdirs:
+    #   $PREFIX/lib/zig-zstd/lib/libzstd.so
+    #   $PREFIX/lib/zig-xml2/lib/libxml2.so
+    #   $PREFIX/lib/zig-zlib/lib/libz.so
+    # (conda-forge top-level $PREFIX/lib/libz.so etc. do not exist on these arches.)
+    _lld_static_tokens=""
+    for _a in liblldELF.a liblldCOFF.a liblldMachO.a liblldWasm.a liblldMinGW.a liblldCommon.a; do
+      _lld_static_tokens="${_lld_static_tokens:+${_lld_static_tokens};}${_lld_lib}/${_a}"
+    done
+    _lld_static_tokens="${_lld_static_tokens};${PREFIX}/lib/zig-zstd/lib/libzstd.so;${PREFIX}/lib/zig-xml2/lib/libxml2.so;${PREFIX}/lib/zig-zlib/lib/libz.so;-lpthread;-L${PREFIX}/lib/zig-zlib/lib;-L${PREFIX}/lib/zig-zstd/lib;-L${PREFIX}/lib/zig-xml2/lib;-L${_lld_lib};-lc++;-lc++abi;-lunwind"
+    # Remove all six individual liblld*.a references (cmake wrote them with full paths);
+    # then append the static-archive token list.
+    perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
+    # Collapse duplicate semicolons left by the removal, then append the token list.
+    perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
+    perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;${_lld_static_tokens}\"@" "${cmake_build_dir}"/config.h
+  else
+    _lld_bundle_path="${_lld_lib}/liblldZig.so"
+    # Remove all six individual liblld*.a references; then append the bundle path.
+    perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
+    # Collapse duplicate semicolons left by the removal, then append the bundle.
+    perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
+    perl -pi -e "s@(ZIG_LLVM_LIBRARIES \")(.*)\"@\$1\$2;${_lld_bundle_path};-lzstd;-lxml2;-lz;-L${_lld_lib};-lc++;-lc++abi;-lunwind\"@" "${cmake_build_dir}"/config.h
+  fi
 elif is_osx; then
-  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-lxml2;-lz;-L${PREFIX}/lib/zig-llvm/lib;${PREFIX}/lib/zig-llvm/lib/libc++.dylib\"@" "${cmake_build_dir}"/config.h
+  _lld_bundle_path="${PREFIX}/lib/zig-llvm/lib/liblldZig.dylib"
+  perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.a@@g" "${cmake_build_dir}"/config.h
+  perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${_lld_bundle_path};-lzstd;-lxml2;-lz;-L${PREFIX}/lib/zig-llvm/lib;${PREFIX}/lib/zig-llvm/lib/libc++.dylib\"@" "${cmake_build_dir}"/config.h
 elif is_not_unix; then
   # cmake finds libLLVM-20.dll in bin/ and records "zig-llvm/bin/libLLVM-20" (no
   # extension). Zig needs the import lib in lib/ with proper extension. Fix the
   # path and add libc++ + dependencies.
   _zig_llvm_lib="${ZIG_LLVM_ROOT//\\//}/lib"
+  _lld_bundle_path="${_zig_llvm_lib}/liblldZig.dll.a"
   echo "=== Windows config.h patching ==="
   echo "  BEFORE ZIG_LLVM_LIBRARIES:"
   grep 'ZIG_LLVM_LIBRARIES' "${cmake_build_dir}"/config.h | head -1
   # bin/libLLVM-20 → lib/libLLVM-20.dll.a (handle both / and \ separators)
   perl -pi -e 's@zig-llvm[/\\\\]bin[/\\\\](libLLVM-\d+)@zig-llvm/lib/$1.dll.a@g' "${cmake_build_dir}"/config.h
-  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-lxml2;-lz;-L${_zig_llvm_lib};-lc++\"@" "${cmake_build_dir}"/config.h
+  # Replace individual lld archives with the single bundle import lib.
+  perl -pi -e "s@[^;\"]*liblld(?:ELF|COFF|MachO|Wasm|MinGW|Common)\.(?:a|dll\.a)@@g" "${cmake_build_dir}"/config.h
+  perl -pi -e "s@;{2,}@;@g; s@(ZIG_LLVM_LIBRARIES \")([^\"]*);\"@\${1}\${2}\"@" "${cmake_build_dir}"/config.h
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${_lld_bundle_path};-lzstd;-lxml2;-lz;-L${_zig_llvm_lib};-lc++\"@" "${cmake_build_dir}"/config.h
   echo "  AFTER ZIG_LLVM_LIBRARIES:"
   grep 'ZIG_LLVM_LIBRARIES' "${cmake_build_dir}"/config.h | head -1
 fi
@@ -477,25 +745,318 @@ is_debug && echo "=== DEBUG ===" && cat "${cmake_build_dir}"/config.h && echo "=
 if is_linux && is_cross; then
   source "${RECIPE_DIR}/build_scripts/_cross.sh"
   source "${RECIPE_DIR}/build_scripts/_atfork.sh"
+  source "${RECIPE_DIR}/build_scripts/_sysroot_fix.sh"
+  fix_sysroot_libc_scripts "${BUILD_PREFIX}"
 
-  # Create sysroot-free libc config - zig uses its bundled headers for cross-compilation
-  # This allows cross-compiling to riscv64/aarch64/ppc64le without target sysroot installed
-  echo "Creating sysroot-free libc configuration for cross-compilation"
-  cat > "${zig_build_dir}/libc_file" << 'EOF'
-# Zig self-contained cross-compilation configuration
-# Empty paths = use zig's bundled libc headers and musl
-# This enables cross-compilation without target sysroot
-include_dir=
-sys_include_dir=
-crt_dir=
-msvc_lib_dir=
-kernel32_lib_dir=
-gcc_dir=
-EOF
+  if ! is_riscv64; then
+    create_zig_linux_libc_file "${zig_build_dir}/libc_file"
+  fi
 
   remove_failing_langref "${zig_build_dir}"
   perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/pthread_atfork_stub.o\"|g" "${cmake_build_dir}/config.h"
-  create_pthread_atfork_stub "${CONDA_TRIPLET%%-*}" "${CC}" "${ZIG_LOCAL_CACHE_DIR}"
+  create_pthread_atfork_stub "${CONDA_TRIPLET%%-*}" "${CC}" "${ZIG_LOCAL_CACHE_DIR}" "${ZIG_TRIPLET}" "${zig}"
+  # __libc_single_threaded stub for glibc < 2.32 (GCC 15 libstdc++ references it)
+  perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/libc_single_threaded_stub.o\"|g" "${cmake_build_dir}/config.h"
+  create_libc_single_threaded_stub "${CONDA_TRIPLET%%-*}" "${CC}" "${ZIG_LOCAL_CACHE_DIR}" "${ZIG_TRIPLET}" "${zig}"
+fi
+
+# Workaround for ziglang/zig#14919: add synchronization.def so zig can generate
+# libsynchronization.a when cross-compiling to Windows (e.g. OCaml BYTECCLIBS uses -lsynchronization).
+# IMPORTANT: LIBRARY must be api-ms-win-core-synch-l1-2-0.dll, NOT synchronization.dll.
+# "synchronization.dll" is neither a real DLL on disk nor a valid API Set Schema name — it doesn't
+# exist as a physical file in Windows or MSYS2. The real MinGW-w64 alias points to
+# libapi-ms-win-core-synch-l1-2-0.a, whose LIBRARY directive is api-ms-win-core-synch-l1-2-0.dll.
+# Windows API Set Schema resolves api-ms-win-* names to the actual host DLL at runtime.
+if is_not_unix; then
+  _zig_lib="${PREFIX}/Library/lib/zig"
+  _mingw_common="${_zig_lib}/libc/mingw/lib-common"
+else
+  _zig_lib="${PREFIX}/lib/zig"
+  _mingw_common="${_zig_lib}/libc/mingw/lib-common"
+fi
+if [[ -d "${_mingw_common}" ]]; then
+  cat > "${_mingw_common}/synchronization.def" << 'SYNCHRONIZATION_DEF'
+LIBRARY api-ms-win-core-synch-l1-2-0.dll
+
+EXPORTS
+
+DeleteSynchronizationBarrier
+EnterSynchronizationBarrier
+InitializeConditionVariable
+InitializeSynchronizationBarrier
+InitOnceBeginInitialize
+InitOnceComplete
+InitOnceExecuteOnce
+InitOnceInitialize
+SignalObjectAndWait
+Sleep
+SleepConditionVariableCS
+SleepConditionVariableSRW
+WaitOnAddress
+WakeAllConditionVariable
+WakeByAddressAll
+WakeByAddressSingle
+WakeConditionVariable
+SYNCHRONIZATION_DEF
+fi
+
+# Pre-generate Windows PE import libraries (.a) from zig's MinGW .def/.def.in files.
+# flexlink (OCaml's Windows linker) calls -print-search-dirs to find library
+# search paths, then looks for libXXX.a files at those paths.  zig generates
+# import libs internally at link time (cached in ~/.cache/zig/), but flexlink
+# needs them at a fixed, known location.
+#
+# Two types of source files exist in lib-common/:
+#   .def     — ready to use directly with dlltool (e.g. shlwapi.def)
+#   .def.in  — C preprocessor templates that conditionally include exports by
+#              architecture using macros from def-include/func.def.in
+#              (e.g. kernel32.def.in, ws2_32.def.in, ole32.def.in)
+#
+# uuid is special: compiled from libsrc/uuid.c (no DLL import lib needed).
+# Only generates files that are missing; safe to re-run.
+#
+# Target arch detection for dlltool machine type and zig cc -target.
+# ZIG_TRIPLET is e.g. "x86_64-windows-gnu" or "aarch64-windows-gnu".
+_win_arch="${ZIG_TRIPLET%%-*}"
+case "${_win_arch}" in
+  x86_64)       _dlltool_machine="i386:x86-64"; _win_target="x86_64-windows-gnu" ;;
+  aarch64)      _dlltool_machine="arm64";        _win_target="aarch64-windows-gnu" ;;
+  *)            _dlltool_machine="i386:x86-64"; _win_target="x86_64-windows-gnu"
+                echo "WARN: unknown Windows arch '${_win_arch}', defaulting to x86_64" ;;
+esac
+if [[ -d "${_mingw_common}" ]]; then
+  # Use the resolved zig binary (full path already set in ${zig}).
+  _def_include="${_mingw_common}/../def-include"
+  _mingw_libsrc="${_mingw_common}/../libsrc"
+
+  _dlltool=""
+  for _cand in \
+      "${BUILD_PREFIX}/bin/llvm-dlltool" \
+      "${BUILD_PREFIX}/bin/llvm-dlltool.exe" \
+      "${BUILD_PREFIX}/Library/bin/llvm-dlltool.exe" \
+      "${BUILD_PREFIX}/Library/bin/llvm-dlltool" \
+      "$(command -v llvm-dlltool 2>/dev/null || true)"; do
+    if [[ -x "${_cand}" ]]; then
+      _dlltool="${_cand}"
+      break
+    fi
+  done
+
+  is_debug && echo "=== MinGW import lib generation: zig=${zig} dlltool=${_dlltool:-not found} ==="
+  if [[ -n "${_dlltool}" ]] && [[ -x "${zig}" ]]; then
+    is_debug && echo "=== Generating MinGW import libs (dlltool=${_dlltool}) ==="
+    _gen_count=0
+
+    # Helper: generate .a from a processed .def file
+    _gen_implib() {
+      local stem="$1" def="$2"
+      local lib="${_mingw_common}/lib${stem}.a"
+      [[ -f "${lib}" ]] && return 0
+      local dll
+      dll="$(awk '/^LIBRARY/{gsub(/"/, "", $2); print $2; exit}' "${def}")"
+      [[ -z "${dll}" ]] && dll="${stem}.dll"
+      "${_dlltool}" -m "${_dlltool_machine}" -D "${dll}" -d "${def}" -l "${lib}" 2>/dev/null || true
+      _gen_count=$(( _gen_count + 1 ))
+    }
+
+    # Step 1: plain .def files (shlwapi.def, version.def, synchronization.def, etc.)
+    for _def in "${_mingw_common}"/*.def; do
+      [[ -f "${_def}" ]] || continue
+      _stem="$(basename "${_def%.def}")"
+      _gen_implib "${_stem}" "${_def}"
+    done
+
+    # Step 2: .def.in template files (ws2_32, kernel32, ole32, advapi32, user32, ...)
+    # Process through zig's C preprocessor with x86_64 defines so architecture
+    # macros (F_X64, F_I386, F64, F32, etc.) expand correctly.
+    for _def_in in "${_mingw_common}"/*.def.in; do
+      [[ -f "${_def_in}" ]] || continue
+      _stem="$(basename "${_def_in%.def.in}")"
+      _lib="${_mingw_common}/lib${_stem}.a"
+      [[ -f "${_lib}" ]] && continue
+      _def="${_mingw_common}/${_stem}.def"
+      if [[ ! -f "${_def}" ]]; then
+        "${zig}" cc -E -P \
+          -target "${_win_target}" \
+          -x assembler-with-cpp \
+          -I"${_def_include}" \
+          "${_def_in}" 2>/dev/null > "${_def}" || { rm -f "${_def}"; continue; }
+      fi
+      _gen_implib "${_stem}" "${_def}"
+    done
+
+    # Step 3: uuid — compiled from C source (no DLL, no import lib needed).
+    # zig compiles libsrc/uuid.c into a static archive.
+    _uuid_lib="${_mingw_common}/libuuid.a"
+    _uuid_src="${_mingw_libsrc}/uuid.c"
+    if [[ ! -f "${_uuid_lib}" ]] && [[ -f "${_uuid_src}" ]]; then
+      _uuid_obj="${_mingw_common}/_uuid.o"
+      "${zig}" cc -target "${_win_target}" -c "${_uuid_src}" \
+          -o "${_uuid_obj}" 2>/dev/null && \
+        "${zig}" ar rcs "${_uuid_lib}" "${_uuid_obj}" 2>/dev/null || true
+      rm -f "${_uuid_obj}"
+      _gen_count=$(( _gen_count + 1 ))
+    fi
+
+    is_debug && echo "=== Generated ${_gen_count} import libs in ${_mingw_common} ==="
+
+    # Step 4: Supplemental import libs from mingw-w64 .def.in templates.
+    # Zig doesn't ship msvcrt.def or ucrtbase.def -- we provide complete
+    # mingw-w64 versions that cover all exports (stdio, math, POSIX I/O, etc.).
+    # These use #include "func.def.in" for arch macros, so -I must point to
+    # our mingw-defs/ directory (NOT zig's def-include/).
+    _supp_defs="${RECIPE_DIR}/building/mingw-defs"
+    if [[ -d "${_supp_defs}" ]]; then
+      is_debug && echo "=== Processing supplemental mingw-w64 .def.in templates ==="
+      for _supp_in in "${_supp_defs}"/*.def.in; do
+        [[ -f "${_supp_in}" ]] || continue
+        _supp_stem="$(basename "${_supp_in%.def.in}")"
+        # Skip support files (included by other .def.in, not standalone libs)
+        case "${_supp_stem}" in
+          func|ucrtbase-common|crt-aliases) continue ;;
+        esac
+        _supp_lib="${_mingw_common}/lib${_supp_stem}.a"
+        [[ -f "${_supp_lib}" ]] && continue
+        _supp_def="${_mingw_common}/${_supp_stem}.def"
+        if [[ ! -f "${_supp_def}" ]]; then
+          "${zig}" cc -E -P \
+            -target "${_win_target}" \
+            -x assembler-with-cpp \
+            -I"${_supp_defs}" \
+            "${_supp_in}" 2>/dev/null > "${_supp_def}" || { rm -f "${_supp_def}"; continue; }
+        fi
+        _gen_implib "${_supp_stem}" "${_supp_def}"
+      done
+      # Also process plain .def files (no preprocessing needed)
+      for _supp_def in "${_supp_defs}"/*.def; do
+        [[ -f "${_supp_def}" ]] || continue
+        _supp_stem="$(basename "${_supp_def%.def}")"
+        _supp_lib="${_mingw_common}/lib${_supp_stem}.a"
+        [[ -f "${_supp_lib}" ]] && continue
+        _gen_implib "${_supp_stem}" "${_supp_def}"
+      done
+      is_debug && echo "=== Supplemental import libs done (total ${_gen_count}) ==="
+    fi
+
+    # Step 5: ARM64 intrinsic stubs (only for aarch64-windows-gnu).
+    # ___chkstk_ms (3 underscores on ARM64) -- stack probe called by MSVC ABI.
+    # __intrinsic_setjmpex -- setjmp variant used by MSVC exception handling.
+    # These are tiny asm/C stubs compiled into .o files in lib-common/.
+    if [[ "${_win_arch}" == "aarch64" ]]; then
+      is_debug && echo "=== Compiling ARM64 intrinsic stubs ==="
+
+      # ___chkstk_ms: ARM64 uses 3 underscores (not 2 like x86_64)
+      _chkstk_obj="${_mingw_common}/___chkstk_ms.o"
+      if [[ ! -f "${_chkstk_obj}" ]]; then
+        cat > "${_mingw_common}/_chkstk_ms_arm64.S" << 'CHKSTK_EOF'
+// ARM64 ___chkstk_ms stub -- probes stack pages for guard page support.
+// On ARM64, the ABI uses 3 underscores. This minimal stub just returns
+// (no-op probe), which is safe when stack size < guard page distance.
+    .text
+    .globl ___chkstk_ms
+    .def ___chkstk_ms; .scl 2; .type 32; .endef
+___chkstk_ms:
+    ret
+CHKSTK_EOF
+        "${zig}" cc -target "${_win_target}" -c \
+          "${_mingw_common}/_chkstk_ms_arm64.S" \
+          -o "${_chkstk_obj}" 2>/dev/null || true
+        rm -f "${_mingw_common}/_chkstk_ms_arm64.S"
+        is_debug && echo "=== Compiled ___chkstk_ms stub ==="
+      fi
+
+      # __intrinsic_setjmpex: setjmp variant for structured exception handling
+      _setjmpex_obj="${_mingw_common}/__intrinsic_setjmpex.o"
+      if [[ ! -f "${_setjmpex_obj}" ]]; then
+        cat > "${_mingw_common}/_setjmpex_arm64.c" << 'SETJMPEX_EOF'
+// Weak stub for __intrinsic_setjmpex on ARM64.
+// Real implementation is in the CRT; this provides a link-time fallback.
+typedef void *jmp_buf[32];
+__attribute__((weak))
+int __intrinsic_setjmpex(jmp_buf env, void *frame) {
+    (void)env;
+    (void)frame;
+    return 0;
+}
+SETJMPEX_EOF
+        "${zig}" cc -target "${_win_target}" -c \
+          "${_mingw_common}/_setjmpex_arm64.c" \
+          -o "${_setjmpex_obj}" 2>/dev/null || true
+        rm -f "${_mingw_common}/_setjmpex_arm64.c"
+        is_debug && echo "=== Compiled __intrinsic_setjmpex stub ==="
+      fi
+
+      # _fpreset: ARM64 has no x87 FPU — _fpreset is a no-op. The MinGW CRT
+      # objects (crt2.obj, libmingw32.lib) call _fpreset via BL instruction
+      # (IMAGE_REL_ARM64_BRANCH26), but lld-link cannot auto-import through
+      # branch relocations on ARM64. This static stub satisfies the symbol
+      # at link time without dllimport. Expected fix in zig 0.15.x/0.16.
+      _fpreset_obj="${_mingw_common}/_fpreset.o"
+      if [[ ! -f "${_fpreset_obj}" ]]; then
+        cat > "${_mingw_common}/_fpreset_arm64.c" << 'FPRESET_EOF'
+// _fpreset no-op stub for ARM64.
+// ARM64 has no x87 FPU — _fpreset is meaningless. Satisfies CRT refs
+// that use BL (BRANCH26), avoiding lld-link auto-import limitation.
+void _fpreset(void) {}
+FPRESET_EOF
+        "${zig}" cc -target "${_win_target}" -c \
+          "${_mingw_common}/_fpreset_arm64.c" \
+          -o "${_fpreset_obj}" 2>/dev/null || true
+        rm -f "${_mingw_common}/_fpreset_arm64.c"
+        is_debug && echo "=== Compiled _fpreset stub ==="
+      fi
+    fi
+
+    # Pre-compile Windows CRT startup objects for flexlink.
+    # flexlink explicitly links crt2.o (console exe), crt2win.o (GUI exe),
+    # and dllcrt2.o (DLL) as the first object file.  Zig compiles these
+    # internally, but flexlink searches for them on disk via -print-search-dirs
+    # paths.  Compile from zig's bundled MinGW CRT sources.
+    _mingw_crt="${_mingw_common}/../crt"
+    _mingw_inc="${_mingw_common}/../include"
+    _win_inc="${_zig_lib}/libc/include/any-windows-any"
+
+    if [[ -d "${_mingw_crt}" ]]; then
+      is_debug && echo "=== Compiling MinGW CRT startup objects from ${_mingw_crt} ==="
+      is_debug && echo "=== CRT sources: $(ls "${_mingw_crt}" | tr '\n' ' ') ==="
+
+      _crt_flags=(-target "${_win_target}" -mcpu=baseline
+                  -I"${_mingw_inc}" -I"${_win_inc}"
+                  -D_CRTIMP= -D__USE_MINGW_ACCESS -c)
+
+      # crt2.o — console application entry (main)
+      _crt2_obj="${_mingw_common}/crt2.o"
+      if [[ ! -f "${_crt2_obj}" ]] && [[ -f "${_mingw_crt}/crtexe.c" ]]; then
+        "${zig}" cc "${_crt_flags[@]}" \
+          "${_mingw_crt}/crtexe.c" -o "${_crt2_obj}" 2>&1 | \
+          { is_debug && cat || true; } && \
+          is_debug && echo "=== Compiled crt2.o ==" || true
+      fi
+
+      # crt2win.o — GUI application entry (WinMain)
+      _crt2win_obj="${_mingw_common}/crt2win.o"
+      if [[ ! -f "${_crt2win_obj}" ]] && [[ -f "${_mingw_crt}/crtexewin.c" ]]; then
+        "${zig}" cc "${_crt_flags[@]}" -D_WINDOWS \
+          "${_mingw_crt}/crtexewin.c" -o "${_crt2win_obj}" 2>&1 | \
+          { is_debug && cat || true; } && \
+          is_debug && echo "=== Compiled crt2win.o ===" || true
+      fi
+
+      # dllcrt2.o — DLL entry (DllMain)
+      _dllcrt2_obj="${_mingw_common}/dllcrt2.o"
+      if [[ ! -f "${_dllcrt2_obj}" ]] && [[ -f "${_mingw_crt}/crtdll.c" ]]; then
+        "${zig}" cc "${_crt_flags[@]}" \
+          "${_mingw_crt}/crtdll.c" -o "${_dllcrt2_obj}" 2>&1 | \
+          { is_debug && cat || true; } && \
+          is_debug && echo "=== Compiled dllcrt2.o ===" || true
+      fi
+    else
+      is_debug && echo "=== MinGW CRT sources not found at ${_mingw_crt} ==="
+    fi
+
+  else
+    is_debug && echo "=== llvm-dlltool or zig not found; skipping import lib pre-generation ==="
+  fi
 fi
 
 # On Windows, zig-llvm produces MinGW-style import libs with .dll.a extension
@@ -516,6 +1077,23 @@ if is_not_unix; then
   if [[ -f "${ZIG_LLVM_ROOT}/lib/libc++.a" ]]; then
     cp "${ZIG_LLVM_ROOT}/lib/libc++.a" "${ZIG_LLVM_ROOT}/lib/liblibc++.a"
     echo "  liblibc++.a <- libc++.a (double-prefix alias for link_libcpp)"
+  fi
+  # libxml2 lives in PREFIX (host env, not zig-llvm/lib). zig's gnu-target linker
+  # searches for xml2.dll/xml2.lib/libxml2.a (no 'lib' prefix on the .dll/.lib).
+  # Copy whatever libxml2 ships (MinGW .dll.a or MSVC .lib) into zig-llvm/lib
+  # under the names zig expects.
+  _libxml2_src=""
+  for _xml2_cand in \
+    "${PREFIX}/${_library}lib/libxml2.dll.a" \
+    "${PREFIX}/${_library}lib/libxml2.lib"; do
+    [[ -f "${_xml2_cand}" ]] && _libxml2_src="${_xml2_cand}" && break
+  done
+  if [[ -n "${_libxml2_src}" ]]; then
+    cp "${_libxml2_src}" "${ZIG_LLVM_ROOT}/lib/libxml2.a"
+    cp "${_libxml2_src}" "${ZIG_LLVM_ROOT}/lib/xml2.lib"
+    echo "  libxml2.a + xml2.lib <- $(basename "${_libxml2_src}")"
+  else
+    echo "  WARNING: libxml2 import lib not found in ${PREFIX}/${_library}lib/ — zig-zig link may fail on -lxml2"
   fi
 fi
 
@@ -568,7 +1146,7 @@ else
 
   if is_linux; then
     CMAKE_PATCHES+=(
-      0001-linux-maxrss-CMakeLists.txt.patch
+      CMakeLists.txt-01-linux-maxrss.patch
       0002-linux-pthread-atfork-stub-zig2-CMakeLists.txt.patch
       0004-linux-link-zlib-zstd-zig2-CMakeLists.txt.patch
     )
@@ -578,6 +1156,10 @@ else
       export ZIG_CROSS_TARGET_TRIPLE="${ZIG_TRIPLET}"
       export ZIG_CROSS_TARGET_MCPU="baseline"
     fi
+  elif is_osx; then
+    CMAKE_PATCHES+=(
+      0006-osx-link-lldzig-zig2-CMakeLists.txt.patch
+    )
   fi
   if is_not_unix; then
     _version=$(ls -1v "${VSINSTALLDIR}/VC/Tools/MSVC" | tail -n 1)
@@ -641,7 +1223,7 @@ if is_osx; then
     _dep_base=$(basename "${_dep}")
     case "${_dep_base}" in
       # Match LLVM/libc++ refs regardless of prefix (@rpath/, @loader_path/, or bare name)
-      libLLVM*|libclang*|libc++*|libunwind*)
+      libLLVM*|libclang*|libc++*|libunwind*|liblldZig*)
         _new="${_zig_llvm_rel}/${_dep_base}"
         # Only rewrite if this dylib exists in zig-llvm and isn't already correct
         if [[ "${_dep}" != "${_new}" ]] && { [[ -f "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]] || [[ -L "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]]; }; then
@@ -654,7 +1236,7 @@ if is_osx; then
 
   # Verify: no @rpath or bare-name refs to zig-llvm libraries remain
   echo "=== Verifying zig binary dylib isolation (macOS) ==="
-  _bad_refs=$(otool -L "${_zig_bin}" 2>/dev/null | awk '{print $1}' | grep -E '^(@rpath/|@loader_path/[^.])?(libLLVM|libclang|libc\+\+|libunwind)' | grep -v '@loader_path/../lib/zig-llvm/lib/' || true)
+  _bad_refs=$(otool -L "${_zig_bin}" 2>/dev/null | awk '{print $1}' | grep -E '^(@rpath/|@loader_path/[^.])?(libLLVM|libclang|libc\+\+|libunwind|liblldZig)' | grep -v '@loader_path/../lib/zig-llvm/lib/' || true)
   if [[ -n "${_bad_refs}" ]]; then
     echo "ERROR: zig binary still has non-isolated refs to zig-llvm libraries:"
     echo "${_bad_refs}" | sed 's/^/  /'
@@ -698,24 +1280,34 @@ if is_not_unix; then
   echo "=== Creating DLL isolation wrapper (Windows) ==="
   _zig_bin="${PREFIX}/Library/bin"
   _shim_c="${RECIPE_DIR}/building/zig_dll_shim.c"
+  # MSYS2 bash strips the inner escaped quotes from -DREAL_EXE_NAME="\"...\""
+  # so the preprocessor sees bare identifiers with hyphens. Inject via -include
+  # of a generated header instead.
+  _shim_hdr="${SRC_DIR}/shim_name.h"
   for _exe in "${_zig_bin}/"*-zig.exe; do
     [[ ! -f "${_exe}" ]] && continue
     _base=$(basename "${_exe}" .exe)
     mv "${_exe}" "${_zig_bin}/${_base}.real.exe"
     echo "  Compiling shim: ${_base}.exe -> ${_base}.real.exe"
+    printf '#define REAL_EXE_NAME "%s.real.exe"\n' "${_base}" > "${_shim_hdr}"
     "${zig}" cc -target x86_64-windows-gnu \
-      -DREAL_EXE_NAME="\"${_base}.real.exe\"" \
+      -include "${_shim_hdr}" \
       -o "${_zig_bin}/${_base}.exe" "${_shim_c}" \
       -lkernel32 -lshell32 || {
         echo "ERROR: Failed to compile DLL shim for ${_base}"
         echo "  Restoring original exe"
         mv "${_zig_bin}/${_base}.real.exe" "${_exe}"
+        rm -f "${_shim_hdr}"
         exit 1
       }
     echo "  ${_base}.exe (shim) -> ${_base}.real.exe (DLL path: zig-llvm/bin)"
   done
-  # Clean .pdb from shim compilation
-  ls "${_zig_bin}"/*.pdb
+  rm -f "${_shim_hdr}"
+  # Clean .pdb from shim compilation. MinGW-target zig cc builds typically
+  # don't emit .pdb files (PDB is an MSVC/PE debug format) so the glob may
+  # not match anything -- guard with || true like the check below, since
+  # set -e would otherwise abort the whole script on a no-match ls.
+  ls "${_zig_bin}"/*.pdb || true
   rm -f "${_zig_bin}"/*.pdb
   ls "${_zig_bin}"/*.pdb || true
 fi
@@ -723,6 +1315,8 @@ fi
 # Clean up build-time artifacts from zig-llvm that shouldn't be in the final package.
 # The .a aliases were created for zig's gnu-target linker; the .dll.a originals
 # remain (they're part of zig-llvm). llvm-config.exe is only needed during cmake.
+# liblldZig.a and xml2.lib were staged for link-time use; installed binary uses
+# the DLL at runtime, so remove them to satisfy package_contents: strict.
 if is_not_unix; then
   echo "=== Cleaning build-time artifacts from zig-llvm ==="
   for _a in "${ZIG_LLVM_ROOT}/lib/"*.a; do
@@ -734,6 +1328,312 @@ if is_not_unix; then
     rm -v "${_a}"
   done
   rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config"
+  # Clean up build-time-only staging files (link inputs); installed binary
+  # uses the DLL at runtime, not these .a/.lib copies. Avoids package_contents
+  # strict-mode rejection for zig-zig_impl.
+  rm -f "${ZIG_LLVM_ROOT}/lib/liblldZig.a"
+  rm -f "${ZIG_LLVM_ROOT}/lib/xml2.lib"
+fi
+
+# Workaround for ziglang/zig#14919: add synchronization.def so zig can generate
+# libsynchronization.a when cross-compiling to Windows (e.g. OCaml BYTECCLIBS uses -lsynchronization).
+# IMPORTANT: LIBRARY must be api-ms-win-core-synch-l1-2-0.dll, NOT synchronization.dll.
+# "synchronization.dll" is neither a real DLL on disk nor a valid API Set Schema name — it doesn't
+# exist as a physical file in Windows or MSYS2. The real MinGW-w64 alias points to
+# libapi-ms-win-core-synch-l1-2-0.a, whose LIBRARY directive is api-ms-win-core-synch-l1-2-0.dll.
+# Windows API Set Schema resolves api-ms-win-* names to the actual host DLL at runtime.
+if is_not_unix; then
+  _zig_lib="${PREFIX}/Library/lib/zig"
+  _mingw_common="${_zig_lib}/libc/mingw/lib-common"
+else
+  _zig_lib="${PREFIX}/lib/zig"
+  _mingw_common="${_zig_lib}/libc/mingw/lib-common"
+fi
+if [[ -d "${_mingw_common}" ]]; then
+  cat > "${_mingw_common}/synchronization.def" << 'SYNCHRONIZATION_DEF'
+LIBRARY api-ms-win-core-synch-l1-2-0.dll
+
+EXPORTS
+
+DeleteSynchronizationBarrier
+EnterSynchronizationBarrier
+InitializeConditionVariable
+InitializeSynchronizationBarrier
+InitOnceBeginInitialize
+InitOnceComplete
+InitOnceExecuteOnce
+InitOnceInitialize
+SignalObjectAndWait
+Sleep
+SleepConditionVariableCS
+SleepConditionVariableSRW
+WaitOnAddress
+WakeAllConditionVariable
+WakeByAddressAll
+WakeByAddressSingle
+WakeConditionVariable
+SYNCHRONIZATION_DEF
+fi
+
+# Pre-generate Windows PE import libraries (.a) from zig's MinGW .def/.def.in files.
+# flexlink (OCaml's Windows linker) calls -print-search-dirs to find library
+# search paths, then looks for libXXX.a files at those paths.  zig generates
+# import libs internally at link time (cached in ~/.cache/zig/), but flexlink
+# needs them at a fixed, known location.
+#
+# Two types of source files exist in lib-common/:
+#   .def     — ready to use directly with dlltool (e.g. shlwapi.def)
+#   .def.in  — C preprocessor templates that conditionally include exports by
+#              architecture using macros from def-include/func.def.in
+#              (e.g. kernel32.def.in, ws2_32.def.in, ole32.def.in)
+#
+# uuid is special: compiled from C source (no DLL import lib needed).
+# Only generates files that are missing; safe to re-run.
+#
+# Target arch detection for dlltool machine type and zig cc -target.
+# ZIG_TRIPLET is e.g. "x86_64-windows-gnu" or "aarch64-windows-gnu".
+_win_arch="${ZIG_TRIPLET%%-*}"
+case "${_win_arch}" in
+  x86_64)       _dlltool_machine="i386:x86-64"; _win_target="x86_64-windows-gnu" ;;
+  aarch64)      _dlltool_machine="arm64";        _win_target="aarch64-windows-gnu" ;;
+  *)            _dlltool_machine="i386:x86-64"; _win_target="x86_64-windows-gnu"
+                echo "WARN: unknown Windows arch '${_win_arch}', defaulting to x86_64" ;;
+esac
+if [[ -d "${_mingw_common}" ]]; then
+  _zig_bin="${zig}"
+  _def_include="${_mingw_common}/../def-include"
+  _mingw_libsrc="${_mingw_common}/../libsrc"
+
+  _dlltool=""
+  for _cand in \
+      "${ZIG_LLVM_ROOT}/bin/llvm-dlltool" \
+      "${ZIG_LLVM_ROOT}/bin/llvm-dlltool.exe" \
+      "${BUILD_PREFIX}/bin/llvm-dlltool" \
+      "${BUILD_PREFIX}/bin/llvm-dlltool.exe" \
+      "${BUILD_PREFIX}/Library/bin/llvm-dlltool.exe" \
+      "${BUILD_PREFIX}/Library/bin/llvm-dlltool" \
+      "$(command -v llvm-dlltool 2>/dev/null || true)"; do
+    if [[ -x "${_cand}" ]]; then
+      _dlltool="${_cand}"
+      break
+    fi
+  done
+
+  is_debug && echo "=== MinGW import lib generation: zig=${_zig_bin} dlltool=${_dlltool:-not found} ==="
+  if [[ -n "${_dlltool}" ]] && [[ -x "${_zig_bin}" ]]; then
+    is_debug && echo "=== Generating MinGW import libs (dlltool=${_dlltool}) ==="
+    _gen_count=0
+
+    # Helper: generate .a from a processed .def file
+    _gen_implib() {
+      local stem="$1" def="$2"
+      local lib="${_mingw_common}/lib${stem}.a"
+      [[ -f "${lib}" ]] && return 0
+      local dll
+      dll="$(awk '/^LIBRARY/{gsub(/"/, "", $2); print $2; exit}' "${def}")"
+      [[ -z "${dll}" ]] && dll="${stem}.dll"
+      "${_dlltool}" -m "${_dlltool_machine}" -D "${dll}" -d "${def}" -l "${lib}" 2>/dev/null || true
+      _gen_count=$(( _gen_count + 1 ))
+    }
+
+    # Step 1: plain .def files (shlwapi.def, version.def, synchronization.def, etc.)
+    for _def in "${_mingw_common}"/*.def; do
+      [[ -f "${_def}" ]] || continue
+      _stem="$(basename "${_def%.def}")"
+      _gen_implib "${_stem}" "${_def}"
+    done
+
+    # Step 2: .def.in template files (ws2_32, kernel32, ole32, advapi32, user32, ...)
+    # Process through zig's C preprocessor with x86_64 defines so architecture
+    # macros (F_X64, F_I386, F64, F32, etc.) expand correctly.
+    for _def_in in "${_mingw_common}"/*.def.in; do
+      [[ -f "${_def_in}" ]] || continue
+      _stem="$(basename "${_def_in%.def.in}")"
+      _lib="${_mingw_common}/lib${_stem}.a"
+      [[ -f "${_lib}" ]] && continue
+      _def="${_mingw_common}/${_stem}.def"
+      if [[ ! -f "${_def}" ]]; then
+        "${_zig_bin}" cc -E -P \
+          -target "${_win_target}" \
+          -x assembler-with-cpp \
+          -I"${_def_include}" \
+          "${_def_in}" 2>/dev/null > "${_def}" || { rm -f "${_def}"; continue; }
+      fi
+      _gen_implib "${_stem}" "${_def}"
+    done
+
+    # Step 3: uuid — compiled from C source (no DLL, no import lib needed).
+    # zig compiles libsrc/uuid.c into a static archive.
+    _uuid_lib="${_mingw_common}/libuuid.a"
+    _uuid_src="${_mingw_libsrc}/uuid.c"
+    if [[ ! -f "${_uuid_lib}" ]] && [[ -f "${_uuid_src}" ]]; then
+      _uuid_obj="${_mingw_common}/_uuid.o"
+      "${_zig_bin}" cc -target "${_win_target}" -c "${_uuid_src}" \
+          -o "${_uuid_obj}" 2>/dev/null && \
+        "${_zig_bin}" ar rcs "${_uuid_lib}" "${_uuid_obj}" 2>/dev/null || true
+      rm -f "${_uuid_obj}"
+      _gen_count=$(( _gen_count + 1 ))
+    fi
+
+    is_debug && echo "=== Generated ${_gen_count} import libs in ${_mingw_common} ==="
+
+    # Step 4: Supplemental import libs from mingw-w64 .def.in templates.
+    # Zig doesn't ship msvcrt.def or ucrtbase.def -- we provide complete
+    # mingw-w64 versions that cover all exports (stdio, math, POSIX I/O, etc.).
+    # These use #include "func.def.in" for arch macros, so -I must point to
+    # our mingw-defs/ directory (NOT zig's def-include/).
+    _supp_defs="${RECIPE_DIR}/building/mingw-defs"
+    if [[ -d "${_supp_defs}" ]]; then
+      is_debug && echo "=== Processing supplemental mingw-w64 .def.in templates ==="
+      for _supp_in in "${_supp_defs}"/*.def.in; do
+        [[ -f "${_supp_in}" ]] || continue
+        _supp_stem="$(basename "${_supp_in%.def.in}")"
+        # Skip support files (included by other .def.in, not standalone libs)
+        case "${_supp_stem}" in
+          func|ucrtbase-common|crt-aliases) continue ;;
+        esac
+        _supp_lib="${_mingw_common}/lib${_supp_stem}.a"
+        [[ -f "${_supp_lib}" ]] && continue
+        _supp_def="${_mingw_common}/${_supp_stem}.def"
+        if [[ ! -f "${_supp_def}" ]]; then
+          "${_zig_bin}" cc -E -P \
+            -target "${_win_target}" \
+            -x assembler-with-cpp \
+            -I"${_supp_defs}" \
+            "${_supp_in}" 2>/dev/null > "${_supp_def}" || { rm -f "${_supp_def}"; continue; }
+        fi
+        _gen_implib "${_supp_stem}" "${_supp_def}"
+      done
+      # Also process plain .def files (no preprocessing needed)
+      for _supp_def in "${_supp_defs}"/*.def; do
+        [[ -f "${_supp_def}" ]] || continue
+        _supp_stem="$(basename "${_supp_def%.def}")"
+        _supp_lib="${_mingw_common}/lib${_supp_stem}.a"
+        [[ -f "${_supp_lib}" ]] && continue
+        _gen_implib "${_supp_stem}" "${_supp_def}"
+      done
+      is_debug && echo "=== Supplemental import libs done (total ${_gen_count}) ==="
+    fi
+
+    # Step 5: ARM64 intrinsic stubs (only for aarch64-windows-gnu).
+    # ___chkstk_ms (3 underscores on ARM64) -- stack probe called by MSVC ABI.
+    # __intrinsic_setjmpex -- setjmp variant used by MSVC exception handling.
+    # These are tiny asm/C stubs compiled into .o files in lib-common/.
+    if [[ "${_win_arch}" == "aarch64" ]]; then
+      is_debug && echo "=== Compiling ARM64 intrinsic stubs ==="
+
+      # ___chkstk_ms: ARM64 uses 3 underscores (not 2 like x86_64)
+      _chkstk_obj="${_mingw_common}/___chkstk_ms.o"
+      if [[ ! -f "${_chkstk_obj}" ]]; then
+        cat > "${_mingw_common}/_chkstk_ms_arm64.S" << 'CHKSTK_EOF'
+// ARM64 ___chkstk_ms stub -- probes stack pages for guard page support.
+// On ARM64, the ABI uses 3 underscores. This minimal stub just returns
+// (no-op probe), which is safe when stack size < guard page distance.
+    .text
+    .globl ___chkstk_ms
+    .def ___chkstk_ms; .scl 2; .type 32; .endef
+___chkstk_ms:
+    ret
+CHKSTK_EOF
+        "${_zig_bin}" cc -target "${_win_target}" -c \
+          "${_mingw_common}/_chkstk_ms_arm64.S" \
+          -o "${_chkstk_obj}" 2>/dev/null || true
+        rm -f "${_mingw_common}/_chkstk_ms_arm64.S"
+        is_debug && echo "=== Compiled ___chkstk_ms stub ==="
+      fi
+
+      # __intrinsic_setjmpex: setjmp variant for structured exception handling
+      _setjmpex_obj="${_mingw_common}/__intrinsic_setjmpex.o"
+      if [[ ! -f "${_setjmpex_obj}" ]]; then
+        cat > "${_mingw_common}/_setjmpex_arm64.c" << 'SETJMPEX_EOF'
+// Weak stub for __intrinsic_setjmpex on ARM64.
+// Real implementation is in the CRT; this provides a link-time fallback.
+typedef void *jmp_buf[32];
+__attribute__((weak))
+int __intrinsic_setjmpex(jmp_buf env, void *frame) {
+    (void)env;
+    (void)frame;
+    return 0;
+}
+SETJMPEX_EOF
+        "${_zig_bin}" cc -target "${_win_target}" -c \
+          "${_mingw_common}/_setjmpex_arm64.c" \
+          -o "${_setjmpex_obj}" 2>/dev/null || true
+        rm -f "${_mingw_common}/_setjmpex_arm64.c"
+        is_debug && echo "=== Compiled __intrinsic_setjmpex stub ==="
+      fi
+
+      # _fpreset: ARM64 has no x87 FPU — _fpreset is a no-op. The MinGW CRT
+      # objects (crt2.obj, libmingw32.lib) call _fpreset via BL instruction
+      # (IMAGE_REL_ARM64_BRANCH26), but lld-link cannot auto-import through
+      # branch relocations on ARM64. This static stub satisfies the symbol
+      # at link time without dllimport. Expected fix in zig 0.15.x/0.16.
+      _fpreset_obj="${_mingw_common}/_fpreset.o"
+      if [[ ! -f "${_fpreset_obj}" ]]; then
+        cat > "${_mingw_common}/_fpreset_arm64.c" << 'FPRESET_EOF'
+// _fpreset no-op stub for ARM64.
+// ARM64 has no x87 FPU — _fpreset is meaningless. Satisfies CRT refs
+// that use BL (BRANCH26), avoiding lld-link auto-import limitation.
+void _fpreset(void) {}
+FPRESET_EOF
+        "${_zig_bin}" cc -target "${_win_target}" -c \
+          "${_mingw_common}/_fpreset_arm64.c" \
+          -o "${_fpreset_obj}" 2>/dev/null || true
+        rm -f "${_mingw_common}/_fpreset_arm64.c"
+        is_debug && echo "=== Compiled _fpreset stub ==="
+      fi
+    fi
+
+    # Pre-compile Windows CRT startup objects for flexlink.
+    # flexlink explicitly links crt2.o (console exe), crt2win.o (GUI exe),
+    # and dllcrt2.o (DLL) as the first object file.  Zig compiles these
+    # internally, but flexlink searches for them on disk via -print-search-dirs
+    # paths.  Compile from zig's bundled MinGW CRT sources.
+    _mingw_crt="${_mingw_common}/../crt"
+    _mingw_inc="${_mingw_common}/../include"
+    _win_inc="${_zig_lib}/libc/include/any-windows-any"
+
+    if [[ -d "${_mingw_crt}" ]]; then
+      is_debug && echo "=== Compiling MinGW CRT startup objects from ${_mingw_crt} ==="
+      is_debug && echo "=== CRT sources: $(ls "${_mingw_crt}" | tr '\n' ' ') ==="
+
+      _crt_flags=(-target "${_win_target}" -mcpu=baseline
+                  -I"${_mingw_inc}" -I"${_win_inc}"
+                  -D_CRTIMP= -D__USE_MINGW_ACCESS -c)
+
+      # crt2.o — console application entry (main)
+      _crt2_obj="${_mingw_common}/crt2.o"
+      if [[ ! -f "${_crt2_obj}" ]] && [[ -f "${_mingw_crt}/crtexe.c" ]]; then
+        "${_zig_bin}" cc "${_crt_flags[@]}" \
+          "${_mingw_crt}/crtexe.c" -o "${_crt2_obj}" 2>&1 | \
+          { is_debug && cat || true; } && \
+          is_debug && echo "=== Compiled crt2.o ==" || true
+      fi
+
+      # crt2win.o — GUI application entry (WinMain)
+      _crt2win_obj="${_mingw_common}/crt2win.o"
+      if [[ ! -f "${_crt2win_obj}" ]] && [[ -f "${_mingw_crt}/crtexewin.c" ]]; then
+        "${_zig_bin}" cc "${_crt_flags[@]}" -D_WINDOWS \
+          "${_mingw_crt}/crtexewin.c" -o "${_crt2win_obj}" 2>&1 | \
+          { is_debug && cat || true; } && \
+          is_debug && echo "=== Compiled crt2win.o ===" || true
+      fi
+
+      # dllcrt2.o — DLL entry (DllMain)
+      _dllcrt2_obj="${_mingw_common}/dllcrt2.o"
+      if [[ ! -f "${_dllcrt2_obj}" ]] && [[ -f "${_mingw_crt}/crtdll.c" ]]; then
+        "${_zig_bin}" cc "${_crt_flags[@]}" \
+          "${_mingw_crt}/crtdll.c" -o "${_dllcrt2_obj}" 2>&1 | \
+          { is_debug && cat || true; } && \
+          is_debug && echo "=== Compiled dllcrt2.o ===" || true
+      fi
+    else
+      is_debug && echo "=== MinGW CRT sources not found at ${_mingw_crt} ==="
+    fi
+
+  else
+    is_debug && echo "=== llvm-dlltool or zig not found; skipping import lib pre-generation ==="
+  fi
 fi
 
 echo "=== Build installed for package: ${PKG_NAME} ==="

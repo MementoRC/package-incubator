@@ -4,8 +4,10 @@ function create_pthread_atfork_stub() {
   # (x86_64 glibc 2.28 has it, but PowerPC64LE and aarch64 don't)
 
   local arch_name="${1}"
-  local cc_compiler="${2}"
+  local cc_compiler="${2}"   # unused; kept for call-site back-compat
   local output_dir="${3:-${SRC_DIR}}"
+  local zig_triplet="${4:-}"
+  local zig_bin="${5:-}"
 
   echo "=== Creating pthread_atfork stub for glibc 2.28 ${arch_name} ==="
 
@@ -23,7 +25,7 @@ int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(vo
 }
 EOF
 
-  "${cc_compiler}" -c "${output_dir}/pthread_atfork_stub.c" -o "${output_dir}/pthread_atfork_stub.o" || {
+  "${zig_bin}" cc -target "${zig_triplet}" -c "${output_dir}/pthread_atfork_stub.c" -o "${output_dir}/pthread_atfork_stub.o" || {
     echo "ERROR: Failed to compile pthread_atfork stub" >&2
     return 1
   }
@@ -34,4 +36,42 @@ EOF
   fi
 
   echo "=== pthread_atfork stub created: ${output_dir}/pthread_atfork_stub.o ==="
+}
+
+function create_libc_single_threaded_stub() {
+  # Create __libc_single_threaded stub for cross-compiler builds targeting glibc < 2.32
+  # GCC 15+ libstdc++/zigcpp references __libc_single_threaded (added in glibc 2.32).
+  # When targeting gnu.2.17 or similar, the symbol is missing at link time.
+  #
+  # Declared as 'char' in <sys/single_threaded.h> (not bool).
+  # Value 0 = multi-threaded (conservative/safe default for a stub).
+
+  local arch_name="${1}"
+  local cc_compiler="${2}"   # unused; kept for call-site back-compat
+  local output_dir="${3:-${SRC_DIR}}"
+  local zig_triplet="${4:-}"
+  local zig_bin="${5:-}"
+
+  echo "=== Creating __libc_single_threaded stub for ${arch_name} ==="
+
+  cat > "${output_dir}/libc_single_threaded_stub.c" << 'EOF'
+// Weak stub for __libc_single_threaded when targeting glibc < 2.32
+// glibc 2.32 introduced this symbol; GCC 15 libstdc++ references it.
+// Value 0 = multi-threaded (safe conservative default).
+__attribute__((weak))
+char __libc_single_threaded = 0;
+EOF
+
+  "${zig_bin}" cc -target "${zig_triplet}" -c "${output_dir}/libc_single_threaded_stub.c" -o "${output_dir}/libc_single_threaded_stub.o" || {
+    echo "ERROR: Failed to compile __libc_single_threaded stub" >&2
+    return 1
+  }
+
+  if [[ ! -f "${output_dir}/libc_single_threaded_stub.o" ]]; then
+    echo "ERROR: libc_single_threaded_stub.o was not created" >&2
+    return 1
+  fi
+
+  echo "=== __libc_single_threaded stub created: ${output_dir}/libc_single_threaded_stub.o ==="
+  return 0
 }
