@@ -348,6 +348,53 @@ fi
 
 
 echo "=== Building LLVM ==="
+# Verify a Windows import lib (.dll.a) actually exports the expected symbols
+# after strip_atexit_from_implib() surgery. Without this, a broken import lib
+# wastes the remainder of the build before failing with undefined-symbol
+# errors much later (e.g. in the zig-zig_impl build).
+#
+# Args: $1 = implib path, $2 = human-readable lib name (for messages),
+#       $3 = minimum total symbol count threshold, $4.. = expected symbol names.
+_verify_implib_exports() {
+  local _implib="$1"
+  local _lib_name="$2"
+  local _min_nsyms="$3"
+  shift 3
+  local _expected_syms=("$@")
+
+  # Use direct pipe (strings | grep -q) to avoid storing large symbol sets in
+  # bash variables — MSYS2 echo truncates large variables, causing false failures.
+  { set +x; } 2>/dev/null
+  local _fail=0
+  local _check_sym
+  for _check_sym in "${_expected_syms[@]}"; do
+    if strings -a "${_implib}" 2>/dev/null | grep -q "${_check_sym}"; then
+      echo "    OK: ${_check_sym} found"
+    else
+      echo "    FAIL: ${_check_sym} NOT found in ${_lib_name}"
+      _fail=1
+    fi
+  done
+
+  # Count total symbol-like strings (approximate, for logging).
+  # Exposed as _verify_implib_nsyms (not local) so callers can reference the
+  # count in their own diagnostic/success messages, matching prior behavior.
+  _verify_implib_nsyms=$(strings -a "${_implib}" 2>/dev/null \
+    | grep -cxE '[_A-Za-z?@][_A-Za-z0-9?@$]*' || echo 0)
+  local _nsyms="${_verify_implib_nsyms}"
+  echo "    Total symbols in ${_lib_name}: ${_nsyms}"
+  if [[ "${_nsyms}" -lt "${_min_nsyms}" ]]; then
+    echo "    FAIL: expected ${_min_nsyms}+ symbols, got ${_nsyms}"
+    _fail=1
+  fi
+  set -x
+
+  if [[ "${_fail}" -ne 0 ]]; then
+    return 1
+  fi
+  return 0
+}
+
 if is_not_unix; then
   # Two-phase build on Windows:
   # Phase 1: Build libLLVM.dll (patch 0004 adds --export-all-symbols for data symbols)
@@ -626,33 +673,12 @@ EOF
     # Use direct pipe (strings | grep -q) to avoid storing ~8 MB of symbols in a
     # bash variable — MSYS2 echo truncates large variables, causing false failures.
     echo "  Phase 1.5b: Quick-fail verification of libLLVM.dll.a exports..."
-    { set +x; } 2>/dev/null
-    _llvm_fail=0
-    for _check_sym in ErrorInfoBase LLVMInitialize; do
-      if strings -a "${_implib}" 2>/dev/null | grep -q "${_check_sym}"; then
-        echo "    OK: ${_check_sym} found"
-      else
-        echo "    FAIL: ${_check_sym} NOT found in libLLVM.dll.a"
-        _llvm_fail=1
-      fi
-    done
-
-    # Count total symbol-like strings (approximate, for logging)
-    _llvm_nsyms=$(strings -a "${_implib}" 2>/dev/null \
-      | grep -cxE '[_A-Za-z?@][_A-Za-z0-9?@$]*' || echo 0)
-    echo "    Total symbols in libLLVM.dll.a: ${_llvm_nsyms}"
-    if [[ "${_llvm_nsyms}" -lt 5000 ]]; then
-      echo "    FAIL: expected 5000+ symbols, got ${_llvm_nsyms}"
-      _llvm_fail=1
-    fi
-    set -x
-
-    if [[ "${_llvm_fail}" -ne 0 ]]; then
+    if ! _verify_implib_exports "${_implib}" "libLLVM.dll.a" 5000 ErrorInfoBase LLVMInitialize; then
       echo "  ERROR: libLLVM.dll.a is missing critical symbols!"
       echo "  strip_atexit_from_implib may have discarded members, or --export-all-symbols is missing."
       exit 1
     fi
-    echo "  OK: libLLVM.dll.a verified (${_llvm_nsyms} symbols, all critical present)"
+    echo "  OK: libLLVM.dll.a verified (${_verify_implib_nsyms} symbols, all critical present)"
   else
     echo "  WARNING: import lib not found — skipping Phase 1.5"
   fi
@@ -700,32 +726,9 @@ EOF
       fi
       exit 1
     fi
-    # Use direct pipe (strings | grep -q) to avoid storing large symbol sets in bash
-    # variables — MSYS2 echo truncates large variables, causing false failures.
-    { set +x; } 2>/dev/null
-    _clang_fail=0
-    # Check critical zig-required symbols
-    for _check_sym in SourceManager CompilerInstance ASTContext; do
-      if strings -a "${_clang_implib}" 2>/dev/null | grep -q "${_check_sym}"; then
-        echo "    OK: ${_check_sym} found"
-      else
-        echo "    FAIL: ${_check_sym} NOT found in libclang-cpp.dll.a"
-        _clang_fail=1
-      fi
-    done
-
     # Minimum symbol count — libclang-cpp exports thousands of C++ symbols.
     # If we have < 1000, something went very wrong (visibility, ar d, etc.)
-    _clang_nsyms=$(strings -a "${_clang_implib}" 2>/dev/null \
-      | grep -cxE '[_A-Za-z?@][_A-Za-z0-9?@$]*' || echo 0)
-    echo "    Total symbols in libclang-cpp.dll.a: ${_clang_nsyms}"
-    if [[ "${_clang_nsyms}" -lt 1000 ]]; then
-      echo "    FAIL: expected 1000+ symbols, got ${_clang_nsyms}"
-      _clang_fail=1
-    fi
-    set -x
-
-    if [[ "${_clang_fail}" -ne 0 ]]; then
+    if ! _verify_implib_exports "${_clang_implib}" "libclang-cpp.dll.a" 1000 SourceManager CompilerInstance ASTContext; then
       echo "  ERROR: libclang-cpp.dll.a is missing critical symbols!"
       echo "  This would cause 104+ undefined symbol errors in zig-zig_impl build."
       # Show DLL size for diagnosis
@@ -737,14 +740,14 @@ EOF
           | grep -c ' [TDBCV] ' || echo 0)
         echo "  libclang-cpp.dll exported symbols (nm): ${_clang_dll_sym_nsyms}"
       fi
-      echo "  libclang-cpp.dll.a size: ${_clang_implib_size} bytes, symbols: ${_clang_nsyms}"
+      echo "  libclang-cpp.dll.a size: ${_clang_implib_size} bytes, symbols: ${_verify_implib_nsyms}"
       echo "  Likely causes:"
       echo "    - -fvisibility=default not reaching clang compilation"
       echo "    - --export-all-symbols not in libclang-cpp link command"
       echo "    - strip_atexit_from_implib discarded members (ar d removed too much)"
       exit 1
     fi
-    echo "  OK: libclang-cpp.dll.a verified (${_clang_nsyms} symbols, all critical present)"
+    echo "  OK: libclang-cpp.dll.a verified (${_verify_implib_nsyms} symbols, all critical present)"
   fi
 elif is_osx; then
   # Two-phase build on macOS: build libLLVM.dylib first, check symbol exports,
