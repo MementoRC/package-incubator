@@ -2,11 +2,8 @@
 # Used by both the fast-fail stub test AND the real Phase 1.5.
 # Any bug here surfaces in ~5 s (stub) instead of ~90 min (post-build).
 #
-# Usage: strip_atexit_from_implib <implib_path> <zig_bin> [dll_fallback] [machine]
+# Usage: strip_atexit_from_implib <implib_path>
 #   implib_path : path to .dll.a to clean in-place
-#   zig_bin     : (unused, kept for backward compatibility)
-#   dll_fallback: (unused, kept for backward compatibility)
-#   machine     : (unused, kept for backward compatibility)
 #
 # Returns 0 on success (or if no atexit found), 1 on failure.
 #
@@ -21,9 +18,6 @@
 #   Direct binary manipulation is the only reliable approach.
 strip_atexit_from_implib() {
   local _implib="$1"
-  local _zig_bin="$2"          # kept for backward compatibility, unused
-  local _dll_fallback="${3:-libLLVM-20}"  # kept for backward compatibility, unused
-  local _machine="${4:-}"                  # kept for backward compatibility, unused
   local _dir _bak
 
   _dir=$(dirname "${_implib}")

@@ -611,17 +611,9 @@ EOF
   _implib=$(find "${LLVM_BUILD}" \( -name 'libLLVM*.dll.a' -o -name 'LLVM*.dll.a' \) 2>/dev/null | awk 'NR==1')
   _zig_bin="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
 
-  # Determine dlltool machine type for cross-compilation (x64 host → arm64 target)
-  _dlltool_machine=""
-  if [[ "${ZIG_TRIPLET}" == aarch64-* ]]; then
-    _dlltool_machine="arm64"
-  elif [[ "${ZIG_TRIPLET}" == x86_64-* ]]; then
-    _dlltool_machine="i386:x86-64"
-  fi
-
   if [[ -n "${_implib}" ]]; then
     echo "  Phase 1.5: Stripping atexit from import lib: ${_implib}"
-    if ! strip_atexit_from_implib "${_implib}" "${_zig_bin}" "libLLVM-20" "${_dlltool_machine}"; then
+    if ! strip_atexit_from_implib "${_implib}"; then
       echo "  ERROR: strip_atexit_from_implib failed — aborting build."
       exit 1
     fi
@@ -674,7 +666,7 @@ EOF
   _clang_implib=$(find "${LLVM_BUILD}" \( -name 'libclang-cpp*.dll.a' -o -name 'clang-cpp*.dll.a' \) 2>/dev/null | awk 'NR==1')
   if [[ -n "${_clang_implib}" ]]; then
     echo "  Phase 2.5: Stripping atexit from clang-cpp import lib: ${_clang_implib}"
-    if ! strip_atexit_from_implib "${_clang_implib}" "${_zig_bin}" "libclang-cpp" "${_dlltool_machine}"; then
+    if ! strip_atexit_from_implib "${_clang_implib}"; then
       echo "  ERROR: strip_atexit_from_implib failed for clang-cpp — aborting build."
       exit 1
     fi
