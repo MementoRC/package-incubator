@@ -219,21 +219,10 @@ PPCLD
     # Write a CMake project-include file for the NATIVE sub-project.
     # This file patches the link rule templates after platform detection.
     #
-    # Root cause: CMake's Windows-GNU.cmake sets CMAKE_GNULD_IMAGE_VERSION to
-    #   "-Wl,--major-image-version,<TARGET_VERSION_MAJOR>,--minor-image-version,<TARGET_VERSION_MINOR>"
-    # For executables without an explicit VERSION property, <TARGET_VERSION_MAJOR>
-    # and <TARGET_VERSION_MINOR> evaluate to 0 (the CMake default). Zig cc converts
-    # --major-image-version,0,--minor-image-version,0 to lld-link /version:0.0,
-    # which zig's lld-link rejects with InvalidVersion.
-    #
-    # CMAKE_EXE_LINKER_FLAGS_INIT (tried in rounds 3-8) is appended to the link
-    # command, but CMake's link rule template ALSO appends ${CMAKE_GNULD_IMAGE_VERSION}
-    # AFTER <LINK_FLAGS>. Zig's lld-link uses the last --major-image-version, so the
-    # 0,0 from the template wins over our 1,0 from LINKER_FLAGS_INIT.
-    #
-    # CMAKE_PROJECT_INCLUDE runs at the END of project() (after platform module sets
-    # the link rule vars). We use string(REPLACE) to patch the 0-version generator
-    # expressions with hardcoded 1,0 before CMake generates build.ninja.
+    # zig lld-link rejects /version:0.0 (auto-set by CMake for versionless Windows targets).
+    # -D and -C CACHE FORCE and CMAKE_USER_MAKE_RULES_OVERRIDE all failed (overridden by
+    # platform module). CMAKE_PROJECT_INCLUDE runs LAST in project(), after platform
+    # modules set link rule vars — patches them here via string(REPLACE).
     #
     # Use _SRC_DIR (forward-slash path from build.bat) to avoid CMake 4.2
     # backslash escape bug; fall back to bash-normalised SRC_DIR.

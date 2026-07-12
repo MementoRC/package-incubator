@@ -123,18 +123,9 @@ post_install() {
     # ----------------------------------------------------------------
     # Step 2: Rewrite @rpath/<lib> -> @loader_path/<lib> in all dylibs
     # ----------------------------------------------------------------
-    # The recipe sets binary_relocation: false to prevent rattler-build's
-    # relinker from rewriting our @loader_path back to @rpath. But we
-    # must also patch the existing @rpath/* references the zig-cc linker
-    # embedded at build time, otherwise dyld can't find e.g.
-    # @rpath/libunwind.1.dylib when libc++.1.0.dylib is loaded from a
-    # process whose LC_RPATH doesn't include our private lib dir.
-    #
-    # Strategy: for every dylib in LLVM_INSTALL/lib/, iterate its
-    # LC_LOAD_DYLIB entries; if a referenced dylib's basename also
-    # exists in the same dir, rewrite the reference to @loader_path/<basename>.
-    # Also set LC_ID_DYLIB to @loader_path/<basename> so consumers
-    # outside this dir can locate it via their own LC_RPATH.
+    # binary_relocation:false stops rattler-build's relinker from reverting @loader_path
+    # to @rpath, but zig-cc still emits @rpath refs at build time — rewrite those to
+    # @loader_path here so dyld resolves them without relying on LC_RPATH.
     echo "  osx: Step 2 — @rpath -> @loader_path in ${LLVM_INSTALL}/lib/"
     _rewrite_count=0
     for _dylib in "${LLVM_INSTALL}/lib/"*.dylib; do
