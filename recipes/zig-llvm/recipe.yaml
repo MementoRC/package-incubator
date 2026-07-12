@@ -95,7 +95,6 @@ outputs:
           ZIG_TARGET_HOST: ${{ zig_target }}
           ZIG_TARGET_BUILD: ${{ zig_target_build }}
           # ZIG_LLVM_SKIP_BUILD: 1
-          ZIG_LLVM_DEBUG: 1
           ZIG_DEBUG_SDK: "1"
 
           # --- BOOTSTRAPPING ---

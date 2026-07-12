@@ -997,10 +997,6 @@ elif is_osx; then
       echo "  OK: ${_test_sym} exported from libLLVM.dylib"
     else
       echo "  FAIL: ${_test_sym} NOT exported from libLLVM.dylib"
-      if _debug && [[ -f "${RECIPE_DIR}/building/debug-macos-dylib.sh" ]]; then
-        source "${RECIPE_DIR}/building/debug-macos-dylib.sh"
-        debug_macos_dylib "${_llvm_dylib}" "${_test_sym}" "${LLVM_BUILD}"
-      fi
       echo "  EARLY ABORT: libLLVM.dylib is missing key symbols."
       exit 1
     fi
