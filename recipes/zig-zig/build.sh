@@ -1278,6 +1278,9 @@ if is_not_unix; then
     echo "  ${_base}.exe (shim) -> ${_base}.real.exe (DLL path: zig-llvm/bin)"
   done
   rm -f "${_shim_hdr}"
+  # DIAG (win-arm64 .real investigation): show what the shim loop actually produced
+  echo "=== DIAG: ${_zig_bin} contents after shim loop ==="
+  ls -la "${_zig_bin}" || true
   # Clean .pdb from shim compilation. MinGW-target zig cc builds typically
   # don't emit .pdb files (PDB is an MSVC/PE debug format) so the glob may
   # not match anything -- guard with || true since set -e would otherwise
