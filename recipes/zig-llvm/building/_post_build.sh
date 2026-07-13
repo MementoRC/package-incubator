@@ -18,12 +18,6 @@ for _tbl in llvm-tblgen clang-tblgen llvm-min-tblgen; do
   fi
 done
 
-if [[ "${ZIG_LLVM_SKIP_BUILD:-}" == "0" ]]; then
-  echo "=== Populating the cache ==="
-  mkdir -p ${RECIPE_DIR}/cache && rm -rf ${RECIPE_DIR}/cache/*
-  cp -r ${PREFIX}/lib/zig-llvm/* ${RECIPE_DIR}/cache/
-fi
-
 build_lld_bundle
 remove_unneeded
 post_install
