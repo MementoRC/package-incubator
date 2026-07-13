@@ -53,12 +53,6 @@ function remove_unneeded() {
   rm -rf "${LLVM_INSTALL}/share"
   echo "  Removed ${LLVM_INSTALL}/share"
 
-
-  # Remove Clang builtin headers (zig bundles its own libc headers)
-  # echo "=== Removing Clang builtin headers ==="
-  # rm -rf "${LLVM_INSTALL}/lib/clang"
-  # echo "  Removed lib/clang/"
-
   # Create llvm-config wrapper that filters out flags unsupported by zig's linker
   # zig build calls llvm-config --ldflags and passes results directly to its linker
   # Flags like -Bsymbolic-functions are GNU ld specific and not supported by lld/zig linker
