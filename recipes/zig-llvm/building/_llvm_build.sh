@@ -606,15 +606,17 @@ EOF
     done
 
     if [[ -n "${_winner_def}" ]]; then
-      echo "=== WINNER: ${_winner_label} with ${_winner_lines} lines ==="
+      if _debug; then echo "=== WINNER: ${_winner_label} with ${_winner_lines} lines ==="; fi
       cp "${_winner_def}" "${_def_out}"
-      echo "[Stage 2] === .def file head (first 20 lines) ==="
-      head -20 "${LLVM_BUILD}/libLLVM.def" 2>/dev/null | sed 's/^/[Stage 2] DEF: /' || echo "[Stage 2] DEF: <empty or unreadable>"
-      echo "[Stage 2] === .def file md5 / size ==="
-      wc -l "${LLVM_BUILD}/libLLVM.def" 2>/dev/null
-      md5sum "${LLVM_BUILD}/libLLVM.def" 2>/dev/null || true
+      if _debug; then
+        echo "[Stage 2] === .def file head (first 20 lines) ==="
+        head -20 "${LLVM_BUILD}/libLLVM.def" 2>/dev/null | sed 's/^/[Stage 2] DEF: /' || echo "[Stage 2] DEF: <empty or unreadable>"
+        echo "[Stage 2] === .def file md5 / size ==="
+        wc -l "${LLVM_BUILD}/libLLVM.def" 2>/dev/null
+        md5sum "${LLVM_BUILD}/libLLVM.def" 2>/dev/null || true
+      fi
     else
-      echo "=== ALL ATTEMPTS PRODUCED EMPTY .def ==="
+      if _debug; then echo "=== ALL ATTEMPTS PRODUCED EMPTY .def ==="; fi
     fi
 
     if [[ ! -s "${_def_out}" ]]; then

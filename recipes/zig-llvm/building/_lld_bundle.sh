@@ -102,7 +102,9 @@ function build_lld_bundle() {
 
   elif is_not_unix; then
     # DIAGNOSTIC: log environment before Windows build
-    echo "DEBUG: target_platform=${target_platform:-unset} ZIG_CXX=${ZIG_CXX:-unset} LLVM_INSTALL=${LLVM_INSTALL:-unset} _lld_lib=${_lld_lib:-unset}" >&2
+    if _debug; then
+      echo "DEBUG: target_platform=${target_platform:-unset} ZIG_CXX=${ZIG_CXX:-unset} LLVM_INSTALL=${LLVM_INSTALL:-unset} _lld_lib=${_lld_lib:-unset}" >&2
+    fi
     local _out="${LLVM_INSTALL}/bin/liblldZig.dll"
     local _implib="${_lld_lib}/liblldZig.dll.a"
     # Pass -target so zig-cc links/compiles for the TARGET arch (aarch64-windows-gnu),
