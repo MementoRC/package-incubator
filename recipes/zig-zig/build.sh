@@ -1259,6 +1259,13 @@ if is_not_unix; then
   # so the preprocessor sees bare identifiers with hyphens. Inject via -include
   # of a generated header instead.
   _shim_hdr="${SRC_DIR}/shim_name.h"
+  # win-arm64 cross-install writes the compiled binary without a .exe suffix;
+  # normalize so the shim loop's *-zig.exe glob matches it (win-64 already has .exe).
+  # The *-zig glob matches only the extension-less binary, never *-zig.exe or
+  # *-zig.real.exe, so this is a no-op wherever .exe is already present.
+  for _noext in "${_zig_bin}/"*-zig; do
+    [[ -f "${_noext}" ]] && mv "${_noext}" "${_noext}.exe"
+  done
   for _exe in "${_zig_bin}/"*-zig.exe; do
     [[ ! -f "${_exe}" ]] && continue
     _base=$(basename "${_exe}" .exe)
