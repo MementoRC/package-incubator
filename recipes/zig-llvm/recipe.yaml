@@ -94,7 +94,6 @@ outputs:
           ZIG_TRIPLET: ${{ zig_triplet }}
           ZIG_TARGET_HOST: ${{ zig_target }}
           ZIG_TARGET_BUILD: ${{ zig_target_build }}
-          # ZIG_LLVM_SKIP_BUILD: 1
           ZIG_DEBUG_SDK: "1"
 
           # --- BOOTSTRAPPING ---
@@ -108,10 +107,6 @@ outputs:
               "x86_64-w64-mingw32"                      if not unix                              else
               "unknown"
             }}-zig
-
-      # --- DEBUG ---
-      # skip: not (osx and arm64 or not unix and x86_64)
-      # --- DEBUG ---
 
     requirements:
       build:
@@ -187,11 +182,9 @@ outputs:
         - ${{ pin_subpackage("zig-libcxx", upper_bound='x.x') }}
     tests:
       - package_contents:
-          # strict: true
           files:
             - ${{ library }}lib/zig-llvm/bin/llvm-tblgen${{ exe }}
             - ${{ library }}lib/zig-llvm/bin/clang-tblgen${{ exe }}
-            # - ${{ library }}lib/zig-llvm/bin/llvm-min-tblgen${{ exe }}
             - ${{ library }}lib/zig-llvm/bin/llvm-config
             - ${{ library }}lib/zig-llvm/bin/llvm-config.real${{ exe }}
             - ${{ library }}lib/zig-llvm/bin/llvm-dlltool${{ exe }}
