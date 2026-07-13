@@ -120,7 +120,6 @@ outputs:
         - git
         - ninja
         - zig_${{ build_platform }} ==0.15.2
-        # - zstd
         - if: not osx
           then:
             - lld
