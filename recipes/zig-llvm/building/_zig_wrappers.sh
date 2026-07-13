@@ -3,10 +3,10 @@
 #   Unix:    $BUILD_PREFIX/bin/${CONDA_BUILD_ZIG}-{cc,cxx,ar,ranlib,asm,rc,force-load-cc,force-load-cxx}
 #   Windows: $BUILD_PREFIX/Library/bin/${CONDA_BUILD_ZIG}-{...}.exe
 #
-# Upstream activation also exports ZIG_CC / ZIG_CXX / ZIG_AR / ZIG_RANLIB /
-# ZIG_ASM / ZIG_RC / ZIG_LLD / ZIG_FORCE_LOAD_CC / ZIG_FORCE_LOAD_CXX. We pin
-# the same values explicitly so the script is deterministic regardless of
-# activation order.
+# We pin ZIG_CC / ZIG_CXX / ZIG_AR / ZIG_RANLIB / ZIG_RC / ZIG_ASM explicitly
+# below so the script is deterministic regardless of activation order.
+# ZIG_LLD / ZIG_FORCE_LOAD_CC / ZIG_FORCE_LOAD_CXX are left to upstream
+# activation and are not re-pinned here.
 
 if is_not_unix; then
   _zig_bindir="${BUILD_PREFIX}/Library/bin"
