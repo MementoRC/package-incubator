@@ -42,9 +42,9 @@ if is_linux && [[ -d "${PREFIX}/lib/zig-zstd/lib/cmake/zstd" ]]; then
         -Dzstd_LIBRARY:FILEPATH="${PREFIX}/lib/zig-zstd/lib/libzstd.so"
         -Dzstd_INCLUDE_DIR:PATH="${PREFIX}/lib/zig-zstd/include"
     )
-    echo "  cmake_flags: zstd pinned to zig-zstd (riscv64 layout)"
+    dbg "cmake_flags: zstd pinned to zig-zstd (riscv64 layout)"
 elif is_linux; then
-    echo "  cmake_flags: zig-zstd not installed, leaving zstd to CMAKE_PREFIX_PATH"
+    dbg "cmake_flags: zig-zstd not installed, leaving zstd to CMAKE_PREFIX_PATH"
 fi
 if is_osx; then
   # Determine the correct macOS architecture from the target platform.
@@ -70,7 +70,7 @@ if is_osx; then
   # Rely on compiler-driven -isysroot instead (cmake sets it via CMAKE_OSX_SYSROOT).
   # If '-lSystem not found' resurfaces, use a zig-native --sysroot flag, not -syslibroot.
   if [[ -n "${CONDA_BUILD_SYSROOT:-}" && -d "${CONDA_BUILD_SYSROOT}/usr/lib" ]]; then
-    echo "  macOS sysroot: relying on -isysroot/CMAKE_OSX_SYSROOT (${CONDA_BUILD_SYSROOT})"
+    dbg "macOS sysroot: relying on -isysroot/CMAKE_OSX_SYSROOT (${CONDA_BUILD_SYSROOT})"
   else
     echo "  WARNING: CONDA_BUILD_SYSROOT not set or has no usr/lib — link may fail with 'library not found for -lSystem'"
   fi
@@ -165,7 +165,7 @@ if is_linux && [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
     CMAKE_PLATFORM_FLAGS+=(
         "-DCMAKE_CXX_STANDARD_LIBRARIES=-L${_zig_libcxx_lib} -lc++ -lunwind"
     )
-    echo "  linux cross: CMAKE_CXX_STANDARD_LIBRARIES=-L${_zig_libcxx_lib} -lc++ -lunwind (libLLVM.so -nostdlib++ undefined sym fix)"
+    dbg "linux cross: CMAKE_CXX_STANDARD_LIBRARIES=-L${_zig_libcxx_lib} -lc++ -lunwind (libLLVM.so -nostdlib++ undefined sym fix)"
     unset _zig_libcxx_lib
 fi
 
