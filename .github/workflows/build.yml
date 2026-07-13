@@ -32,34 +32,6 @@ jobs:
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-
-
-
-      # - name: Restore zig-gcc cache
-      #   uses: actions/cache/restore@v4
-      #   with:
-      #     path: output/linux-64/*.conda
-      #     key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
-      #     restore-keys: zig-gcc-linux-64-
-      # - name: Build zig-gcc
-      #   shell: bash
-      #   run: |
-      #     rattler-build build --recipe recipes/zig-gcc \
-      #       --skip-existing=local --target-platform=linux-64 \
-      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      # - name: Prune stale zig-gcc artifacts
-      #   shell: bash
-      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
-      # - name: Save zig-gcc cache
-      #   if: ${{ !cancelled() }}
-      #   uses: actions/cache/save@v4
-      #   with:
-      #     path: output/linux-64/*.conda
-      #     key: zig-gcc-linux-64-${{ hashFiles('recipes/zig-gcc/**') }}
-
-
-
-
       - name: Restore zig-llvm cache
         uses: actions/cache/restore@v4
         with:
@@ -175,33 +147,6 @@ jobs:
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-
-
-      # - name: Restore zig-gcc cache
-      #   uses: actions/cache/restore@v4
-      #   with:
-      #     path: output/osx-arm64/*.conda
-      #     key: zig-gcc-osx-arm64-${{ hashFiles('recipes/zig-gcc/**') }}
-      #     # restore-keys: zig-gcc-osx-arm64-
-      # - name: Build zig-gcc
-      #   shell: bash
-      #   run: |
-      #     rattler-build build --recipe recipes/zig-gcc \
-      #       --skip-existing=local --target-platform=osx-arm64 \
-      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      # - name: Prune stale zig-gcc artifacts
-      #   shell: bash
-      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
-      # - name: Save zig-gcc cache
-      #   if: ${{ !cancelled() }}
-      #   uses: actions/cache/save@v4
-      #   with:
-      #     path: output/osx-arm64/*.conda
-      #     key: zig-gcc-osx-arm64-${{ hashFiles('recipes/zig-gcc/**') }}
-
-
-
-
       - name: Restore zig-llvm cache
         uses: actions/cache/restore@v4
         with:
@@ -316,32 +261,6 @@ jobs:
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
-
-
-
-      # - name: Restore zig-gcc cache
-      #   uses: actions/cache/restore@v4
-      #   with:
-      #     path: output/win-64/*.conda
-      #     key: zig-gcc-win-64-${{ hashFiles('recipes/zig-gcc/**') }}
-      #     restore-keys: zig-gcc-win-64-
-      # - name: Build zig-gcc
-      #   shell: bash
-      #   run: |
-      #     rattler-build build --recipe recipes/zig-gcc \
-      #       --skip-existing=local --target-platform=win-64 \
-      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      # - name: Prune stale zig-gcc artifacts
-      #   shell: bash
-      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-gcc*'
-      # - name: Save zig-gcc cache
-      #   if: ${{ !cancelled() }}
-      #   uses: actions/cache/save@v4
-      #   with:
-      #     path: output/win-64/*.conda
-      #     key: zig-gcc-win-64-${{ hashFiles('recipes/zig-gcc/**') }}
-
-
 
       - name: Restore zig-llvm cache
         uses: actions/cache/restore@v4

@@ -1,5 +1,5 @@
 function build_lld_bundle() {
-  set -x  # DIAGNOSTIC: trace all commands to stderr
+  if _debug; then set -x; fi  # DIAGNOSTIC: trace all commands to stderr
   # Bundle prebuilt liblld*.a archives into a platform-native shared library.
   #
   # Rationale: consumers (zig-zig) that link the individual lld static archives
@@ -150,5 +150,5 @@ function build_lld_bundle() {
   else
     echo "  WARNING: unrecognised target_platform=${target_platform}, skipping lld bundle" >&2
   fi
-  set +x  # DIAGNOSTIC: disable tracing
+  if _debug; then set +x; fi  # DIAGNOSTIC: disable tracing
 }
