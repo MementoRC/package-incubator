@@ -160,7 +160,16 @@ PPCLD
   # Find a build-host tool by name (with optional .exe), excluding an optional variant name.
   _find_build_tool() {
     # $1 = tool base name; $2 = optional variant to exclude
-    find "${BUILD_PREFIX}" \( -name "$1" -o -name "$1.exe" \) ${2:+! -name "$2" ! -name "$2.exe"} -type f 2>/dev/null | head -1
+    # Use an array for the exclusion so the predicates stay as separate find
+    # arguments regardless of IFS. This script runs under IFS=$'\n\t' (no space),
+    # so an unquoted ${2:+...} expansion would collapse "! -name X ! -name X.exe"
+    # into a single argument and make find fail (empty result -> build aborts).
+    local excl=()
+    # Guard with ${2:-} so the single-arg call form (e.g. clang-tblgen) does not
+    # trip `set -u` (nounset) on an unbound $2. The bare $2 inside the branch is
+    # safe: it only runs when $2 is non-empty, hence set.
+    [[ -n "${2:-}" ]] && excl=( ! -name "$2" ! -name "$2.exe" )
+    find "${BUILD_PREFIX}" \( -name "$1" -o -name "$1.exe" \) "${excl[@]}" -type f 2>/dev/null | head -1
   }
   LLVM_TBLGEN=$(_find_build_tool llvm-tblgen llvm-min-tblgen)
   CLANG_TBLGEN=$(_find_build_tool clang-tblgen)
