@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: 111
+  build_number: 112
   name: zig-zig
   version: "0.15.2"
 
@@ -438,6 +438,14 @@ outputs:
         - if: is_cross_compiler and not unix
           then:
             - zig-zig_impl_${{ xc_build_platform }} >=${{ version }}
+        # Cross-built target-native output (e.g. win-arm64 on a win-64 host): the .exe
+        # shim must be compiled by a zig that RUNS on the build host, so pull the build
+        # platform's impl. Without it, _find_zig_compiler falls back to CONDA_ZIG_HOST
+        # (the aarch64 target zig), which cannot execute on the x86_64 build agent
+        # (exit -1) — there is no ARM64 emulator on the win-64 builder.
+        - if: is_cross_target and not unix
+          then:
+            - zig-zig_impl_${{ build_platform }} >=${{ version }}
       host:
         - if: not is_cross_compiler and not unix
           then:
