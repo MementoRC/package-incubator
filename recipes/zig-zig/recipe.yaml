@@ -319,16 +319,16 @@ outputs:
       - package_contents:
           strict: true
           bin:
-            - ${{ conda_triplet }}-zig
+            - ${{ conda_triplet }}-zig*
             - if: not unix and x86_64
               then:
                 # DLL isolation: .exe is a shim prepending zig-llvm/bin to PATH
-                - ${{ conda_triplet }}-zig.real
+                - ${{ conda_triplet }}-zig.real*
             - if: linux
               then:
                 - ${{ conda_triplet }}-zig-cc-musl
           files:
-            - if: build_platform == target_platform or target_platform in ["osx-64"]
+            - if: build_platform == target_platform or target_platform in ["osx-64", "win-arm64"]
               then:
                 - ${{ library }}doc/langref.html
             - ${{ library }}lib/zig/{c,compiler_rt,fuzzer,ubsan_rt}.zig
