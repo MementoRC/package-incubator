@@ -157,13 +157,13 @@ PPCLD
 
   # Tablegen tools run on the BUILD host, not target.
   # Provided by zig-llvm itself (build dep for cross-compilation).
-  LLVM_TBLGEN=$(find "${BUILD_PREFIX}" \
-      \( -name llvm-tblgen -o -name llvm-tblgen.exe \) \
-      ! -name 'llvm-min-tblgen' ! -name 'llvm-min-tblgen.exe' \
-      -type f 2>/dev/null | head -1)
-  CLANG_TBLGEN=$(find "${BUILD_PREFIX}" \
-      \( -name clang-tblgen -o -name clang-tblgen.exe \) \
-      -type f 2>/dev/null | head -1)
+  # Find a build-host tool by name (with optional .exe), excluding an optional variant name.
+  _find_build_tool() {
+    # $1 = tool base name; $2 = optional variant to exclude
+    find "${BUILD_PREFIX}" \( -name "$1" -o -name "$1.exe" \) ${2:+! -name "$2" ! -name "$2.exe"} -type f 2>/dev/null | head -1
+  }
+  LLVM_TBLGEN=$(_find_build_tool llvm-tblgen llvm-min-tblgen)
+  CLANG_TBLGEN=$(_find_build_tool clang-tblgen)
   # Append tblgen paths if found (use += to preserve existing flags).
   # LLVM 20 uses CLANG_TABLEGEN_EXE (not CLANG_TABLEGEN).
   if [[ -n "${LLVM_TBLGEN}" ]]; then
