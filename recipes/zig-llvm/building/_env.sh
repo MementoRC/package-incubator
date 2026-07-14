@@ -12,6 +12,12 @@ is_cross() { [[ "${build_platform}" != "${target_platform}" ]]; }
 _debug() { [[ "${ZIG_LLVM_DEBUG:-0}" == "1" ]]; }
 dbg() { _debug && echo "  [DBG] $*" || true; }
 
+# Derive the zig-style target triple from an LLVM triple (drop -unknown-/-w64- infixes).
+zig_triplet_from_llvm() {
+  local _t="${1/-unknown-/-}"
+  printf '%s' "${_t/-w64-/-}"
+}
+
 
 LLVM_SRC="${SRC_DIR}/llvm"
 LLVM_BUILD="${SRC_DIR}/conda-llvm-build"

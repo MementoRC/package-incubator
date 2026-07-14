@@ -293,8 +293,7 @@ NATIVE_CMINIT
   # treat "unknown" as the OS and fail with UnknownOperatingSystem.
   # Strip the "-unknown-" middle component to get the zig-compatible triple.
   # NOTE: ZIG_LLVM_TRIPLET is also used in the runtimes is_cross block below.
-  ZIG_LLVM_TRIPLET="${LLVM_TRIPLET/-unknown-/-}"
-  ZIG_LLVM_TRIPLET="${ZIG_LLVM_TRIPLET/-w64-/-}"
+  ZIG_LLVM_TRIPLET="$(zig_triplet_from_llvm "${LLVM_TRIPLET}")"
 
   # Cross-compilation: tell cmake the main LLVM configure the compiler's target
   # triple explicitly. Without this, cmake's ABI detection probes the wrapper by

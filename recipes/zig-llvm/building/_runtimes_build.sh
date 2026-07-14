@@ -204,8 +204,7 @@ fi
 # clang's 4-component LLVM triple (e.g. aarch64-unknown-linux-gnu) makes zig
 # treat "unknown" as the OS and fail with UnknownOperatingSystem.
 # Strip the "-unknown-" middle component to get the zig-compatible triple.
-ZIG_LLVM_TRIPLET="${LLVM_TRIPLET/-unknown-/-}"
-ZIG_LLVM_TRIPLET="${ZIG_LLVM_TRIPLET/-w64-/-}"
+ZIG_LLVM_TRIPLET="$(zig_triplet_from_llvm "${LLVM_TRIPLET}")"
 
 if is_cross; then
   _RUNTIMES_CMAKE+=(
