@@ -226,7 +226,7 @@ outputs:
           - if: not unix
             then: "*/VERSION.dll"
       script:
-        file: build${{ sh }}
+        file: build.sh
         env:
           BUILD_NUMBER: ${{ build_number }}
           CONDA_TRIPLET: ${{ conda_triplet }}
