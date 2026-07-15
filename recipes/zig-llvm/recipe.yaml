@@ -88,7 +88,7 @@ outputs:
       name: zig-llvm-build
     build:
       script:
-        file: build${{ sh }}
+        file: build.sh
         env:
           LLVM_TRIPLET: ${{ llvm_triplet }}
           ZIG_TRIPLET: ${{ zig_triplet }}
@@ -119,7 +119,7 @@ outputs:
         - cmake >=3.19,<4
         - git
         - ninja
-        - zig_${{ build_platform }}
+        - zig_${{ build_platform }} ==0.15.2
         - if: not osx
           then:
             - lld
@@ -137,12 +137,13 @@ outputs:
             # NOTE: no _${{ build_platform }} suffix — that variant doesn't exist
             # for zig-libcxx (only zig has the multi-platform variant).
             - zig-libcxx
-            - zig_${{ target_platform }}
+            - zig_${{ target_platform }} ==0.15.2
             - if: osx
               then:
                 - libxml2-devel
         - if: not unix
           then:
+            - ${{ m2 }}bash >=5.2
             - ${{ m2 }}coreutils
             - ${{ m2 }}findutils
             - pkg-config
@@ -369,7 +370,7 @@ outputs:
               - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
             requirements:
               run:
-                - zig
+                - zig ==0.15.2
 
 about:
   homepage: http://llvm.org/

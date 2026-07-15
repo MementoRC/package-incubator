@@ -517,24 +517,24 @@ jobs:
           path: output/${{ matrix.target }}/zig-zig*.conda
           key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
 
-      - name: Build zig-zig-llvm
-        shell: bash
-        run: |
-          rattler-build build --recipe recipes/zig-zig-llvm \
-            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
-            -c file://${{ github.workspace }}/output \
-            -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig-llvm artifacts
-        shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-llvm-*'
+      # - name: Build zig-zig-llvm
+      #   shell: bash
+      #   run: |
+      #     rattler-build build --recipe recipes/zig-zig-llvm \
+      #       --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+      #       -c file://${{ github.workspace }}/output \
+      #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      # - name: Prune stale zig-zig-llvm artifacts
+      #   shell: bash
+      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-llvm-*'
 
-      - name: Upload packages to prefix.dev
-        if: github.event_name == 'push'
-        shell: bash
-        run: |
-          for file in output/**/*.conda; do
-            rattler-build upload prefix -c prefix-package-incubator "$file"
-          done
+      # - name: Upload packages to prefix.dev
+      #   if: github.event_name == 'push'
+      #   shell: bash
+      #   run: |
+      #     for file in output/**/*.conda; do
+      #       rattler-build upload prefix -c prefix-package-incubator "$file"
+      #     done
 
   build-cross-macos:
     needs: [build-native-macos, build-native-macos-phase2]
@@ -656,6 +656,21 @@ jobs:
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
+      - name: DIAG dump build_env.sh on failure (win-arm64)
+        if: failure()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          found=0
+          for f in output/bld/rattler-build_*/work/build_env.sh; do
+            found=1
+            echo "=== $f ==="
+            grep -n '[()]' "$f" || echo "(no parens found)"
+            echo "--- lines 15-25 ---"
+            sed -n '15,25p' "$f"
+            echo "=== end $f ==="
+          done
+          [ "$found" = 1 ] || echo "no build_env.sh found under output/bld/"
       - name: Prune stale zig-llvm artifacts
         shell: bash
         run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
