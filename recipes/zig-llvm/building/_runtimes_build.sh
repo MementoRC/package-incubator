@@ -137,14 +137,14 @@ if is_not_unix && [[ "${LLVM_TRIPLET}" == *-windows* ]]; then
   # invocations so shared lib builds (libunwind.dll, libc++.dll, etc.) don't
   # hit the same error.
   if [[ "${LLVM_TRIPLET}" == aarch64-* ]]; then
-    _fpreset_stub="${BUILD_PREFIX//\\//}/Library/lib/zig/libc/mingw/lib-common/_fpreset_arm64.o"
+    _fpreset_stub="${BUILD_PREFIX}/Library/lib/zig/libc/mingw/lib-common/_fpreset_arm64.o"
     # If zig-gcc package didn't ship the stub, build it inline as a fallback.
     # Mirrors recipes/zig-gcc/building/_win_arm64_stubs.sh:create_fpreset_stub.
     # ARM64 has no x87 FPU; _fpreset is a no-op.
     if [[ ! -f "${_fpreset_stub}" ]]; then
       echo "  _fpreset_arm64.o stub missing from zig-gcc package; building inline fallback"
-      _fpreset_stub="${LLVM_BUILD//\\//}/_fpreset_arm64.o"
-      _fpreset_src="${LLVM_BUILD//\\//}/_fpreset_arm64.c"
+      _fpreset_stub="${LLVM_BUILD}/_fpreset_arm64.o"
+      _fpreset_src="${LLVM_BUILD}/_fpreset_arm64.c"
       mkdir -p "${LLVM_BUILD}"
       cat > "${_fpreset_src}" << 'EOF'
 // Inline fallback for _fpreset_arm64.o (mirror of zig-gcc _win_arm64_stubs.sh).
@@ -152,7 +152,7 @@ if is_not_unix && [[ "${LLVM_TRIPLET}" == *-windows* ]]; then
 // auto-import error from CRT objects (crt2.obj, libmingw32.lib).
 void _fpreset(void) {}
 EOF
-      "${BUILD_PREFIX//\\//}/Library/bin/x86_64-w64-mingw32-zig.exe" cc \
+      "${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe" cc \
         -target aarch64-windows-gnu -c "${_fpreset_src}" -o "${_fpreset_stub}" \
         || { echo "ERROR: failed to compile inline _fpreset_arm64.o stub"; exit 1; }
       rm -f "${_fpreset_src}"

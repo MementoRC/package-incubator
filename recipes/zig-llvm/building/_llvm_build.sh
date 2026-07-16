@@ -207,7 +207,7 @@ _CMAKE=(
 #
 # Since we use zig (Clang, not MSVC), the RC resource is never compiled
 # (add_windows_version_resource_file guards on MSVC).
-# Fix: use _BUILD_PREFIX (forward-slash unix path) in the -C initial-cache
+# Use BUILD_PREFIX (forward-slash path) in the -C initial-cache
 # script. Forward slashes have no escape issues in CMake string literals.
 # Two cmake script files:
 #
@@ -230,9 +230,7 @@ _cmake_project_include="${SRC_DIR}/_cmake_project_include.cmake"
 
 CMAKE_RC_FLAGS=()
 if is_not_unix; then
-  # _BUILD_PREFIX: forward-slash unix path version of BUILD_PREFIX,
-  # created by build.bat (e.g. /d/a/package-incubator/.../build_env).
-  _rc_path="${_BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-rc.exe"
+  _rc_path="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-rc.exe"
   cat >> "${_cmake_init}" << CMINIT
 # RC compiler with forward-slash path — avoids CMake 4.2 backslash escape bug.
 set(CMAKE_RC_COMPILER "${_rc_path}" CACHE FILEPATH "RC compiler")

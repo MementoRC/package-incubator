@@ -225,11 +225,10 @@ PPCLD
     # platform module). CMAKE_PROJECT_INCLUDE runs LAST in project(), after platform
     # modules set link rule vars — patches them here via string(REPLACE).
     #
-    # Use _SRC_DIR (forward-slash path from build.bat) to avoid CMake 4.2
-    # backslash escape bug; fall back to bash-normalised SRC_DIR.
-    _fwd_src_dir="${_SRC_DIR:-${SRC_DIR//\\//}}"
-    # Native Windows cmake.exe needs D:/a/... (forward-slash drive form), not the /d/a/... MSYS form from _SRC_DIR.
-    _native_project_include_fwd="${SRC_DIR//\\//}/_native_cmake_project_include.cmake"
+    # Use SRC_DIR (forward-slash path) directly to avoid the CMake 4.2 backslash-escape bug.
+    _fwd_src_dir="${SRC_DIR}"
+    # Native Windows cmake.exe needs D:/a/... (forward-slash drive form); SRC_DIR already provides this form.
+    _native_project_include_fwd="${SRC_DIR}/_native_cmake_project_include.cmake"
     # Write to the same path that will be passed to cmake, so write-path == passed-path.
     cat > "${_native_project_include_fwd}" << 'NATIVE_CMINIT'
 # Fix: zig lld-link rejects /version:0.0 for Windows executables built in the
