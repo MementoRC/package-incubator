@@ -220,21 +220,13 @@ _CMAKE=(
 #    Sets CMAKE_CXX_CREATE_SHARED_LIBRARY as a normal variable in the
 #    top-level project scope — guaranteed to override any platform default.
 #
-#    Approaches that FAILED (CI confirmed):
-#    - -D: creates :UNINITIALIZED cache entry, overridden by platform module
-#      (win-64, 2026-03-21)
-#    - -C with CACHE FORCE: cache var overridden by normal var from platform
-#      module (osx-arm64, 2026-03-22)
-#    - CMAKE_USER_MAKE_RULES_OVERRIDE: loaded during language init but
-#      overridden by later platform module processing (osx-arm64, 2026-03-22)
+#    -D, -C with CACHE FORCE, and CMAKE_USER_MAKE_RULES_OVERRIDE were all tried
+#    and failed (CI confirmed) — each gets overridden by later platform module
+#    processing; only the project-include approach above survives it.
 _cmake_init="${SRC_DIR}/_cmake_init.cmake"
 _cmake_project_include="${SRC_DIR}/_cmake_project_include.cmake"
 : > "${_cmake_init}"
 : > "${_cmake_project_include}"
-# Diagnostic: cmake will print this message if the project include file is read.
-cat >> "${_cmake_project_include}" << 'CMINIT'
-message(STATUS ">>> CMAKE_PROJECT_INCLUDE: file loaded successfully")
-CMINIT
 
 CMAKE_RC_FLAGS=()
 if is_not_unix; then
@@ -251,19 +243,6 @@ elif [[ -n "${ZIG_RC:-}" ]]; then
 fi
 
 ulimit -n 4096 2>/dev/null || true
-
-# Tail-visible zstd diagnostic via EXIT trap so it fires on both success and
-# ninja failure (set -e otherwise exits before our inline diagnostic).
-if [[ "${target_platform}" == "linux-"* ]]; then
-  _zstd_diag() {
-    if [[ -f "${LLVM_BUILD}/CMakeCache.txt" ]]; then
-      echo "=== zstd CMake resolution (tail-visible, on-exit) ==="
-      grep -iE '^zstd|libzstd' "${LLVM_BUILD}/CMakeCache.txt" 2>/dev/null || true
-      echo "===================================================="
-    fi
-  }
-  trap '_zstd_diag' EXIT
-fi
 
 # CMake's compiler check runs the zig wrapper -> build-arch host zig, which is
 # dynamically linked to libc++.so.1 from the zig-libcxx build dep. Put that dir
@@ -284,30 +263,6 @@ cmake "-C${_cmake_init}" \
   "${_CLANG[@]}" \
   "${_LLVM[@]}" \
   -G Ninja
-
-
-  # === ppc64le ld.real shim (Option A diagnostic) ===
-  if [[ "${target_platform}" == "linux-ppc64le" ]]; then
-    _ld_real="${BUILD_PREFIX}/bin/powerpc64le-conda-linux-gnu-ld.real"
-    _ld_orig="${_ld_real}.orig"
-    _ld_log="${LLVM_BUILD}/ld-real-invocations.log"
-    if [[ -f "${_ld_real}" && ! -f "${_ld_orig}" ]]; then
-      cp "${_ld_real}" "${_ld_orig}"
-      cat > "${_ld_real}" <<LDSHIM
-#!/usr/bin/env bash
-{
-  printf '\\n[%s] cwd=%s\\n' "\$(date +%H:%M:%S.%N)" "\$(pwd)"
-  printf '  argv (\$# args):\\n'
-  for _a in "\$@"; do printf '    %s\\n' "\$_a"; done
-  printf '  --- end ---\\n'
-} >> "${_ld_log}" 2>/dev/null
-exec "${_ld_orig}" "\$@"
-LDSHIM
-      chmod +x "${_ld_real}"
-      echo "[ld-shim] installed: ${_ld_real} (orig at ${_ld_orig}, log at ${_ld_log})"
-    fi
-  fi
-
 
 # === Quick-fail: verify --export-all-symbols in ALL shared library link rules ===
 # libLLVM and libclang-cpp each get their own CXX_SHARED_LIBRARY_LINKER rule in
@@ -807,13 +762,6 @@ else
   cmake --build "${LLVM_BUILD}" -j"${CPU_COUNT}"
   _linux_build_rc=$?
   set -e
-
-  # === ppc64le ld.real invocation report ===
-  if [[ "${target_platform}" == "linux-ppc64le" ]] && [[ -f "${_ld_log:-}" ]]; then
-    echo "=== ld.real invocations (last 500 lines of ${_ld_log}) ==="
-    tail -500 "${_ld_log}" || true
-    echo "=== END ld.real invocations ==="
-  fi
 
   if [[ ${_linux_build_rc} -ne 0 ]]; then
     exit ${_linux_build_rc}

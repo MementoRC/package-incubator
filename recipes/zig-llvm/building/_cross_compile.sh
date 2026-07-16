@@ -2,10 +2,6 @@
 # CONDA_BUILD_CROSS_COMPILATION is set by conda-build when build_platform != target_platform
 CMAKE_CROSS_FLAGS=()
 if [[ "${CONDA_BUILD_CROSS_COMPILATION:-0}" == "1" ]]; then
-  echo "=== Cross-compilation detected ==="
-  echo "  Build platform: ${build_platform}"
-  echo "  Target platform: ${target_platform}"
-
   # Determine target system name for cmake
   is_linux && CMAKE_SYSTEM_NAME="Linux"
   is_osx && CMAKE_SYSTEM_NAME="Darwin"
@@ -184,19 +180,15 @@ PPCLD
     #   LLVM_MIN_TABLEGEN_EXE: bootstrap-only minimal tblgen. Pointed at the FULL
     #     llvm-tblgen.exe since it is a strict superset (handles every generator
     #     min-tblgen handles, plus the rest). Safe and avoids the asm-matcher mismatch.
+    _tblgen_dir=$(dirname "${LLVM_TBLGEN}")
     CMAKE_CROSS_FLAGS+=(
       -DLLVM_TABLEGEN="${LLVM_TBLGEN}"
       -DLLVM_TABLEGEN_EXE="${LLVM_TBLGEN}"
       -DLLVM_MIN_TABLEGEN_EXE="${LLVM_TBLGEN}"
+      -DLLVM_NATIVE_TOOL_DIR="${_tblgen_dir}"
     )
   fi
   [[ -n "${CLANG_TBLGEN}" ]] && CMAKE_CROSS_FLAGS+=(-DCLANG_TABLEGEN_EXE="${CLANG_TBLGEN}")
-
-  # Pre-built tablegen tools from zig-llvm build dep (if available).
-  if [[ -n "${LLVM_TBLGEN}" ]]; then
-    _tblgen_dir=$(dirname "${LLVM_TBLGEN}")
-    CMAKE_CROSS_FLAGS+=(-DLLVM_NATIVE_TOOL_DIR="${_tblgen_dir}")
-  fi
 
   # CROSS_TOOLCHAIN_FLAGS_NATIVE: tells LLVM's NATIVE sub-project which
   # compiler to use for building host tools (tablegen etc.).

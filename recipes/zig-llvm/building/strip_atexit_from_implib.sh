@@ -18,9 +18,8 @@
 #   Direct binary manipulation is the only reliable approach.
 strip_atexit_from_implib() {
   local _implib="$1"
-  local _dir _bak
+  local _bak
 
-  _dir=$(dirname "${_implib}")
   _bak="${_implib}.bak"
 
   # Restore backup on failure

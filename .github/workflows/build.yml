@@ -271,6 +271,7 @@ jobs:
       - name: Build zig-llvm
         shell: bash
         run: |
+          env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
@@ -332,6 +333,7 @@ jobs:
       - name: Build zig-zig
         shell: bash
         run: |
+          env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
@@ -653,6 +655,7 @@ jobs:
       - name: Build zig-llvm
         shell: bash
         run: |
+          env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
@@ -690,6 +693,7 @@ jobs:
       - name: Build zig-zig
         shell: bash
         run: |
+          env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge

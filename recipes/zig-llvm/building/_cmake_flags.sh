@@ -6,8 +6,6 @@ unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS CMAKE_ARGS
 export CFLAGS="" CXXFLAGS="" LDFLAGS="" CPPFLAGS=""
 
 
-# LLVM_TRIPLET is set by recipe.yaml env (standard LLVM triple, no glibc version suffix)
-
 # Platform-specific CMake flags
 CMAKE_PLATFORM_FLAGS=()
 
@@ -121,11 +119,7 @@ is_not_unix && {
       # sub-project is handled separately in _cross_compile.sh via
       # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY (which avoids linking).
       #
-      # /version:N in ALL forms (dot-decimal /version:1.0 round-3, integer-only
-      # /version:1 round-4) is rejected by zig lld with InvalidVersion — zig lld
-      # does not implement the MSVC lld-link /version parser.
-      # GNU-ld style --major-image-version,N,--minor-image-version,N is accepted.
-      # Drop /version entirely; use GNU-ld form for both EXE and SHARED.
+      # MSVC-style /version:N forms are rejected by zig lld (InvalidVersion); use GNU-ld style below.
       -DCMAKE_EXE_LINKER_FLAGS_INIT="-Wl,--major-image-version,1,--minor-image-version,0"
       -DCMAKE_SHARED_LINKER_FLAGS_INIT="-Wl,--major-image-version,1,--minor-image-version,0"
     )

@@ -147,8 +147,6 @@ function build_lld_bundle() {
     fi
     echo "  OK: $(ls -lh "${_out}" | awk '{print $5, $9}') + import lib $(ls -lh "${_implib}" | awk '{print $5, $9}')"
 
-  else
-    echo "  WARNING: unrecognised target_platform=${target_platform}, skipping lld bundle" >&2
   fi
   if _debug; then set +x; fi  # DIAGNOSTIC: disable tracing
 }

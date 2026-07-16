@@ -238,7 +238,7 @@ if is_linux; then
   export LD_LIBRARY_PATH="${BUILD_PREFIX}/lib/zig-llvm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# Runtimes build is now fatal on all platforms — no silent failures.
+# Configure and build LLVM runtimes.
 cmake -S "${LIBCXX_SRC}" -B "${SRC_DIR}/conda-runtimes-build" \
   "${_RUNTIMES_CMAKE[@]}" \
   -DLLVM_ENABLE_RUNTIMES="${_RUNTIMES_LIST}" \

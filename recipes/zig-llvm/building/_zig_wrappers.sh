@@ -26,8 +26,6 @@ fi
 # Build 28's compiled C wrapper outputs to stderr; capture both streams.
 # Non-fatal: if the probe doesn't find the banner, log a warning and
 # continue. The actual compile will surface any real wrapper defect.
-# (4 rounds of probe-iteration debugging exhausted — bias toward letting
-# the build proceed and revealing real issues instead of pre-aborting.)
 if ! "${_probe_cc}" --version 2>&1 | grep -q "clang version"; then
   echo "WARN: zig-cc probe (${_probe_cc} --version) did not output 'clang version' banner" >&2
   echo "WARN: continuing anyway — actual compilation will catch any real wrapper defect" >&2

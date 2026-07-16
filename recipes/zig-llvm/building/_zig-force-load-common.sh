@@ -171,10 +171,6 @@ for _ea in "${_exec_args[@]}"; do
     esac
 done
 
-# Override any caller-supplied -target / --target=… by appending ours last
-# (zig CLI: last -target wins). Required for cross-builds where the upstream
-# BUILD wrapper bakes in -target ${ZIG_TARGET_BUILD} and cmake may inject
-# --target=<LLVM-format> (e.g. x86_64-apple-darwin) which zig rejects.
-# On native (BUILD==TARGET) this is a harmless no-op.
+# -target handling as in the fast path above (lines 83-87)
 _final_exec_args+=( -target "${ZIG_TARGET_HOST}" )
 exec "${_zig_target_bin}" "${_final_exec_args[@]}" "${_extracted_objects[@]}"

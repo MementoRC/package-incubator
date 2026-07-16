@@ -18,16 +18,6 @@ function remove_unneeded() {
   # libunwind). These are installed by the runtimes build and must not ship — zig consumers
   # must link against the shared dylib/so, not a static copy. Use rm -f (idempotent).
   _cxx_static_removed=0
-  for _f in \
-      "${LLVM_INSTALL}/lib/libc++.a" \
-      "${LLVM_INSTALL}/lib/libc++abi.a" \
-      "${LLVM_INSTALL}/lib/libc++experimental.a" \
-      "${LLVM_INSTALL}/lib/libunwind.a"; do
-    if [[ -f "${_f}" ]]; then
-      rm -f "${_f}"
-      (( _cxx_static_removed++ )) || true
-    fi
-  done
   # Glob-catch any remaining libc++*.a / libunwind*.a variants
   for _f in "${LLVM_INSTALL}/lib/libc++"*.a "${LLVM_INSTALL}/lib/libunwind"*.a; do
     [[ "${_f}" == *.dll.a ]] && continue

@@ -1,10 +1,6 @@
 echo "=== Pre-install disk cleanup: removing build object files ==="
-echo "  Disk before .o cleanup:"
-df -h "${SRC_DIR}" || true
 find "${LLVM_BUILD}" -name "*.o" -delete 2>/dev/null || true
 find "${LLVM_BUILD}" -name "*.obj" -delete 2>/dev/null || true
-echo "  Disk after .o cleanup:"
-df -h "${SRC_DIR}" || true
 
 echo "=== Installing LLVM ==="
 cmake --install "${LLVM_BUILD}"
