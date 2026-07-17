@@ -553,10 +553,6 @@ if is_not_unix; then
   done
   cat > "${_cache_seed}" << TCEOF
 # Pre-seed compiler identification so CMake skips the test program
-set(CMAKE_C_COMPILER "${_zig_cc_cmake}" CACHE FILEPATH "")
-set(CMAKE_CXX_COMPILER "${_zig_cxx_cmake}" CACHE FILEPATH "")
-set(CMAKE_AR "${_zig_ar_cmake}" CACHE FILEPATH "")
-set(CMAKE_RANLIB "${_zig_ranlib_cmake}" CACHE FILEPATH "")
 set(CMAKE_C_COMPILER_ID "Clang" CACHE STRING "")
 set(CMAKE_CXX_COMPILER_ID "Clang" CACHE STRING "")
 set(CMAKE_C_COMPILER_VERSION "${_llvm_ver}" CACHE STRING "")
@@ -584,28 +580,44 @@ set(CMAKE_CXX20_EXTENSION_COMPILE_OPTION "-std=gnu++20" CACHE STRING "")
 # aren't available in zig-cc's Clang frontend.
 set(CMAKE_C_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
 set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
-# Pin llvm-config so cmake doesn't find BUILD_PREFIX's conda-forge copy
-set(LLVM_CONFIG "${LLVM_CONFIG//\\//}" CACHE FILEPATH "")
 TCEOF
-  # Diagnostic: show the exact bytes of the generated initial-cache file so a
-  # parse failure (e.g. a stray control char splitting a set() line) is visible
-  # in the CI log without another blind rebuild. cat -A marks line ends ($) and
-  # control chars (^M for CR), which plain output would hide.
-  echo "--- generated zig-cmake-cache.cmake (cat -A, full file) ---"
-  cat -A "${_cache_seed}"
-  echo "--- end zig-cmake-cache.cmake dump ---"
+  # The long build_env FILEPATH/STRING values (compiler/ar/ranlib/llvm-config and
+  # the zig-llvm manual-override paths) are passed on the cmake COMMAND LINE as -D
+  # args rather than in the -C initial-cache file. Byte-exact CI diagnostics proved
+  # the -C file is written clean and single-line, yet CMake parsed the long quoted
+  # CMAKE_AR FILEPATH value as split across two physical lines ("Parse error ...
+  # got unquoted argument aarch64-w64-mingw32-zig-ar"). -D args are parsed from
+  # argv, not the cache-file line parser, so they sidestep the split regardless of
+  # its (still-undetermined) cause.
+  EXTRA_CMAKE_ARGS+=(
+    -DCMAKE_C_COMPILER:FILEPATH="${_zig_cc_cmake}"
+    -DCMAKE_CXX_COMPILER:FILEPATH="${_zig_cxx_cmake}"
+    -DCMAKE_AR:FILEPATH="${_zig_ar_cmake}"
+    -DCMAKE_RANLIB:FILEPATH="${_zig_ranlib_cmake}"
+    -DLLVM_CONFIG:FILEPATH="${LLVM_CONFIG//\\//}"
+  )
   if [[ -n "${ZIG_LLVM_MANUAL_OVERRIDE:-}" ]]; then
-    # Windows cross-build: bypass Findllvm.cmake's llvm-config --link-shared
-    # probe entirely (see cmake/Findllvm.cmake patch) since the only
-    # runnable llvm-config on the build machine can't answer it for
-    # zig-llvm's actual build.
-    cat >> "${_cache_seed}" << OVEOF
-set(ZIG_LLVM_MANUAL_OVERRIDE ON CACHE BOOL "")
-set(ZIG_LLVM_MANUAL_LIBRARIES "${ZIG_LLVM_MANUAL_LIBRARIES//\\//}" CACHE STRING "")
-set(ZIG_LLVM_MANUAL_LIBDIRS "${ZIG_LLVM_MANUAL_LIBDIRS//\\//}" CACHE STRING "")
-set(ZIG_LLVM_MANUAL_INCLUDE_DIRS "${ZIG_LLVM_MANUAL_INCLUDE_DIRS//\\//}" CACHE STRING "")
-OVEOF
+    # Windows cross-build: bypass Findllvm.cmake's llvm-config --link-shared probe
+    # entirely (see cmake/Findllvm.cmake patch) since the only runnable llvm-config
+    # on the build machine can't answer it for zig-llvm's actual build.
+    EXTRA_CMAKE_ARGS+=(
+      -DZIG_LLVM_MANUAL_OVERRIDE:BOOL=ON
+      -DZIG_LLVM_MANUAL_LIBRARIES:STRING="${ZIG_LLVM_MANUAL_LIBRARIES//\\//}"
+      -DZIG_LLVM_MANUAL_LIBDIRS:STRING="${ZIG_LLVM_MANUAL_LIBDIRS//\\//}"
+      -DZIG_LLVM_MANUAL_INCLUDE_DIRS:STRING="${ZIG_LLVM_MANUAL_INCLUDE_DIRS//\\//}"
+    )
   fi
+  # Byte-exact diagnostic of the FINAL -C cache file, immediately before cmake
+  # consumes it. od -c shows every byte (\n, \r, control chars) unambiguously —
+  # immune to cat -A caret rendering and to CI log-relay line rejoining. If a
+  # parse error still occurs, this pins the exact offending byte/line.
+  echo "--- FINAL zig-cmake-cache.cmake bytes (od -c) ---"
+  od -c "${_cache_seed}"
+  echo "--- FINAL zig-cmake-cache.cmake (cat -n) ---"
+  cat -n "${_cache_seed}"
+  printf 'CACHE_SEED_PATH=[%s]\n' "${_cache_seed}"
+  wc -l "${_cache_seed}"
+  echo "--- end FINAL cache diagnostics ---"
   EXTRA_CMAKE_ARGS+=(-C "${_cache_seed}")
 fi
 
