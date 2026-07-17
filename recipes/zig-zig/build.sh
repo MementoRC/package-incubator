@@ -537,6 +537,15 @@ if is_not_unix; then
   _zig_cxx_cmake="${ZIG_CXX//\\//}"
   _zig_ar_cmake="${ZIG_AR//\\//}"
   _zig_ranlib_cmake="${ZIG_RANLIB//\\//}"
+  # Strip any stray CR/newline from the tool paths before emitting them into the
+  # CMake initial-cache heredoc. A lone \r (e.g. from a CRLF-tainted env var on the
+  # Windows runner) is treated by CMake as a line break, splitting a set() value
+  # across two lines and producing "Parse error. Expected a command name, got
+  # unquoted argument". Spaces are intentionally NOT stripped (paths may contain
+  # them; they are harmless inside the quoted set()).
+  for _v in _zig_cc_cmake _zig_cxx_cmake _zig_ar_cmake _zig_ranlib_cmake; do
+    printf -v "${_v}" '%s' "${!_v//[$'\r\n']/}"
+  done
   cat > "${_cache_seed}" << TCEOF
 # Pre-seed compiler identification so CMake skips the test program
 set(CMAKE_C_COMPILER "${_zig_cc_cmake}" CACHE FILEPATH "")
@@ -573,6 +582,13 @@ set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
 # Pin llvm-config so cmake doesn't find BUILD_PREFIX's conda-forge copy
 set(LLVM_CONFIG "${LLVM_CONFIG//\\//}" CACHE FILEPATH "")
 TCEOF
+  # Diagnostic: show the exact bytes of the generated initial-cache file so a
+  # parse failure (e.g. a stray control char splitting a set() line) is visible
+  # in the CI log without another blind rebuild. cat -A marks line ends ($) and
+  # control chars (^M for CR), which plain output would hide.
+  echo "--- generated zig-cmake-cache.cmake (cat -A, first 6 lines) ---"
+  cat -A "${_cache_seed}" | sed -n '1,6p'
+  echo "--- end zig-cmake-cache.cmake dump ---"
   if [[ -n "${ZIG_LLVM_MANUAL_OVERRIDE:-}" ]]; then
     # Windows cross-build: bypass Findllvm.cmake's llvm-config --link-shared
     # probe entirely (see cmake/Findllvm.cmake patch) since the only
