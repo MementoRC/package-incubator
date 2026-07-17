@@ -221,9 +221,10 @@ PPCLD
     # This file patches the link rule templates after platform detection.
     #
     # zig lld-link rejects /version:0.0 (auto-set by CMake for versionless Windows targets).
-    # -D and -C CACHE FORCE and CMAKE_USER_MAKE_RULES_OVERRIDE all failed (overridden by
-    # platform module). CMAKE_PROJECT_INCLUDE runs LAST in project(), after platform
-    # modules set link rule vars — patches them here via string(REPLACE).
+    # CMAKE_PROJECT_INCLUDE is used here because it runs LAST in project(), after platform
+    # modules set link rule vars, so it can patch them via string(REPLACE). Earlier hooks
+    # (-D, -C ... CACHE FORCE, CMAKE_USER_MAKE_RULES_OVERRIDE) get overridden by platform-module
+    # processing before they'd take effect.
     #
     # Use SRC_DIR (forward-slash path) directly to avoid the CMake 4.2 backslash-escape bug.
     _fwd_src_dir="${SRC_DIR}"

@@ -220,9 +220,9 @@ _CMAKE=(
 #    Sets CMAKE_CXX_CREATE_SHARED_LIBRARY as a normal variable in the
 #    top-level project scope — guaranteed to override any platform default.
 #
-#    -D, -C with CACHE FORCE, and CMAKE_USER_MAKE_RULES_OVERRIDE were all tried
-#    and failed (CI confirmed) — each gets overridden by later platform module
-#    processing; only the project-include approach above survives it.
+#    CMAKE_PROJECT_INCLUDE is used instead of -D, -C with CACHE FORCE, or
+#    CMAKE_USER_MAKE_RULES_OVERRIDE because those are overridden by later
+#    platform-module processing; only the project-include approach survives it.
 _cmake_init="${SRC_DIR}/_cmake_init.cmake"
 _cmake_project_include="${SRC_DIR}/_cmake_project_include.cmake"
 : > "${_cmake_init}"
@@ -412,36 +412,6 @@ if is_not_unix; then
     _def_out="${LLVM_BUILD}/libLLVM.def"
     _zig_bin="${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe"
 
-    if _debug; then
-      echo "=== win-arm64 extract_symbols diagnostics ==="
-
-      echo "--- nm tools available ---"
-      if [[ -x "${BUILD_PREFIX}/Library/bin/llvm-nm" ]]; then
-        echo "  Library/bin/llvm-nm (Windows path): FOUND"
-        "${BUILD_PREFIX}/Library/bin/llvm-nm" --version 2>&1 | head -5
-      elif [[ -x "${BUILD_PREFIX}/Library/bin/llvm-nm.exe" ]]; then
-        echo "  Library/bin/llvm-nm.exe: FOUND"
-        "${BUILD_PREFIX}/Library/bin/llvm-nm.exe" --version 2>&1 | head -5
-      elif [[ -x "${BUILD_PREFIX}/bin/llvm-nm" ]]; then
-        echo "  bin/llvm-nm (fallback): FOUND"
-        "${BUILD_PREFIX}/bin/llvm-nm" --version 2>&1 | head -5
-      else
-        echo "  host llvm-nm: NOT FOUND in Library/bin or bin"
-      fi
-      "${_zig_bin}" version 2>&1 | head -3 \
-        || echo "  zig: NOT FOUND or errored"
-
-      echo "--- extract_symbols.py --help ---"
-      python3 "${LLVM_SRC}/utils/extract_symbols.py" --help 2>&1 | head -40 || true
-
-      echo "--- archive listing (LLVM*.lib + libLLVM*.a) ---"
-      shopt -s nullglob
-      _archives=( "${LLVM_BUILD}"/lib/LLVM*.lib "${LLVM_BUILD}"/lib/libLLVM*.a )
-      echo "  archive count: ${#_archives[@]}"
-      ls -la "${_archives[@]}" 2>/dev/null | head -10 || true
-      shopt -u nullglob
-    fi
-
     _sample=""
     for _cand in "${LLVM_BUILD}/lib/libLLVMAArch64Info.a" \
                  "${LLVM_BUILD}/lib/libLLVMSupport.a"; do
@@ -457,9 +427,7 @@ if is_not_unix; then
       _host_nm="${BUILD_PREFIX}/bin/llvm-nm"
     else
       _host_nm=""
-      if _debug; then echo "  WARNING: no llvm-nm found in BUILD_PREFIX"; fi
     fi
-    if _debug; then echo "  selected host nm: ${_host_nm}"; fi
 
     # Resolve host llvm-readobj: same search order as llvm-nm above.
     if [[ -x "${BUILD_PREFIX}/Library/bin/llvm-readobj" ]]; then
@@ -470,24 +438,6 @@ if is_not_unix; then
       _host_readobj="${BUILD_PREFIX}/bin/llvm-readobj"
     else
       _host_readobj=""
-      if _debug; then echo "  WARNING: no llvm-readobj found in BUILD_PREFIX"; fi
-    fi
-    if _debug; then echo "  selected host readobj: ${_host_readobj}"; fi
-
-    if _debug; then
-      echo "--- sample archive symbol probe ---"
-      if [[ -n "${_sample}" ]]; then
-        echo "  sample: ${_sample}"
-        echo "  size: $(stat -c %s "${_sample}" 2>/dev/null || stat -f %z "${_sample}")"
-        if [[ -n "${_host_nm}" ]]; then
-          echo "  host llvm-nm output (first 10 lines):"
-          "${_host_nm}" "${_sample}" 2>&1 | head -10 | sed 's/^/    /' || true
-        fi
-        echo "  zig nm output (first 10 lines):"
-        "${_zig_bin}" nm "${_sample}" 2>&1 | head -10 | sed 's/^/    /' || true
-      else
-        echo "  no sample archive found"
-      fi
     fi
 
     # Windows-invocable wrapper for `zig nm`. extract_symbols.py calls subprocess
@@ -498,8 +448,9 @@ if is_not_unix; then
 "${_zig_bin}" nm %*
 EOF
 
-    # Try multiple --nm x --mangling combinations. zig MinGW uses Itanium mangling
-    # (not Microsoft); Linux ELF also uses Itanium mangling.
+    # Try both nm sources (host llvm-nm, zig's own nm via a .bat wrapper) with
+    # Itanium mangling — zig MinGW and Linux ELF both use Itanium (not Microsoft)
+    # mangling — and keep whichever produces more .def entries.
     declare -a _attempts=()
     if [[ -n "${_host_nm}" ]]; then
       _attempts+=( "host-itanium|${_host_nm}|itanium" )
@@ -559,17 +510,7 @@ EOF
     done
 
     if [[ -n "${_winner_def}" ]]; then
-      if _debug; then echo "=== WINNER: ${_winner_label} with ${_winner_lines} lines ==="; fi
       cp "${_winner_def}" "${_def_out}"
-      if _debug; then
-        echo "[Stage 2] === .def file head (first 20 lines) ==="
-        head -20 "${LLVM_BUILD}/libLLVM.def" 2>/dev/null | sed 's/^/[Stage 2] DEF: /' || echo "[Stage 2] DEF: <empty or unreadable>"
-        echo "[Stage 2] === .def file md5 / size ==="
-        wc -l "${LLVM_BUILD}/libLLVM.def" 2>/dev/null
-        md5sum "${LLVM_BUILD}/libLLVM.def" 2>/dev/null || true
-      fi
-    else
-      if _debug; then echo "=== ALL ATTEMPTS PRODUCED EMPTY .def ==="; fi
     fi
 
     if [[ ! -s "${_def_out}" ]]; then

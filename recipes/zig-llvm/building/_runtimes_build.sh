@@ -200,10 +200,11 @@ fi
 # aarch64-unknown-linux-gnu), caching x86_64 for all C/C++ compile+link steps.
 # ASM escapes the problem because it is compiled differently, so C/C++ objects
 # end up as elf_x86_64 while ASM objects are aarch64 — causing ld.lld errors.
-# Zig parses compiler target queries in 3-component format (<arch>-<os>-<abi>);
-# clang's 4-component LLVM triple (e.g. aarch64-unknown-linux-gnu) makes zig
-# treat "unknown" as the OS and fail with UnknownOperatingSystem.
-# Strip the "-unknown-" middle component to get the zig-compatible triple.
+# ZIG_LLVM_TRIPLET (3-component zig triple; see _cross_compile.sh:291-296 for
+# the "-unknown-" stripping rationale) is recomputed here — independently of
+# _cross_compile.sh, whose own copy of this line only runs inside its
+# CONDA_BUILD_CROSS_COMPILATION guard — because this file's `is_cross` block
+# below needs the value regardless of how _cross_compile.sh's guard evaluated.
 ZIG_LLVM_TRIPLET="$(zig_triplet_from_llvm "${LLVM_TRIPLET}")"
 
 if is_cross; then

@@ -40,20 +40,6 @@ context:
       "x86_64-windows-gnu"                          if not unix                              else
       "native"
     }}
-  # Bare zig target for build_platform — wrapper filename prefix for the build-host compiler
-  zig_target_build: >-
-    ${{
-      "x86_64-linux-gnu"                            if build_platform == "linux-64"          else
-      "aarch64-linux-gnu"                           if build_platform == "linux-aarch64"     else
-      "powerpc64le-linux-gnu"                       if build_platform == "linux-ppc64le"     else
-      "riscv64-linux-gnu"                           if build_platform == "linux-riscv64"     else
-      "s390x-linux-gnu"                             if build_platform == "linux-s390x"       else
-      "x86_64-macos." ~ c_stdlib_version            if build_platform == "osx-64"            else
-      "aarch64-macos." ~ c_stdlib_version           if build_platform == "osx-arm64"         else
-      "aarch64-windows-gnu"                         if not unix and arm64                    else
-      "x86_64-windows-gnu"                          if not unix                              else
-      "native"
-    }}
   # LLVM target triple (standard format, no glibc version suffix)
   llvm_triplet: >-
     ${{
@@ -93,8 +79,6 @@ outputs:
           LLVM_TRIPLET: ${{ llvm_triplet }}
           ZIG_TRIPLET: ${{ zig_triplet }}
           ZIG_TARGET_HOST: ${{ zig_target }}
-          ZIG_TARGET_BUILD: ${{ zig_target_build }}
-          ZIG_DEBUG_SDK: "1"
 
           # --- BOOTSTRAPPING ---
           CONDA_BUILD_ZIG: >-

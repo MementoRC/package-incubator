@@ -127,6 +127,46 @@ def get_symbol_count(path, symbol):
     return out.count(symbol)
 
 
+def check_library(header, base, label, errors, libdir, *, win32_fallback=None,
+                   symbol_check=None, leading_newline=True):
+    """Run the standard shared-library checks for one library and record errors."""
+    print(f"{chr(10) if leading_newline else ''}=== {header} ===")
+    libs = find_shared_libs(libdir, base)
+    if PLATFORM == "win32" and not libs and win32_fallback:
+        libs = find_shared_libs(libdir, win32_fallback)
+    if not libs:
+        errors.append(f"No {label} shared library found")
+        return
+
+    for lib in libs[:3]:
+        name = os.path.basename(lib)
+        valid, fmt = check_binary_type(lib)
+        print(f"  {name}: {fmt} {'OK' if valid else 'INVALID'}")
+        if not valid:
+            errors.append(f"{name} is not a valid {fmt} shared library")
+
+    main_lib = libs[0]
+    needed = get_needed(main_lib)
+    has_stdcxx = any("libstdc++" in n or "stdc++" in n.lower() for n in needed)
+    print(f"  Dependencies: {sorted(needed)}")
+    if has_stdcxx:
+        errors.append(f"{label} depends on libstdc++ (must use libc++)")
+    else:
+        print("  No libstdc++ dependency: OK")
+
+    if PLATFORM == "linux":
+        glibc = get_glibc_versions(main_lib)
+        print(f"  GLIBC versions: {glibc}")
+
+    rpath = get_rpath(main_lib)
+    if rpath:
+        print(f"  RPATH/RUNPATH: {rpath}")
+
+    if symbol_check:
+        count = get_symbol_count(main_lib, symbol_check)
+        print(f"  {symbol_check} symbols: {count}")
+
+
 def main():
     prefix = os.environ.get("CONDA_PREFIX", os.environ.get("PREFIX", ""))
     # Windows conda convention: non-Python artifacts under Library/
@@ -141,100 +181,11 @@ def main():
 
     errors = []
 
-    # --- Check libLLVM ---
-    print("=== libLLVM ===")
-    llvm_libs = find_shared_libs(libdir, "libLLVM")
-    if PLATFORM == "win32" and not llvm_libs:
-        llvm_libs = find_shared_libs(libdir, "LLVM")
-    if not llvm_libs:
-        errors.append("No libLLVM shared library found")
-    else:
-        for lib in llvm_libs[:3]:
-            name = os.path.basename(lib)
-            valid, fmt = check_binary_type(lib)
-            print(f"  {name}: {fmt} {'OK' if valid else 'INVALID'}")
-            if not valid:
-                errors.append(f"{name} is not a valid {fmt} shared library")
-
-        main_lib = llvm_libs[0]
-        needed = get_needed(main_lib)
-        has_stdcxx = any("libstdc++" in n or "stdc++" in n.lower() for n in needed)
-        print(f"  Dependencies: {sorted(needed)}")
-        if has_stdcxx:
-            errors.append("libLLVM depends on libstdc++ (must use libc++)")
-        else:
-            print("  No libstdc++ dependency: OK")
-
-        if PLATFORM == "linux":
-            glibc = get_glibc_versions(main_lib)
-            print(f"  GLIBC versions: {glibc}")
-
-        rpath = get_rpath(main_lib)
-        if rpath:
-            print(f"  RPATH/RUNPATH: {rpath}")
-
-        count = get_symbol_count(main_lib, "LLVMContext")
-        print(f"  LLVMContext symbols: {count}")
-
-    # --- Check libclang-cpp ---
-    print("\n=== libclang-cpp ===")
-    clang_libs = find_shared_libs(libdir, "libclang-cpp")
-    if not clang_libs:
-        errors.append("No libclang-cpp shared library found")
-    else:
-        for lib in clang_libs[:3]:
-            name = os.path.basename(lib)
-            valid, fmt = check_binary_type(lib)
-            print(f"  {name}: {fmt} {'OK' if valid else 'INVALID'}")
-            if not valid:
-                errors.append(f"{name} is not a valid {fmt} shared library")
-
-        main_lib = clang_libs[0]
-        needed = get_needed(main_lib)
-        has_stdcxx = any("libstdc++" in n or "stdc++" in n.lower() for n in needed)
-        print(f"  Dependencies: {sorted(needed)}")
-        if has_stdcxx:
-            errors.append("libclang-cpp depends on libstdc++ (must use libc++)")
-        else:
-            print("  No libstdc++ dependency: OK")
-
-        if PLATFORM == "linux":
-            glibc = get_glibc_versions(main_lib)
-            print(f"  GLIBC versions: {glibc}")
-
-        rpath = get_rpath(main_lib)
-        if rpath:
-            print(f"  RPATH/RUNPATH: {rpath}")
-
-    # --- Check liblldZig (bundled shared library) ---
-    print("\n=== liblld ===")
-    lld_libs = find_shared_libs(libdir, "liblldZig")
-    if not lld_libs:
-        errors.append("No liblldZig shared library found")
-    else:
-        for lib in lld_libs[:3]:
-            name = os.path.basename(lib)
-            valid, fmt = check_binary_type(lib)
-            print(f"  {name}: {fmt} {'OK' if valid else 'INVALID'}")
-            if not valid:
-                errors.append(f"{name} is not a valid {fmt} shared library")
-
-        main_lib = lld_libs[0]
-        needed = get_needed(main_lib)
-        has_stdcxx = any("libstdc++" in n or "stdc++" in n.lower() for n in needed)
-        print(f"  Dependencies: {sorted(needed)}")
-        if has_stdcxx:
-            errors.append("liblldZig depends on libstdc++ (must use libc++)")
-        else:
-            print("  No libstdc++ dependency: OK")
-
-        if PLATFORM == "linux":
-            glibc = get_glibc_versions(main_lib)
-            print(f"  GLIBC versions: {glibc}")
-
-        rpath = get_rpath(main_lib)
-        if rpath:
-            print(f"  RPATH/RUNPATH: {rpath}")
+    check_library("libLLVM", "libLLVM", "libLLVM", errors, libdir,
+                   win32_fallback="LLVM", symbol_check="LLVMContext",
+                   leading_newline=False)
+    check_library("libclang-cpp", "libclang-cpp", "libclang-cpp", errors, libdir)
+    check_library("liblld", "liblldZig", "liblldZig", errors, libdir)
 
     # --- Summary ---
     print(f"\n--- Summary ---")

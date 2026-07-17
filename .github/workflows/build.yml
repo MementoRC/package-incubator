@@ -482,6 +482,12 @@ jobs:
       - name: Build zig-llvm
         shell: bash
         run: |
+          # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
+          if [ "${{ matrix.target }}" = "linux-riscv64" ]; then
+            ( while true; do printf '[heartbeat] %s ' "$(date -u +%H:%M:%S)"; awk '/MemAvailable|MemTotal/{printf "%s=%s ", $1, $2}' /proc/meminfo; printf 'load=%s\n' "$(cut -d" " -f1-3 /proc/loadavg)"; sleep 30; done ) &
+            _HB_PID=$!
+            trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
+          fi
           rattler-build build --recipe recipes/zig-llvm \
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
@@ -505,6 +511,12 @@ jobs:
       - name: Build zig-zig
         shell: bash
         run: |
+          # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
+          if [ "${{ matrix.target }}" = "linux-riscv64" ]; then
+            ( while true; do printf '[heartbeat] %s ' "$(date -u +%H:%M:%S)"; awk '/MemAvailable|MemTotal/{printf "%s=%s ", $1, $2}' /proc/meminfo; printf 'load=%s\n' "$(cut -d" " -f1-3 /proc/loadavg)"; sleep 30; done ) &
+            _HB_PID=$!
+            trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
+          fi
           rattler-build build --recipe recipes/zig-zig \
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \

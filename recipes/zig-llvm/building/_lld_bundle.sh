@@ -1,5 +1,4 @@
 function build_lld_bundle() {
-  if _debug; then set -x; fi  # DIAGNOSTIC: trace all commands to stderr
   # Bundle prebuilt liblld*.a archives into a platform-native shared library.
   #
   # Rationale: consumers (zig-zig) that link the individual lld static archives
@@ -101,10 +100,6 @@ function build_lld_bundle() {
     echo "  OK: $(ls -lh "${_out}" | awk '{print $5, $9}')"
 
   elif is_not_unix; then
-    # DIAGNOSTIC: log environment before Windows build
-    if _debug; then
-      echo "DEBUG: target_platform=${target_platform:-unset} ZIG_CXX=${ZIG_CXX:-unset} LLVM_INSTALL=${LLVM_INSTALL:-unset} _lld_lib=${_lld_lib:-unset}" >&2
-    fi
     local _out="${LLVM_INSTALL}/bin/liblldZig.dll"
     local _implib="${_lld_lib}/liblldZig.dll.a"
     # Pass -target so zig-cc links/compiles for the TARGET arch (aarch64-windows-gnu),
@@ -148,5 +143,4 @@ function build_lld_bundle() {
     echo "  OK: $(ls -lh "${_out}" | awk '{print $5, $9}') + import lib $(ls -lh "${_implib}" | awk '{print $5, $9}')"
 
   fi
-  if _debug; then set +x; fi  # DIAGNOSTIC: disable tracing
 }

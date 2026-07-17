@@ -537,14 +537,19 @@ if is_not_unix; then
   _zig_cxx_cmake="${ZIG_CXX//\\//}"
   _zig_ar_cmake="${ZIG_AR//\\//}"
   _zig_ranlib_cmake="${ZIG_RANLIB//\\//}"
-  # Strip any stray CR/newline from the tool paths before emitting them into the
-  # CMake initial-cache heredoc. A lone \r (e.g. from a CRLF-tainted env var on the
-  # Windows runner) is treated by CMake as a line break, splitting a set() value
-  # across two lines and producing "Parse error. Expected a command name, got
-  # unquoted argument". Spaces are intentionally NOT stripped (paths may contain
-  # them; they are harmless inside the quoted set()).
+  echo "--- tool-path raw bytes (pre-strip, od) ---"
   for _v in _zig_cc_cmake _zig_cxx_cmake _zig_ar_cmake _zig_ranlib_cmake; do
-    printf -v "${_v}" '%s' "${!_v//[$'\r\n']/}"
+    printf '%s = ' "${_v}"; printf '%s' "${!_v}" | od -An -tx1
+  done
+  echo "--- end raw-byte dump ---"
+  # Strip ALL control characters (superset of CR/LF) from the tool paths before
+  # emitting them into the CMake initial-cache heredoc. A lone \r/\v/\f etc.
+  # (e.g. from a tainted env var on the Windows runner) is treated by CMake as
+  # a line break, splitting a set() value across two lines and producing
+  # "Parse error. Expected a command name, got unquoted argument". Spaces are
+  # intentionally kept (paths may contain them; harmless inside quoted set()).
+  for _v in _zig_cc_cmake _zig_cxx_cmake _zig_ar_cmake _zig_ranlib_cmake; do
+    printf -v "${_v}" '%s' "$(printf '%s' "${!_v}" | tr -d '[:cntrl:]')"
   done
   cat > "${_cache_seed}" << TCEOF
 # Pre-seed compiler identification so CMake skips the test program
@@ -586,8 +591,8 @@ TCEOF
   # parse failure (e.g. a stray control char splitting a set() line) is visible
   # in the CI log without another blind rebuild. cat -A marks line ends ($) and
   # control chars (^M for CR), which plain output would hide.
-  echo "--- generated zig-cmake-cache.cmake (cat -A, first 6 lines) ---"
-  cat -A "${_cache_seed}" | sed -n '1,6p'
+  echo "--- generated zig-cmake-cache.cmake (cat -A, full file) ---"
+  cat -A "${_cache_seed}"
   echo "--- end zig-cmake-cache.cmake dump ---"
   if [[ -n "${ZIG_LLVM_MANUAL_OVERRIDE:-}" ]]; then
     # Windows cross-build: bypass Findllvm.cmake's llvm-config --link-shared
