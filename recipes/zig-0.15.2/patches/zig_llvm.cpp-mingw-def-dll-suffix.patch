@@ -1,0 +1,20 @@
+# Purpose: Append .dll suffix to LIBRARY name in MinGW .def files before calling writeImportLibrary
+# Affects: src/zig_llvm.cpp (LLVM DlltoolDriver path)
+# Upstream: TBD
+# Drop-when: LLVM upstream normalises .dll suffix in parseCOFFModuleDefinition or writeImportLibrary
+# Last-verified: 2026-05-12
+
+--- a/src/zig_llvm.cpp
++++ b/src/zig_llvm.cpp
+@@ -485,6 +485,11 @@
+         return true;
+     }
+
++    // Some MinGW .def files (e.g. api-ms-win-*) omit the .dll suffix from the
++    // LIBRARY name; normalise it so writeImportLibrary embeds a valid DLL name.
++    if (!StringRef(def->OutputFile).ends_with(".dll"))
++        def->OutputFile += ".dll";
++
+     // The exports-juggling code below is ripped from LLVM's DlltoolDriver.cpp
+
+     // If ExtName is set (if the "ExtName = Name" syntax was used), overwrite

@@ -1,0 +1,17 @@
+# Purpose: Add .macho to the LLD ofmt early-exit guard so COFF export-flag logic is skipped for Mach-O output, preventing misidentified export flags on macOS
+# Affects: All platforms (Mach-O path active on macOS; patch applied unconditionally)
+# Upstream: not filed
+# Drop-when: upstream fixes LLD ofmt dispatch to exclude Mach-O from COFF export-flag path
+# Last-verified: 2026-05-12 (build 23)
+
+--- a/src/codegen/llvm.zig
++++ b/src/codegen/llvm.zig
+@@ -1609,7 +1609,7 @@
+             const lf = comp.bin_file orelse break :coff_export_flags;
+             const lld = lf.cast(.lld) orelse break :coff_export_flags;
+             const coff = switch (lld.ofmt) {
+-                .elf, .wasm => break :coff_export_flags,
++                .elf, .wasm, .macho => break :coff_export_flags,
+                 .coff => |*coff| coff,
+             };
+             if (!ip.isFunctionType(ip.getNav(nav_index).typeOf(ip))) break :coff_export_flags;

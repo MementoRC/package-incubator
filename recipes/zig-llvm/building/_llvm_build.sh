@@ -16,12 +16,13 @@ _CLANG=(
   -DCLANG_TOOL_LIBCLANG_BUILD=OFF
 )
 
-# LLVM_TARGETS_TO_BUILD: 10-target curated list. On aarch64-windows-gnu the
+# LLVM_TARGETS_TO_BUILD: 16-target curated list (+ SPIRV experimental). On aarch64-windows-gnu the
 # resulting libLLVM-20.dll exceeds the PE/COFF 65535 export-ordinal limit
 # because GPU backends (AMDGPU + NVPTX) have very large TableGen-generated
 # instruction-selection tables. Drop them on aarch64-windows-gnu only —
 # zig doesn't target GPU code generation on win-arm64.
-_llvm_targets="X86;AArch64;ARM;PowerPC;RISCV;WebAssembly;SystemZ;AMDGPU;AVR;NVPTX"
+_llvm_targets="X86;AArch64;ARM;PowerPC;RISCV;WebAssembly;SystemZ;AMDGPU;AVR;NVPTX;BPF;Hexagon;Lanai;MSP430;VE;XCore"
+_llvm_exp_targets="SPIRV"
 if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
     # zig requires AArch64;ARM;PowerPC;RISCV;SystemZ;WebAssembly;X86 to be built
     # (see recipes/zig-zig/patches/relax-llvm-required-targets.patch's
@@ -30,6 +31,7 @@ if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
     # actual cause of exceeding the PE/COFF 65535 export-ordinal limit, not
     # ARM/PowerPC/RISCV/SystemZ.
     _llvm_targets="X86;AArch64;ARM;PowerPC;RISCV;SystemZ;WebAssembly"
+    _llvm_exp_targets=""
     echo "  win-arm64: pruned LLVM_TARGETS_TO_BUILD (dropped AVR, AMDGPU, NVPTX) to fit PE/COFF 65535 export limit"
 fi
 
@@ -49,6 +51,7 @@ _LLVM=(
   -DLLVM_ENABLE_ZLIB=ON
   -DLLVM_LINK_LLVM_DYLIB=ON
   -DLLVM_TARGETS_TO_BUILD="${_llvm_targets}"
+  -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="${_llvm_exp_targets}"
 
   -DLLVM_DEFAULT_TARGET_TRIPLE="${LLVM_TRIPLET}"
   -DLLVM_BUILD_UTILS=OFF
@@ -230,7 +233,10 @@ _cmake_project_include="${SRC_DIR}/_cmake_project_include.cmake"
 
 CMAKE_RC_FLAGS=()
 if is_not_unix; then
-  _rc_path="${BUILD_PREFIX}/Library/bin/${CONDA_BUILD_ZIG}-rc.exe"
+  # Normalize BUILD_PREFIX to forward slashes: on Windows it expands to a
+  # backslash path (D:\a\...), and \a etc. become invalid CMake string escapes.
+  _bp="${BUILD_PREFIX//\\//}"
+  _rc_path="${_bp}/Library/bin/${CONDA_BUILD_ZIG}-rc.exe"
   cat >> "${_cmake_init}" << CMINIT
 # RC compiler with forward-slash path — avoids CMake 4.2 backslash escape bug.
 set(CMAKE_RC_COMPILER "${_rc_path}" CACHE FILEPATH "RC compiler")

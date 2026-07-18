@@ -93,33 +93,32 @@ jobs:
           name: native-linux-64-phase1
           path: output/linux-64/
 
-      - name: Restore zig-zig cache
+      - name: Restore zig-0.15.2 cache
         uses: actions/cache/restore@v4
         with:
-          path: output/linux-64/zig-zig*.conda
-          key: zig-zig-linux-64-${{ hashFiles('recipes/zig-zig/**') }}
-          restore-keys: zig-zig-linux-64-
-      - name: Build zig-zig
+          path: output/linux-64/zig15*.conda
+          key: zig15-linux-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-linux-64-
+      - name: Build zig15
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-zig \
+          rattler-build build --recipe recipes/zig-0.15.2 \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig artifacts
+      - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
-      - name: Save zig-zig cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+      - name: Save zig15 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/linux-64/zig-zig*.conda
-          key: zig-zig-linux-64-${{ hashFiles('recipes/zig-zig/**') }}
-
+          path: output/linux-64/zig15*.conda
+          key: zig15-linux-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-linux-64-phase2
-          path: output/linux-64/zig-zig*.conda
+          path: output/linux-64/zig15*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -208,33 +207,32 @@ jobs:
           name: native-osx-arm64-phase1
           path: output/osx-arm64/
 
-      - name: Restore zig-zig cache
+      - name: Restore zig15 cache
         uses: actions/cache/restore@v4
         with:
-          path: output/osx-arm64/zig-zig*.conda
-          key: zig-zig-osx-arm64-${{ hashFiles('recipes/zig-zig/**') }}
-          restore-keys: zig-zig-osx-arm64-
-      - name: Build zig-zig
+          path: output/osx-arm64/zig15*.conda
+          key: zig15-osx-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-osx-arm64-
+      - name: Build zig15
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-zig \
+          rattler-build build --recipe recipes/zig-0.15.2 \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig artifacts
+      - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
-      - name: Save zig-zig cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+      - name: Save zig15 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/osx-arm64/zig-zig*.conda
-          key: zig-zig-osx-arm64-${{ hashFiles('recipes/zig-zig/**') }}
-
+          path: output/osx-arm64/zig15*.conda
+          key: zig15-osx-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-osx-arm64-phase2
-          path: output/osx-arm64/zig-zig*.conda
+          path: output/osx-arm64/zig15*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -324,34 +322,33 @@ jobs:
           name: native-win-64-phase1
           path: output/win-64/
 
-      - name: Restore zig-zig cache
+      - name: Restore zig15 cache
         uses: actions/cache/restore@v4
         with:
-          path: output/win-64/zig-zig*.conda
-          key: zig-zig-win-64-${{ hashFiles('recipes/zig-zig/**') }}
-          restore-keys: zig-zig-win-64-
-      - name: Build zig-zig
+          path: output/win-64/zig15*.conda
+          key: zig15-win-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-win-64-
+      - name: Build zig15
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
-          rattler-build build --recipe recipes/zig-zig \
+          rattler-build build --recipe recipes/zig-0.15.2 \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig artifacts
+      - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
-      - name: Save zig-zig cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+      - name: Save zig15 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/win-64/zig-zig*.conda
-          key: zig-zig-win-64-${{ hashFiles('recipes/zig-zig/**') }}
-
+          path: output/win-64/zig15*.conda
+          key: zig15-win-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-win-64-phase2
-          path: output/win-64/zig-zig*.conda
+          path: output/win-64/zig15*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -502,13 +499,13 @@ jobs:
           path: output/${{ matrix.target }}/zig-llvm*.conda
           key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
 
-      - name: Restore zig-zig cache
+      - name: Restore zig15 cache
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
-          key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
-          restore-keys: zig-zig-${{ matrix.target }}-
-      - name: Build zig-zig
+          key: zig15-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-${{ matrix.target }}-
+      - name: Build zig15
         shell: bash
         run: |
           # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
@@ -517,19 +514,19 @@ jobs:
             _HB_PID=$!
             trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           fi
-          rattler-build build --recipe recipes/zig-zig \
+          rattler-build build --recipe recipes/zig-0.15.2 \
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig artifacts
+      - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
-      - name: Save zig-zig cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+      - name: Save zig15 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/${{ matrix.target }}/zig-zig*.conda
-          key: zig-zig-${{ matrix.target }}-${{ hashFiles('recipes/zig-zig/**') }}
+          path: output/${{ matrix.target }}/zig15*.conda
+          key: zig15-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
 
       # - name: Build zig-zig-llvm
       #   shell: bash
@@ -600,27 +597,34 @@ jobs:
           path: output/osx-64/zig-llvm*.conda
           key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
 
-      - name: Restore zig-zig cache
+      - name: Restore zig15 cache
         uses: actions/cache/restore@v4
         with:
           path: output/osx-64/*.conda
-          key: zig-zig-osx-64-${{ hashFiles('recipes/zig-zig/**') }}
-          restore-keys: zig-zig-osx-64-
-      - name: Build zig-zig
+          key: zig15-osx-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-osx-64-
+      - name: Build zig15
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-zig \
+          rattler-build build --recipe recipes/zig-0.15.2 \
             --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig artifacts
+      - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
-      - name: Save zig-zig cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+      - name: Save zig15 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/osx-64/zig-zig*.conda
-          key: zig-zig-osx-64-${{ hashFiles('recipes/zig-zig/**') }}
+          path: output/osx-64/zig15*.conda
+          key: zig15-osx-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
 
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'
@@ -696,28 +700,36 @@ jobs:
           path: output/win-arm64/zig-llvm*.conda
           key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
 
-      - name: Restore zig-zig cache
+      - name: Restore zig15 cache
         uses: actions/cache/restore@v4
         with:
           path: output/win-arm64/*.conda
-          key: zig-zig-win-arm64-${{ hashFiles('recipes/zig-zig/**') }}
-          restore-keys: zig-zig-win-arm64-
-      - name: Build zig-zig
+          key: zig15-win-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-win-arm64-
+      - name: Build zig15
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
-          rattler-build build --recipe recipes/zig-zig \
+          rattler-build build --recipe recipes/zig-0.15.2 \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-zig artifacts
+      - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-[0-9]*'
-      - name: Save zig-zig cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+      - name: Save zig15 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/win-arm64/zig-zig*.conda
-          key: zig-zig-win-arm64-${{ hashFiles('recipes/zig-zig/**') }}
+          path: output/win-arm64/zig15*.conda
+          key: zig15-win-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+
+      - name: Upload packages to prefix.dev
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          for file in output/**/*.conda; do
+            rattler-build upload prefix -c prefix-package-incubator "$file"
+          done
 
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'

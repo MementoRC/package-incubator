@@ -768,6 +768,15 @@ if is_linux && is_cross; then
   create_libc_single_threaded_stub "${CONDA_TRIPLET%%-*}" "${CC}" "${ZIG_LOCAL_CACHE_DIR}" "${ZIG_TRIPLET}" "${zig}"
 fi
 
+# Windows cross-builds (win-arm64) also cannot run the native-compiled langref
+# doctests: docgen compiles for the BUILD-native x86_64 host, but --search-prefix points
+# at the aarch64 zig-llvm libs, crashing the docgen subprocess (exit 53) and failing the
+# whole `zig build install`. Mirror the Linux-cross behaviour and disable langref.
+# (win-64 native builds docs fine, so this is gated on is_cross.)
+if is_not_unix && is_cross; then
+  remove_failing_langref "${zig_build_dir}"
+fi
+
 # Workaround for ziglang/zig#14919: add synchronization.def so zig can generate
 # libsynchronization.a when cross-compiling to Windows (e.g. OCaml BYTECCLIBS uses -lsynchronization).
 # IMPORTANT: LIBRARY must be api-ms-win-core-synch-l1-2-0.dll, NOT synchronization.dll.
@@ -1170,12 +1179,18 @@ else
     )
   fi
   if is_not_unix; then
-    _version=$(ls -1v "${VSINSTALLDIR}/VC/Tools/MSVC" | tail -n 1)
-    _UCRT_LIB_PATH="C:\Program Files (x86)\Windows Kits\10\lib\10.0.22621.0\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.22621.0\ucrt\x64;C:\Windows\System32"
-    _MSVC_LIB_PATH="${VSINSTALLDIR//\\/\/}/VC/Tools/MSVC/${_version}/lib/x64"
-    EXTRA_CMAKE_ARGS+=(
-      -DZIG_CMAKE_PREFIX_PATH="${_MSVC_LIB_PATH};${_UCRT_LIB_PATH};${LIBPATH}"
-    )
+    # MSVC/UCRT lib paths are only needed (and VSINSTALLDIR only set) on the native
+    # Windows runner. On win-arm64 cross the target is -gnu (MinGW) and VSINSTALLDIR is
+    # unset, so referencing it under `set -u` aborts the build. Skip on cross; keep the
+    # Windows CMake patches below (needed regardless of ABI).
+    if ! is_cross; then
+      _version=$(ls -1v "${VSINSTALLDIR}/VC/Tools/MSVC" | tail -n 1)
+      _UCRT_LIB_PATH="C:\Program Files (x86)\Windows Kits\10\lib\10.0.22621.0\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.22621.0\ucrt\x64;C:\Windows\System32"
+      _MSVC_LIB_PATH="${VSINSTALLDIR//\\/\/}/VC/Tools/MSVC/${_version}/lib/x64"
+      EXTRA_CMAKE_ARGS+=(
+        -DZIG_CMAKE_PREFIX_PATH="${_MSVC_LIB_PATH};${_UCRT_LIB_PATH};${LIBPATH}"
+      )
+    fi
     CMAKE_PATCHES+=(
       0001-win-deprecations-zig_llvm.cpp.patch
       0001-win-deprecations-zig_llvm-ar.cpp.patch
