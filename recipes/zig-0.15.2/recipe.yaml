@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: 32
+  build_number: 36
   name: zig15
   version: "0.15.2"
 
@@ -121,6 +121,10 @@ source:
     sha256: ebe6eb7006f6bbb72e54bd25d0675f2794084909d63a95aa315f2dcf2af5fd99
     patches:
       - patches/relax-llvm-required-targets.patch
+      # Neutralize zig codegen refs to LLVM targets absent from curated zig-llvm libLLVM
+      # (Mips/Sparc/LoongArch/etc -> unreachable). Ported from recipes/zig-zig; verified
+      # to apply cleanly against zig 0.15.2. Fixes undefined LLVMInitialize{Mips,Sparc,LoongArch}*.
+      - patches/disable-unsupported-llvm-targets.patch
       - patches/Lld.zig-prefer-shared-libcxx.patch
       # All platforms: wire LLD MachO into zig cc pipeline + allow -fuse-ld=lld
       - patches/Lld.zig-macho-lld-support.patch
@@ -147,6 +151,12 @@ source:
       - if: linux
         then:
           - patches/linux/build.zig-01-maxrss.patch
+          # Ported from recipes/zig-zig (dropped in the 0.15.2 port by mistake): relax
+          # --no-allow-shlib-undefined for zig-llvm .so deps, link pthread/dl, and set
+          # image_base to avoid a segfault when linking against shared LLVM.
+          - patches/linux/build.zig-03-allow-shlib-undefined.patch
+          - patches/linux/build.zig-04-link-pthread-dl.patch
+          - patches/linux/build.zig-05-image-base.patch
           - patches/linux/posix.zig-glibc-2.17-syscalls.patch
           - patches/linux/linux.zig-glibc-2.17-wrapped-copy-file-range.patch
           - patches/linux/llvm.zig-triple-no-glibc-version.patch

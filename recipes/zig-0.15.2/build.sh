@@ -104,6 +104,22 @@ fi
 if is_unix && ! is_cross; then
   export ZIG_LLVM_ROOT="${PREFIX}/lib/zig-llvm"
   export PATH="${ZIG_LLVM_ROOT}/bin:${PATH}"
+  # Port from recipes/zig-zig: make the final `zig build-exe zig` linker search
+  # zig-llvm's isolated lib dir so libLLVM-20.so / libclang-cpp.so / liblldZig.so
+  # resolve the ~43 LLVM/Clang C++ symbols pulled from libzigcpp.a. Native-only:
+  # cross builds intentionally keep BUILD_PREFIX llvmdev and must NOT add this prefix.
+  EXTRA_ZIG_ARGS+=(--search-prefix "${ZIG_LLVM_ROOT}")
+fi
+
+# Windows native: zig-llvm ships llvm-config as an unusable #!/bin/sh wrapper plus
+# llvm-config.real.exe (remove-unneeded.sh). The is_unix guard above skips Windows,
+# so cmake's find_package(llvm)/Findllvm.cmake cannot locate llvm-config. Point it at
+# the real PE binary directly. Native-only (cross keeps BUILD_PREFIX llvmdev).
+if is_not_unix && ! is_cross; then
+  export ZIG_LLVM_ROOT="${PREFIX}/Library/lib/zig-llvm"
+  export PATH="${ZIG_LLVM_ROOT}/bin:${PATH}"
+  _llvm_config=$(find "${ZIG_LLVM_ROOT}/bin" \( -name 'llvm-config.real.exe' -o -name 'llvm-config.exe' \) -type f 2>/dev/null | head -1)
+  EXTRA_CMAKE_ARGS+=(-DLLVM_CONFIG:FILEPATH="${_llvm_config//\\//}")
 fi
 
 # Patch build.zig-doctest-forward-target adds -Ddoctest-target to build.zig.
@@ -236,6 +252,25 @@ if [[ -n "${LOCAL_PATCHES_DIR:-}" && -d "${LOCAL_PATCHES_DIR}" ]]; then
     done
 fi
 
+# Native linux: zig-llvm's libLLVM/libclang-cpp are built with libc++ (_llvm_build.sh
+# LLVM_ENABLE_LIBCXX=ON), but conda g++ compiles zigcpp against libstdc++, so the final
+# self-hosted link fails with undefined std::__cxx11 (abi:cxx11) symbols. Compile zigcpp
+# with the host zig's `c++` (clang + bundled libc++) to match zig-llvm's ABI, and request
+# the c++ runtime. Ported from recipes/zig-zig (build.sh:152-166,375-379). Native-only:
+# cross-linux uses conda llvmdev (libstdc++, already matched) and osx conda clang is
+# already libc++. The "never zig-cc" note in _build.sh is scoped to cross-build target
+# conflicts, which do not apply to this native self-host path.
+if is_linux && ! is_cross; then
+  printf '#!/bin/sh\nexec %s cc "$@"\n'  "${CONDA_ZIG_BUILD}" > "${SRC_DIR}/zig-cc-early"
+  printf '#!/bin/sh\nexec %s c++ "$@"\n' "${CONDA_ZIG_BUILD}" > "${SRC_DIR}/zig-cxx-early"
+  chmod +x "${SRC_DIR}/zig-cc-early" "${SRC_DIR}/zig-cxx-early"
+  EXTRA_CMAKE_ARGS+=(
+    -DCMAKE_C_COMPILER="${SRC_DIR}/zig-cc-early"
+    -DCMAKE_CXX_COMPILER="${SRC_DIR}/zig-cxx-early"
+    -DZIG_SYSTEM_LIBCXX=c++
+  )
+fi
+
 configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}"
 
 # --- ppc64le bundle .so build (after cmake configure, before zig2 link) ---
@@ -257,6 +292,20 @@ is_linux && is_cross && perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-l
 is_osx && is_cross &&   perl -pi -e "s@(ZIG_LLVM_\w+ \")${BUILD_PREFIX}@\$1${PREFIX}@" "${cmake_build_dir}"/config.h
 is_osx &&               perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${PREFIX}/lib/zig-llvm/lib/libc++.dylib\"@" "${cmake_build_dir}"/config.h
 
+# Wire zig-llvm's liblldZig bundle into config.h ZIG_LLVM_LIBRARIES so the final
+# self-hosted zig link resolves lld::{elf,coff,wasm,macho}::link. zig-llvm ships
+# only the single liblldZig bundle (remove-unneeded.sh strips the individual
+# liblld*.a archives). Ported from recipes/zig-zig/build.sh. Scoped to the
+# native-link arches (x86_64/aarch64 linux + osx); riscv64/s390x/ppc64le and
+# windows keep their existing arch-specific handling untouched.
+if is_linux && [[ "${target_platform}" != "linux-riscv64" && "${target_platform}" != "linux-s390x" && "${target_platform}" != "linux-ppc64le" ]]; then
+  _lld_lib="${PREFIX}/lib/zig-llvm/lib"
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${_lld_lib}/liblldZig.so;-lzstd;-lxml2;-lz;-L${_lld_lib};-lc++;-lc++abi;-lunwind\"@" "${cmake_build_dir}"/config.h
+elif is_osx; then
+  _lld_lib="${PREFIX}/lib/zig-llvm/lib"
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${_lld_lib}/liblldZig.dylib;-L${_lld_lib}\"@" "${cmake_build_dir}"/config.h
+fi
+
 # --- Cross-build setup (must happen BEFORE Stage 1 since EXTRA_ZIG_ARGS has --libc) ---
 
 if is_linux && is_cross; then
@@ -275,6 +324,15 @@ if is_linux && is_cross; then
 
   perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/libc_single_threaded_stub.o\"|g" "${cmake_build_dir}/config.h"
   create_libc_single_threaded_stub "${CC}" "${ZIG_LOCAL_CACHE_DIR}"
+elif is_linux; then
+  # Native linux still links the final zig against -Dtarget=...gnu.2.17 (old glibc),
+  # but GCC15+/libc++ objects in zigcpp reference glibc-2.32's __libc_single_threaded.
+  # Provide the same weak stub the cross path uses so the self-hosted link resolves it.
+  source "${RECIPE_DIR}/building/_atfork.sh"
+  perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/libc_single_threaded_stub.o\"|g" "${cmake_build_dir}/config.h"
+  # Native unix has no conda C compiler (compiler('c') is Windows-only); use the
+  # host zig cc wrapper created above (same compiler that builds zigcpp).
+  create_libc_single_threaded_stub "${SRC_DIR}/zig-cc-early" "${ZIG_LOCAL_CACHE_DIR}"
 fi
 
 # Always-linux: sysroot ld-script rewrite (needed by wrapper compile and any zig cc
@@ -307,7 +365,10 @@ if is_osx; then
 fi
 
 if is_linux; then
-  patchelf --set-rpath '$ORIGIN/../lib' "${PREFIX}/bin/zig"
+  # zig dynamically links zig-llvm's libLLVM/libclang-cpp/liblldZig, which install
+  # under $PREFIX/lib/zig-llvm/lib (not $PREFIX/lib). Include that dir on the rpath
+  # so the shipped zig (and the Phase 2 `zig build langref` invocation) can load them.
+  patchelf --set-rpath '$ORIGIN/../lib:$ORIGIN/../lib/zig-llvm/lib' "${PREFIX}/bin/zig"
 fi
 
 
@@ -340,7 +401,16 @@ elif _can_run_stage3; then
   fi
 
   (
-    cd "${cmake_source_dir}" &&
+    cd "${cmake_source_dir}" || exit 1
+    # macOS: the just-built ${PREFIX}/bin/zig references zig-llvm dylibs via
+    # @loader_path/<name> (inherited from libclang-cpp.dylib's LC_ID), which
+    # resolves to ${PREFIX}/bin/ where those dylibs do not live. For this
+    # transient langref run let dyld fall back to zig-llvm/lib by leaf name.
+    # The final zig-real binary gets its dep paths rewritten after the wrapper
+    # split (see "Fixing zig-real dylib refs" below).
+    if is_osx; then
+      export DYLD_FALLBACK_LIBRARY_PATH="${PREFIX}/lib/zig-llvm/lib${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}"
+    fi
     "${_stage3_runner[@]+"${_stage3_runner[@]}"}" "${PREFIX}/bin/zig" build langref \
       --prefix "${PREFIX}" \
       -Dversion-string="${PKG_VERSION}" \
@@ -426,6 +496,39 @@ case "${target_platform}" in
     win-*)         _WRAPPER_CC_EXTRA="-g0" ;;
 esac
 
+# macOS: bin/zig references zig-llvm dylibs via @loader_path/<name> (inherited from
+# libclang-cpp.dylib's LC_ID, zig-llvm post-install.sh), which resolve next to bin/
+# where they are absent. Rewrite to @loader_path/../lib/zig-llvm/lib/<name> BEFORE
+# bin/zig is invoked below to compile the wrapper. Mirrors the zig-real block further
+# down, but at ../lib depth (not ../../lib) since bin/ is one level shallower than
+# share/zig/. Verify-gated.
+if is_osx; then
+  _zig_bin="${PREFIX}/bin/zig"
+  _zig_llvm_rel="@loader_path/../lib/zig-llvm/lib"
+  echo "=== Fixing zig binary dylib refs to @loader_path (macOS, pre-wrapper) ==="
+  while IFS= read -r _dep_line; do
+    _dep=$(echo "${_dep_line}" | awk '{print $1}')
+    _dep_base=$(basename "${_dep}")
+    case "${_dep_base}" in
+      libLLVM*|libclang*|libc++*|libunwind*|liblldZig*)
+        _new="${_zig_llvm_rel}/${_dep_base}"
+        if [[ "${_dep}" != "${_new}" ]] && { [[ -f "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]] || [[ -L "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]]; }; then
+          install_name_tool -change "${_dep}" "${_new}" "${_zig_bin}"
+          echo "  ${_dep} -> ${_new}"
+        fi
+        ;;
+    esac
+  done < <(otool -L "${_zig_bin}" 2>/dev/null | tail -n +2)
+
+  echo "=== Verifying zig binary dylib isolation (macOS, pre-wrapper) ==="
+  _bad_refs=$(otool -L "${_zig_bin}" 2>/dev/null | awk '{print $1}' | grep -E '(libLLVM|libclang|libc\+\+|libunwind|liblldZig)' | grep -v '@loader_path/\.\./lib/zig-llvm/lib/' || true)
+  if [[ -n "${_bad_refs}" ]]; then
+    echo "ERROR: bin/zig still has non-isolated refs to zig-llvm libraries:" >&2
+    echo "${_bad_refs}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi
+
 # Compile wrapper using the just-built zig
 PRIMARY_WRAPPER="${WRAPPER_BIN_DIR}/${CONDA_TRIPLET}-zig${EXE_EXT}"
 "${PREFIX}/bin/zig" cc -O2 ${_WRAPPER_CC_EXTRA} ${WRAPPER_LDFLAGS} -I"${RECIPE_DIR}/building" "${WRAPPER_C}" -o "${PRIMARY_WRAPPER}"
@@ -473,6 +576,40 @@ esac
 
 # Move raw zig out of PATH
 mv "${PREFIX}/bin/zig" "${REAL_ZIG_DIR}/${REAL_ZIG_NAME}"
+
+# macOS: rewrite the real zig binary's dylib references to @loader_path so it
+# loads zig-llvm's dylibs (not conda-forge copies in ${PREFIX}/lib/). zig-real
+# now lives at ${PREFIX}/share/zig/zig-real and zig-llvm is at
+# ${PREFIX}/lib/zig-llvm/lib, so from share/zig/ the relative path is
+# @loader_path/../../lib/zig-llvm/lib (one level deeper than zig-zig's bin/ case
+# because of the wrapper/zig-real split). Verify-gated.
+if is_osx; then
+  _zig_real="${REAL_ZIG_DIR}/${REAL_ZIG_NAME}"
+  _zig_llvm_rel="@loader_path/../../lib/zig-llvm/lib"
+  echo "=== Fixing zig-real dylib refs to @loader_path (macOS) ==="
+  while IFS= read -r _dep_line; do
+    _dep=$(echo "${_dep_line}" | awk '{print $1}')
+    _dep_base=$(basename "${_dep}")
+    case "${_dep_base}" in
+      libLLVM*|libclang*|libc++*|libunwind*|liblldZig*)
+        _new="${_zig_llvm_rel}/${_dep_base}"
+        if [[ "${_dep}" != "${_new}" ]] && { [[ -f "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]] || [[ -L "${PREFIX}/lib/zig-llvm/lib/${_dep_base}" ]]; }; then
+          install_name_tool -change "${_dep}" "${_new}" "${_zig_real}"
+          echo "  ${_dep} -> ${_new}"
+        fi
+        ;;
+    esac
+  done < <(otool -L "${_zig_real}" 2>/dev/null | tail -n +2)
+
+  echo "=== Verifying zig-real dylib isolation (macOS) ==="
+  _bad_refs=$(otool -L "${_zig_real}" 2>/dev/null | awk '{print $1}' | grep -E '(libLLVM|libclang|libc\+\+|libunwind|liblldZig)' | grep -v '@loader_path/\.\./\.\./lib/zig-llvm/lib/' || true)
+  if [[ -n "${_bad_refs}" ]]; then
+    echo "ERROR: zig-real still has non-isolated refs to zig-llvm libraries:" >&2
+    echo "${_bad_refs}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  echo "  OK: all zig-llvm refs use @loader_path/../../lib/zig-llvm/lib"
+fi
 
 # === end Phase 2 ===
 

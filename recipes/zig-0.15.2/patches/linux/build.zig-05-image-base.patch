@@ -1,0 +1,13 @@
+--- a/build.zig
++++ b/build.zig
+@@ -742,6 +742,10 @@
+         .root_module = addCompilerMod(b, options),
+     });
+     exe.stack_size = stack_size;
++    // Zig's LLD defaults to image_base=0xfff000 for non-PIE Linux executables,
++    // which causes the DYNAMIC segment to fall outside all LOAD segments when
++    // linking against shared LLVM libraries, producing a segfaulting binary.
++    exe.image_base = 0x400000;
+
+     // Allow undefined symbols in shared library dependencies (libc++.so, libc++abi.so
+     // from zig-llvm may reference glibc symbols newer than the target version).

@@ -1,0 +1,13 @@
+--- a/build.zig
++++ b/build.zig
+@@ -743,6 +743,10 @@
+     });
+     exe.stack_size = stack_size;
+
++    // Allow undefined symbols in shared library dependencies (libc++.so, libc++abi.so
++    // from zig-llvm may reference glibc symbols newer than the target version).
++    exe.linker_allow_shlib_undefined = true;
++
+     return exe;
+ }
+
