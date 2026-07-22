@@ -611,6 +611,15 @@ if is_osx; then
   echo "  OK: all zig-llvm refs use @loader_path/../../lib/zig-llvm/lib"
 fi
 
+# Linux analog of the macOS re-fix above: zig-real was moved from bin/ to share/zig/
+# (two levels deeper), so re-base its $ORIGIN-relative rpath. From share/zig/,
+# $ORIGIN/../../lib reaches $PREFIX/lib and $ORIGIN/../../lib/zig-llvm/lib reaches the
+# dynamic zig-llvm libs. The bin/zig rpath set before the move is stale for this binary;
+# testing/test_dtneeded.py invokes zig-real directly (the wrapper execs it unchanged).
+if is_linux; then
+  patchelf --set-rpath '$ORIGIN/../../lib:$ORIGIN/../../lib/zig-llvm/lib' "${REAL_ZIG_DIR}/${REAL_ZIG_NAME}"
+fi
+
 # === end Phase 2 ===
 
 # Non-unix conda convention: artifacts go under Library/
