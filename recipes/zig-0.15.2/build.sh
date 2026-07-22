@@ -118,6 +118,16 @@ fi
 if is_not_unix && ! is_cross; then
   export ZIG_LLVM_ROOT="${PREFIX}/Library/lib/zig-llvm"
   export PATH="${ZIG_LLVM_ROOT}/bin:${PATH}"
+  # zig's cmake/Findllvm.cmake force-unsets LLVM_CONFIG_EXE and runs its own
+  # find_program(LLVM_CONFIG_EXE NAMES ... llvm-config) over PATH, so the
+  # -DLLVM_CONFIG override below is ignored and the extensionless #!/bin/sh wrapper
+  # on PATH gets picked (its output breaks the LLVM 20.x version check). Mirror
+  # recipes/zig-zig: drop the bare wrapper and expose the real PE binary as a plain
+  # llvm-config.exe so find_program resolves the real llvm-config.
+  rm -f "${ZIG_LLVM_ROOT}/bin/llvm-config"
+  if [[ -f "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" ]]; then
+    cp "${ZIG_LLVM_ROOT}/bin/llvm-config.real.exe" "${ZIG_LLVM_ROOT}/bin/llvm-config.exe"
+  fi
   _llvm_config=$(find "${ZIG_LLVM_ROOT}/bin" \( -name 'llvm-config.real.exe' -o -name 'llvm-config.exe' \) -type f 2>/dev/null | head -1)
   EXTRA_CMAKE_ARGS+=(-DLLVM_CONFIG:FILEPATH="${_llvm_config//\\//}")
 fi
