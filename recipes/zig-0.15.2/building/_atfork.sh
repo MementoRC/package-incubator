@@ -2,13 +2,17 @@ source "${RECIPE_DIR}/building/_common.sh"
 
 function _compile_stub_object() {
   # Helper to compile a stub .c file into a .o object
-  # Args: cc_compiler src_file out_file label (for error messages)
+  # Args: cc_compiler src_file out_file label target_flags (optional, for
+  # cross builds -- e.g. "--target=${ZIG_TRIPLET}" so the stub matches the
+  # cross target's ELF class instead of defaulting to the build platform)
   local cc="${1}"
   local src="${2}"
   local out="${3}"
   local label="${4}"
+  local target_flags="${5:-}"
 
-  "${cc}" -c "${src}" -o "${out}" || {
+  # shellcheck disable=SC2086 # target_flags is intentionally unquoted to allow word-splitting
+  "${cc}" ${target_flags} -c "${src}" -o "${out}" || {
     echo "ERROR: Failed to compile ${label} stub" >&2
     return 1
   }
@@ -64,6 +68,11 @@ function create_libc_single_threaded_stub() {
 
   local cc_compiler="${1}"
   local output_dir="${2:-${SRC_DIR}}"
+  # Optional target flags (e.g. "--target=${ZIG_TRIPLET}") -- required on cross
+  # builds since cc_compiler here is zig-cc-early, which has no baked-in
+  # target and would otherwise compile the stub for the build platform,
+  # producing an ELF class mismatch at the final self-hosted link.
+  local target_flags="${3:-}"
 
   cat > "${output_dir}/libc_single_threaded_stub.c" << 'EOF'
 // Weak stub for __libc_single_threaded when targeting glibc < 2.32
@@ -73,7 +82,7 @@ __attribute__((weak))
 char __libc_single_threaded = 0;
 EOF
 
-  _compile_stub_object "${cc_compiler}" "${output_dir}/libc_single_threaded_stub.c" "${output_dir}/libc_single_threaded_stub.o" "libc_single_threaded" || return 1
+  _compile_stub_object "${cc_compiler}" "${output_dir}/libc_single_threaded_stub.c" "${output_dir}/libc_single_threaded_stub.o" "libc_single_threaded" "${target_flags}" || return 1
 
   return 0
 }

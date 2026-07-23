@@ -1,8 +1,11 @@
 name: Build all packages
 
 # this is important for trusted publishing
+# actions: read is required for the cache-state debug steps below
+# (List Actions Cache API + Cache Usage API)
 permissions:
   id-token: write
+  actions: read
 
 on:
   push:
@@ -33,6 +36,8 @@ jobs:
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
       - name: Restore zig-llvm cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/linux-64/*.conda
@@ -46,13 +51,29 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+        run: |
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-libcxx-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/linux-64/*.conda
           key: zig-llvm-linux-64-${{ hashFiles('recipes/zig-llvm/**') }}
+      - name: Debug cache state (zig-llvm)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-llvm-linux-64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-llvm-linux-64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -94,6 +115,8 @@ jobs:
           path: output/linux-64/
 
       - name: Restore zig-0.15.2 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/linux-64/zig15*.conda
@@ -107,13 +130,27 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15*'
       - name: Save zig15 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/linux-64/zig15*.conda
           key: zig15-linux-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Debug cache state (zig15)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig15-linux-64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig15-linux-64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -147,6 +184,8 @@ jobs:
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
       - name: Restore zig-llvm cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/osx-arm64/*.conda
@@ -160,13 +199,29 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+        run: |
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-libcxx-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/osx-arm64/*.conda
           key: zig-llvm-osx-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+      - name: Debug cache state (zig-llvm)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-llvm-osx-arm64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-llvm-osx-arm64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -208,6 +263,8 @@ jobs:
           path: output/osx-arm64/
 
       - name: Restore zig15 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/osx-arm64/zig15*.conda
@@ -221,13 +278,27 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15*'
       - name: Save zig15 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/osx-arm64/zig15*.conda
           key: zig15-osx-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Debug cache state (zig15)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig15-osx-arm64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig15-osx-arm64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -261,6 +332,8 @@ jobs:
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
       - name: Restore zig-llvm cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/win-64/*.conda
@@ -275,13 +348,29 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+        run: |
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-libcxx-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/win-64/*.conda
           key: zig-llvm-win-64-${{ hashFiles('recipes/zig-llvm/**') }}
+      - name: Debug cache state (zig-llvm)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-llvm-win-64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-llvm-win-64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -323,6 +412,8 @@ jobs:
           path: output/win-64/
 
       - name: Restore zig15 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/win-64/zig15*.conda
@@ -337,13 +428,27 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15*'
       - name: Save zig15 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/win-64/zig15*.conda
           key: zig15-win-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Debug cache state (zig15)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig15-win-64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig15-win-64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -402,6 +507,8 @@ jobs:
         run: find output/linux-64/ -type f | sort
 
       - name: Restore zig-zlib cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
@@ -419,12 +526,28 @@ jobs:
         run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zlib-*'
       - name: Save zig-zlib cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/${{ matrix.target }}/zig-zlib*.conda
           key: zig-zlib-${{ matrix.target }}-${{ hashFiles('recipes/zig-zlib/**') }}
+      - name: Debug cache state (zig-zlib)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-zlib-${{ matrix.target }} ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-zlib-${{ matrix.target }}")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Restore zig-zstd cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
@@ -442,12 +565,28 @@ jobs:
         run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zstd-*'
       - name: Save zig-zstd cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/${{ matrix.target }}/zig-zstd*.conda
           key: zig-zstd-${{ matrix.target }}-${{ hashFiles('recipes/zig-zstd/**') }}
+      - name: Debug cache state (zig-zstd)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-zstd-${{ matrix.target }} ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-zstd-${{ matrix.target }}")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Restore zig-libxml2 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
@@ -465,12 +604,28 @@ jobs:
         run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-libxml2-*'
       - name: Save zig-libxml2 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/${{ matrix.target }}/zig-libxml2*.conda
           key: zig-libxml2-${{ matrix.target }}-${{ hashFiles('recipes/zig-libxml2/**') }}
+      - name: Debug cache state (zig-libxml2)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-libxml2-${{ matrix.target }} ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-libxml2-${{ matrix.target }}")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Restore zig-llvm cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
@@ -491,20 +646,38 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+        run: |
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-libcxx-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/${{ matrix.target }}/zig-llvm*.conda
           key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
+      - name: Debug cache state (zig-llvm)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-llvm-${{ matrix.target }} ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-llvm-${{ matrix.target }}")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Restore zig15 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
-          key: zig15-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-${{ matrix.target }}-
+          key: zig15-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-v2-${{ matrix.target }}-
       - name: Build zig15
         shell: bash
         run: |
@@ -520,13 +693,27 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15*'
       - name: Save zig15 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/${{ matrix.target }}/zig15*.conda
-          key: zig15-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          key: zig15-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Debug cache state (zig15)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig15-v2-${{ matrix.target }} ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig15-v2-${{ matrix.target }}")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       # - name: Build zig-zig-llvm
       #   shell: bash
@@ -576,6 +763,8 @@ jobs:
         run: find output/osx-arm64/ -type f | sort
 
       - name: Restore zig-llvm cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/osx-64/*.conda
@@ -589,15 +778,33 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+        run: |
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-libcxx-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/osx-64/zig-llvm*.conda
           key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
+      - name: Debug cache state (zig-llvm)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-llvm-osx-64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-llvm-osx-64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Restore zig15 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/osx-64/*.conda
@@ -611,13 +818,27 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15*'
       - name: Save zig15 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/osx-64/zig15*.conda
           key: zig15-osx-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Debug cache state (zig15)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig15-osx-64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig15-osx-64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'
         shell: bash
@@ -663,6 +884,8 @@ jobs:
         run: ls output/win-64/
 
       - name: Restore zig-llvm cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/win-arm64/*.conda
@@ -692,15 +915,33 @@ jobs:
           [ "$found" = 1 ] || echo "no build_env.sh found under output/bld/"
       - name: Prune stale zig-llvm artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+        run: |
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
+          bash .github/scripts/prune-stale-artifacts.sh output 'zig-libcxx-*'
       - name: Save zig-llvm cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/win-arm64/zig-llvm*.conda
           key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+      - name: Debug cache state (zig-llvm)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig-llvm-win-arm64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig-llvm-win-arm64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Restore zig15 cache
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/restore@v4
         with:
           path: output/win-arm64/*.conda
@@ -715,13 +956,27 @@ jobs:
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig15 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15*'
       - name: Save zig15 cache
         if: ${{ !cancelled() }}
+        env:
+          RUNNER_DEBUG: 1
         uses: actions/cache/save@v4
         with:
           path: output/win-arm64/zig15*.conda
           key: zig15-win-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+      - name: Debug cache state (zig15)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== existing cache entries matching zig15-win-arm64 ==="
+          gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("zig15-win-arm64")) | "\(.key)  \(.size_in_bytes) bytes  created=\(.created_at)  last_used=\(.last_accessed_at)"' || true
+          echo "=== total repo cache usage ==="
+          gh api "repos/${{ github.repository }}/actions/cache/usage" --jq '"\(.active_caches_size_in_bytes) bytes across \(.active_caches_count) caches"' || true
 
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'
