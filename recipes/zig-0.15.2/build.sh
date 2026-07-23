@@ -130,6 +130,28 @@ if is_not_unix && ! is_cross; then
   fi
   _llvm_config=$(find "${ZIG_LLVM_ROOT}/bin" \( -name 'llvm-config.real.exe' -o -name 'llvm-config.exe' \) -type f 2>/dev/null | head -1)
   EXTRA_CMAKE_ARGS+=(-DLLVM_CONFIG:FILEPATH="${_llvm_config//\\//}")
+
+  # zig's Findclang.cmake can't match zig-llvm's Windows import lib (libclang-cpp.dll.a),
+  # so CLANG_LIBRARIES resolves NOTFOUND. Feed LLVM/Clang/LLD to cmake directly from the
+  # bundled zig-llvm import libs via the ZIG_LLVM_MANUAL_OVERRIDE patch (never conda clangdev).
+  _win_libllvm=$(find "${ZIG_LLVM_ROOT}/lib" -name 'libLLVM*.dll.a' -type f 2>/dev/null | head -1)
+  _win_libclang=$(find "${ZIG_LLVM_ROOT}/lib" -name 'libclang-cpp*.dll.a' -type f 2>/dev/null | head -1)
+  EXTRA_CMAKE_ARGS+=(
+    -DZIG_LLVM_MANUAL_OVERRIDE=1
+    -DZIG_LLVM_MANUAL_LIBRARIES="${_win_libllvm}"
+    -DZIG_LLVM_MANUAL_LIBDIRS="${ZIG_LLVM_ROOT}/lib"
+    -DZIG_LLVM_MANUAL_INCLUDE_DIRS="${ZIG_LLVM_ROOT}/include"
+    -DZIG_LLVM_MANUAL_CLANG_LIBRARIES="${_win_libclang}"
+    -DZIG_LLVM_MANUAL_LLD_LIBRARIES="${ZIG_LLVM_ROOT}/lib/liblldZig.dll.a"
+  )
+
+  # zig's gnu-target linker searches libNAME.a but NOT libNAME.dll.a; both are ar
+  # import archives, so expose .a aliases so the Stage-2 self-hosted `zig build` links.
+  for _dlla in "${_win_libllvm}" "${_win_libclang}" "${ZIG_LLVM_ROOT}/lib/liblldZig.dll.a"; do
+    if [[ -f "${_dlla}" ]]; then
+      cp -f "${_dlla}" "${_dlla%.dll.a}.a"
+    fi
+  done
 fi
 
 # Patch build.zig-doctest-forward-target adds -Ddoctest-target to build.zig.
@@ -145,12 +167,24 @@ fi
 #   "Error: operand out of range (... is not between 0xfffffffffe000000 and 0x1fffffc)"
 # -mlongcall makes GCC emit indirect calls via CTR for any-distance reach.
 # Applies to both native and cross ppc64le builds (same generated source).
+# -fno-partial-inlining/-fno-ipa-cp-clone were dropped: those GCC-specific
+# IPA/inlining pass toggles are rejected by Clang/zig-cc, which now compiles
+# zigcpp for the cross-linux ppc64le path (see is_linux && is_cross block above).
 if [[ "${target_platform}" == "linux-ppc64le" ]]; then
-  export CFLAGS="${CFLAGS:-} -mlongcall -mcmodel=large -fno-partial-inlining -fno-ipa-cp-clone"
-  export CXXFLAGS="${CXXFLAGS:-} -mlongcall -mcmodel=large -fno-partial-inlining -fno-ipa-cp-clone"
+  export CFLAGS="${CFLAGS:-} -mlongcall -mcmodel=large"
+  export CXXFLAGS="${CXXFLAGS:-} -mlongcall -mcmodel=large"
   # REL24 mitigation: --stub-group-size=0 lets binutils auto-size stub groups
-  export LDFLAGS="${LDFLAGS:-} -Wl,--stub-group-size=0 -Wl,--wrap=pthread_atfork"
+  # -L${PREFIX}/lib/zig-llvm/lib: reuse zig-llvm's self-built libunwind.so
+  # (already a host dep of this output) instead of relying on the linker's
+  # default search path to happen to find it.
+  export LDFLAGS="${LDFLAGS:-} -Wl,--stub-group-size=0 -Wl,--wrap=pthread_atfork -L${PREFIX}/lib/zig-llvm/lib"
   export NINJA_FLAGS="-v"
+  # zig-llvm's ppc64le package only ships a versioned libunwind.so.1.0, no
+  # unversioned dev symlink, so CMake's own compiler sanity-check link fails
+  # with "cannot find -lunwind". Create the symlink so -lunwind resolves.
+  if [[ -f "${PREFIX}/lib/zig-llvm/lib/libunwind.so.1.0" && ! -e "${PREFIX}/lib/zig-llvm/lib/libunwind.so" ]]; then
+    ln -sf libunwind.so.1.0 "${PREFIX}/lib/zig-llvm/lib/libunwind.so"
+  fi
   EXTRA_CMAKE_ARGS+=(
     -DCMAKE_C_FLAGS="${CFLAGS}"
     -DCMAKE_CXX_FLAGS="${CXXFLAGS}"
@@ -217,6 +251,12 @@ else
 fi
 
 if is_linux && is_cross; then
+  # CONDA_BUILD_SYSROOT is normally exported by the gcc cross-activation, which this
+  # toolchain deliberately does not depend on; without it the var is unbound under
+  # set -u. Derive it from the predictable conda-host-triple sysroot path (where
+  # stdlib('c')/sysroot_* installs the files). Also covers create_zig_linux_libc_file
+  # (_cross.sh), which reads CONDA_BUILD_SYSROOT in the same cross path.
+  export CONDA_BUILD_SYSROOT="${CONDA_BUILD_SYSROOT:-${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot}"
   EXTRA_ZIG_ARGS+=(
     --libc "${zig_build_dir}"/libc_file
     --libc-runtimes "${CONDA_BUILD_SYSROOT}"/lib64
@@ -244,13 +284,76 @@ if is_linux; then
 fi
 
 # LLVM_LIBRARIES from llvm-config which omits zstd/xml2/z. LLD's
-is_linux && perl -pi -e 's@(find_package\(Threads\))@$1\nlist(APPEND LLVM_LIBRARIES "-lzstd" "-lxml2" "-lz")@' "${cmake_source_dir}"/CMakeLists.txt
+# riscv64 excluded: it uses namespaced host packages (zig-zstd/zig-xml2/
+# zig-zlib) and already gets correct absolute-path linker flags injected
+# below (build.sh:536-541); the bare -lzstd/-lxml2/-lz names injected here
+# are unresolvable there and break the final link.
+is_linux && [[ "${target_platform}" != "linux-riscv64" ]] && perl -pi -e 's@(find_package\(Threads\))@$1\nlist(APPEND LLVM_LIBRARIES "-lzstd" "-lxml2" "-lz")@' "${cmake_source_dir}"/CMakeLists.txt
 
 if is_osx && is_cross; then
   case "${target_platform}" in
     osx-64)     EXTRA_CMAKE_ARGS+=(-DCMAKE_OSX_ARCHITECTURES=x86_64) ;;
     osx-arm64)  EXTRA_CMAKE_ARGS+=(-DCMAKE_OSX_ARCHITECTURES=arm64) ;;
   esac
+
+  # llvmdev-free: source LLVM from the target ($PREFIX) zig-llvm host dep, never
+  # conda llvmdev. The host-arch (BUILD_PREFIX) zig-llvm is not needed here since
+  # zigcpp must link the TARGET-arch libLLVM; headers are arch-independent so the
+  # target copy suffices. Version comes from zig-llvm headers; cmake skips
+  # llvm-config via the ZIG_LLVM_MANUAL_OVERRIDE patch.
+  _zig_llvm="${PREFIX}/lib/zig-llvm"
+  _libllvm=$(find "${_zig_llvm}/lib" -name 'libLLVM*.dylib' -type f 2>/dev/null | head -1)
+  _libclang=$(find "${_zig_llvm}/lib" -name 'libclang-cpp*.dylib' -type f 2>/dev/null | head -1)
+  # Pass as CMake cache vars (-D), NOT env exports: the Findllvm/clang/lld
+  # override patch tests if(DEFINED ZIG_LLVM_MANUAL_OVERRIDE) at cmake scope.
+  EXTRA_CMAKE_ARGS+=(
+    -DZIG_LLVM_MANUAL_OVERRIDE=1
+    -DZIG_LLVM_MANUAL_LIBRARIES="${_libllvm}"
+    -DZIG_LLVM_MANUAL_LIBDIRS="${_zig_llvm}/lib"
+    -DZIG_LLVM_MANUAL_INCLUDE_DIRS="${_zig_llvm}/include"
+    -DZIG_LLVM_MANUAL_CLANG_LIBRARIES="${_libclang}"
+    -DZIG_LLVM_MANUAL_LLD_LIBRARIES="${_zig_llvm}/lib/liblldZig.dylib"
+  )
+fi
+
+if is_linux && is_cross; then
+  # llvmdev-free clang/lld detection for CMake Generate: conda's llvmdev ships
+  # LLVM only (never clang/lld dev files, per project policy), so zig's
+  # Findclang.cmake/Findlld.cmake probing (via the BUILD_PREFIX llvm-config
+  # copied over above) resolves CLANG_LIBRARIES to NOTFOUND on some target
+  # arches (e.g. riscv64 cross), aborting the zigcpp CMake Generate step.
+  # Feed LLVM/Clang/LLD to cmake directly from the bundled target-arch
+  # zig-llvm host package (linking only, never executed) via the
+  # ZIG_LLVM_MANUAL_OVERRIDE patch. Mirrors the is_osx && is_cross block
+  # above (same mechanism; Linux .so instead of macOS .dylib naming).
+  _zig_llvm_lnx="${PREFIX}/lib/zig-llvm"
+  _libllvm_lnx=$(find "${_zig_llvm_lnx}/lib" -name 'libLLVM*.so*' -type f 2>/dev/null | head -1)
+  _libclang_lnx=$(find "${_zig_llvm_lnx}/lib" -name 'libclang-cpp*.so*' -type f 2>/dev/null | head -1)
+  # zig-llvm never builds liblldZig.so on linux-riscv64/linux-s390x (see
+  # recipes/zig-llvm/building/_lld_bundle.sh:18-23 — no conda-forge
+  # zstd/xml2/z there), so the hardcoded .so path below is never present on
+  # those arches, and CMake's ZIG_LLVM_MANUAL_OVERRIDE patch would report a
+  # false "Found lld" that later dies at zig link time with "liblldZig.so:
+  # file not found". Feed the six static liblld*.a archives directly instead,
+  # in the exact order _lld_bundle.sh links them (format-specific archives
+  # first, liblldCommon.a last since it is the shared base component other
+  # archives depend on) — do NOT use `find | sort`, alphabetical order would
+  # put lldCommon before lldELF and break the link. Mirrors the arch
+  # exclusion at build.sh:402, but ppc64le is intentionally NOT excluded here:
+  # the bundle IS built on ppc64le, so the .so path remains correct there.
+  if [[ "${target_platform}" == "linux-riscv64" || "${target_platform}" == "linux-s390x" ]]; then
+    _lldlibs_lnx="${_zig_llvm_lnx}/lib/liblldELF.a;${_zig_llvm_lnx}/lib/liblldCOFF.a;${_zig_llvm_lnx}/lib/liblldMachO.a;${_zig_llvm_lnx}/lib/liblldWasm.a;${_zig_llvm_lnx}/lib/liblldMinGW.a;${_zig_llvm_lnx}/lib/liblldCommon.a"
+  else
+    _lldlibs_lnx="${_zig_llvm_lnx}/lib/liblldZig.so"
+  fi
+  EXTRA_CMAKE_ARGS+=(
+    -DZIG_LLVM_MANUAL_OVERRIDE=1
+    -DZIG_LLVM_MANUAL_LIBRARIES="${_libllvm_lnx}"
+    -DZIG_LLVM_MANUAL_LIBDIRS="${_zig_llvm_lnx}/lib"
+    -DZIG_LLVM_MANUAL_INCLUDE_DIRS="${_zig_llvm_lnx}/include"
+    -DZIG_LLVM_MANUAL_CLANG_LIBRARIES="${_libclang_lnx}"
+    -DZIG_LLVM_MANUAL_LLD_LIBRARIES="${_lldlibs_lnx}"
+  )
 fi
 
 # Local-only additional patches (gitignored directory)
@@ -279,6 +382,148 @@ if is_linux && ! is_cross; then
     -DCMAKE_CXX_COMPILER="${SRC_DIR}/zig-cxx-early"
     -DZIG_SYSTEM_LIBCXX=c++
   )
+elif is_linux && is_cross; then
+  # Cross builds must also use zig-cc for zigcpp (maintainer decision 2026-07-24:
+  # these recipes never depend on real GCC/Clang; zig-cc is used everywhere,
+  # including cross). Without CMAKE_C_COMPILER/CXX_COMPILER set here, CMake's
+  # CMakeTestCCompiler configure-time check falls back to the bare host
+  # /usr/bin/cc, which then rejects target-arch flags (e.g. ppc64le -mlongcall).
+  # zig-cc has a baked-in native target, so pass --target=${ZIG_TRIPLET}
+  # explicitly (same precedent as _WRAPPER_CC_EXTRA below) via CMAKE_C_FLAGS/
+  # CMAKE_CXX_FLAGS, appended to the already-sanitized cross CFLAGS/CXXFLAGS.
+  printf '#!/bin/sh\nexec %s cc "$@"\n'  "${CONDA_ZIG_BUILD}" > "${SRC_DIR}/zig-cc-early"
+  printf '#!/bin/sh\nexec %s c++ "$@"\n' "${CONDA_ZIG_BUILD}" > "${SRC_DIR}/zig-cxx-early"
+  chmod +x "${SRC_DIR}/zig-cc-early" "${SRC_DIR}/zig-cxx-early"
+  EXTRA_CMAKE_ARGS+=(
+    -DCMAKE_C_COMPILER="${SRC_DIR}/zig-cc-early"
+    -DCMAKE_CXX_COMPILER="${SRC_DIR}/zig-cxx-early"
+    -DCMAKE_C_FLAGS="${CFLAGS:-} --target=${ZIG_TRIPLET}"
+    -DCMAKE_CXX_FLAGS="${CXXFLAGS:-} --target=${ZIG_TRIPLET}"
+  )
+elif is_not_unix; then
+  # On Windows, CMake detects zig-cc as ClangCL and injects MSVC-style linker flags
+  # (/MANIFEST:EMBED, /subsystem:console, -fuse-ld=lld-link) that zig doesn't support.
+  # Without CMAKE_C_COMPILER set here, CMake auto-detects MSVC (cl.exe) for zigcpp:
+  # its COFF objects embed /DEFAULTLIB:MSVCPRT,MSVCRT,OLDNAMES, which the
+  # windows-gnu Stage-2 link can't resolve ("lld-link: could not open 'libMSVCRT.a'").
+  # Ported from recipes/zig-zig/build.sh (is_not_unix cmake-cache-seed block).
+  # ninja invokes CMAKE_C_COMPILER/CMAKE_CXX_COMPILER/CMAKE_AR/CMAKE_RANLIB via
+  # raw Win32 CreateProcess, which cannot execute a bare shebang text file
+  # ("CreateProcess failed... %1 is not a valid Win32 application", confirmed
+  # from CI log). Compile tiny C forwarders instead, mirroring the proven
+  # "compile a tiny C forwarder via zig cc -O2" technique already used in
+  # install_zig_activation.py:161-168 (zig_bin, "cc", "-O2", ..., "-lkernel32").
+  # CONDA_ZIG_BUILD can arrive with backslashes on Windows; normalize to
+  # forward slashes (same sed idiom used elsewhere in this file) before
+  # embedding it as a C string literal below.
+  _conda_zig_build_fwd="$(printf '%s' "${CONDA_ZIG_BUILD}" | tr -d '[:cntrl:]' | sed 's|\\|/|g')"
+
+  # NOTE: values are baked directly into each generated .c file via bash
+  # variable substitution in an UNQUOTED heredoc (not passed as compiler -D
+  # flags) -- an earlier attempt using `-DZIG_BIN="..."` failed because the
+  # embedded quotes did not survive zig-cc's argument handling on this
+  # Windows runner (confirmed via CI log: the compiler's own macro dump
+  # showed the quotes stripped, e.g. `#define ZIG_BIN x86_64-w64-mingw32-zig`,
+  # causing "use of undeclared identifier" errors on the hyphenated value).
+  # Baking the string into the source text sidesteps that entirely, matching
+  # the @PLACEHOLDER@-substitution technique already used by
+  # building/cross-zig-shim.c in this same recipe.
+  for _pair in "cc:zig-cc-early" "c++:zig-cxx-early" "ar:zig-ar-early" "ranlib:zig-ranlib-early"; do
+    _subcmd="${_pair%%:*}"
+    _outname="${_pair#*:}"
+    _shim_src="${SRC_DIR}/${_outname}.c"
+    cat > "${_shim_src}" << SHIMEOF
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <process.h>
+
+static const char *ZIG_BIN = "${_conda_zig_build_fwd}";
+static const char *ZIG_SUBCMD = "${_subcmd}";
+
+int main(int argc, char *argv[]) {
+    const char **new_argv = (const char **)malloc(sizeof(char *) * (size_t)(argc + 2));
+    if (!new_argv) {
+        fprintf(stderr, "zig-early-shim: malloc failed\n");
+        return 1;
+    }
+    int ni = 0;
+    new_argv[ni++] = ZIG_BIN;
+    new_argv[ni++] = ZIG_SUBCMD;
+    for (int i = 1; i < argc; i++) {
+        new_argv[ni++] = argv[i];
+    }
+    new_argv[ni] = NULL;
+    int ret = (int)_spawnvp(_P_WAIT, ZIG_BIN, new_argv);
+    free(new_argv);
+    if (ret == -1) {
+        fprintf(stderr, "zig-early-shim: failed to exec %s: %s\n", ZIG_BIN, strerror(errno));
+        return 1;
+    }
+    return ret;
+}
+SHIMEOF
+    "${CONDA_ZIG_BUILD}" cc -O2 -o "${SRC_DIR}/${_outname}.exe" "${_shim_src}" -lkernel32
+  done
+
+  # Pre-seed the cmake cache so CMake skips the compiler test entirely.
+  _cache_seed="${SRC_DIR}/zig-cmake-cache.cmake"
+  _zig_cc_cmake="${SRC_DIR}/zig-cc-early.exe"
+  _zig_cxx_cmake="${SRC_DIR}/zig-cxx-early.exe"
+  _zig_ar_cmake="${SRC_DIR}/zig-ar-early.exe"
+  _zig_ranlib_cmake="${SRC_DIR}/zig-ranlib-early.exe"
+  # BUILD_PREFIX/SRC_DIR-derived paths can arrive with backslashes and stray
+  # control characters (CR/LF) on Windows; a lone control char is parsed by
+  # CMake as a line break inside a quoted set() value ("Parse error. Expected
+  # a command name, got unquoted argument"). Strip control chars and
+  # normalize backslashes to forward slashes for every path used below. sed
+  # (not perl) for the substitution: perl mangles \o \p \a as escapes even
+  # inside \Q..\E. Ported verbatim (idiom) from recipes/zig-zig/build.sh.
+  for _v in _zig_cc_cmake _zig_cxx_cmake _zig_ar_cmake _zig_ranlib_cmake; do
+    printf -v "${_v}" '%s' "$(printf '%s' "${!_v}" | tr -d '[:cntrl:]')"
+    printf -v "${_v}" '%s' "$(printf '%s' "${!_v}" | sed 's|\\|/|g')"
+  done
+  cat > "${_cache_seed}" << TCEOF
+# Pre-seed compiler identification so CMake skips the test program
+set(CMAKE_C_COMPILER_ID "Clang" CACHE STRING "")
+set(CMAKE_CXX_COMPILER_ID "Clang" CACHE STRING "")
+set(CMAKE_C_COMPILER_WORKS TRUE CACHE BOOL "")
+set(CMAKE_CXX_COMPILER_WORKS TRUE CACHE BOOL "")
+set(CMAKE_C_ABI_COMPILED TRUE CACHE BOOL "")
+set(CMAKE_CXX_ABI_COMPILED TRUE CACHE BOOL "")
+set(CMAKE_C_STANDARD_COMPUTED_DEFAULT "11" CACHE STRING "")
+set(CMAKE_CXX_STANDARD_COMPUTED_DEFAULT "14" CACHE STRING "")
+set(CMAKE_CXX_COMPILE_FEATURES "cxx_std_14;cxx_std_17;cxx_std_20" CACHE STRING "")
+set(CMAKE_C_COMPILE_FEATURES "c_std_11;c_std_17" CACHE STRING "")
+# Standard flag mappings for target_compile_features
+set(CMAKE_CXX14_STANDARD_COMPILE_OPTION "-std=c++14" CACHE STRING "")
+set(CMAKE_CXX17_STANDARD_COMPILE_OPTION "-std=c++17" CACHE STRING "")
+set(CMAKE_CXX20_STANDARD_COMPILE_OPTION "-std=c++20" CACHE STRING "")
+set(CMAKE_C11_STANDARD_COMPILE_OPTION "-std=c11" CACHE STRING "")
+set(CMAKE_C17_STANDARD_COMPILE_OPTION "-std=c17" CACHE STRING "")
+set(CMAKE_CXX14_EXTENSION_COMPILE_OPTION "-std=gnu++14" CACHE STRING "")
+set(CMAKE_CXX17_EXTENSION_COMPILE_OPTION "-std=gnu++17" CACHE STRING "")
+set(CMAKE_CXX20_EXTENSION_COMPILE_OPTION "-std=gnu++20" CACHE STRING "")
+# Force zig-cc to target windows-gnu (not native windows-msvc).
+# Without this, zig-cc defaults to native target which defines _MSC_VER,
+# causing zig.h to use MSVC intrinsics (_InterlockedOr64 etc.) that
+# aren't available in zig-cc's Clang frontend.
+set(CMAKE_C_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
+set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
+TCEOF
+
+  # -D command-line args (not -C cache-file lines): byte-exact CI diagnostics on
+  # recipes/zig-zig proved the -C file is written clean and single-line, yet CMake
+  # parsed a long quoted FILEPATH value as split across two physical lines. -D
+  # args are parsed from argv, not the cache-file line parser, sidestepping that.
+  EXTRA_CMAKE_ARGS+=(
+    -DCMAKE_C_COMPILER:FILEPATH="${_zig_cc_cmake}"
+    -DCMAKE_CXX_COMPILER:FILEPATH="${_zig_cxx_cmake}"
+    -DCMAKE_AR:FILEPATH="${_zig_ar_cmake}"
+    -DCMAKE_RANLIB:FILEPATH="${_zig_ranlib_cmake}"
+  )
+  EXTRA_CMAKE_ARGS+=(-C "${_cache_seed}")
 fi
 
 configure_cmake_zigcpp "${cmake_build_dir}" "${cmake_install_dir}"
@@ -298,7 +543,15 @@ fi
 # --- Post CMake Configuration ---
 
 # Append extra link deps to config.h (cmake doesn't know about conda's split packaging)
-is_linux && is_cross && perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-lxml2;-lz\"@" "${cmake_build_dir}"/config.h
+if is_linux && is_cross && [[ "${target_platform}" == "linux-riscv64" ]]; then
+  # riscv64 uses namespaced host packages (zig-zstd/zig-xml2/zig-zlib), not
+  # plain conda-forge zstd/libxml2/zlib, so bare -l names don't resolve at
+  # link time. Wire in absolute .so paths instead. Note: the xml2 package
+  # installs to a dir literally named "zig-xml2", not "zig-libxml2".
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${PREFIX}/lib/zig-zstd/lib/libzstd.so;${PREFIX}/lib/zig-xml2/lib/libxml2.so;${PREFIX}/lib/zig-zlib/lib/libz.so\"@" "${cmake_build_dir}"/config.h
+elif is_linux && is_cross; then
+  perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;-lzstd;-lxml2;-lz\"@" "${cmake_build_dir}"/config.h
+fi
 is_osx && is_cross &&   perl -pi -e "s@(ZIG_LLVM_\w+ \")${BUILD_PREFIX}@\$1${PREFIX}@" "${cmake_build_dir}"/config.h
 is_osx &&               perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${PREFIX}/lib/zig-llvm/lib/libc++.dylib\"@" "${cmake_build_dir}"/config.h
 
@@ -333,7 +586,7 @@ if is_linux && is_cross; then
   fi
 
   perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/libc_single_threaded_stub.o\"|g" "${cmake_build_dir}/config.h"
-  create_libc_single_threaded_stub "${CC}" "${ZIG_LOCAL_CACHE_DIR}"
+  create_libc_single_threaded_stub "${SRC_DIR}/zig-cc-early" "${ZIG_LOCAL_CACHE_DIR}"
 elif is_linux; then
   # Native linux still links the final zig against -Dtarget=...gnu.2.17 (old glibc),
   # but GCC15+/libc++ objects in zigcpp reference glibc-2.32's __libc_single_threaded.
@@ -354,14 +607,30 @@ if is_linux; then
 fi
 
 if is_linux && is_cross; then
-  export QEMU_LD_PREFIX="${BUILD_PREFIX}/${CONDA_TOOLCHAIN_HOST}/sysroot"
+  export QEMU_LD_PREFIX="${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot"
 fi
+
+# Resolve bootstrap zig binary: prefer the conda_triplet/build_triplet-suffixed
+# name (legacy self-built zig15_impl wrapper), then any *-zig binary, then
+# fall back to conda-forge zig's plain `zig`/`zig.exe` (no triplet prefix).
+zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" \( -name "${CONDA_ZIG_BUILD}" -o -name "${CONDA_ZIG_BUILD}.exe" -o -name "${CONDA_ZIG_HOST}" -o -name "${CONDA_ZIG_HOST}.exe" \) 2>/dev/null | head -1 || true)"
+if [[ -z "${zig}" ]]; then
+  zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" -name '*-zig' -o -name '*-zig.exe' 2>/dev/null | head -1 || true)"
+fi
+if [[ -z "${zig}" ]]; then
+  zig="$(find "${BUILD_PREFIX}/bin" "${BUILD_PREFIX}/Library/bin" \( -name 'zig' -o -name 'zig.exe' \) 2>/dev/null | head -1 || true)"
+fi
+if [[ -z "${zig}" ]]; then
+  echo "ERROR: could not locate bootstrap zig binary in BUILD_PREFIX/bin or BUILD_PREFIX/Library/bin" >&2
+  exit 1
+fi
+echo "Bootstrap zig binary: ${zig}"
 
 dbg echo "=== zig build env ==="
 if [[ "${CMAKE_BUILD:-0}" == "1" ]]; then
   source "${RECIPE_DIR}/building/_cmake.sh"
   cmake_build "${cmake_source_dir}" "${cmake_build_dir}" "${PREFIX}"
-elif build_zig_with_zig "${zig_build_dir}" "${CONDA_ZIG_BUILD}" "${PREFIX}"; then
+elif build_zig_with_zig "${zig_build_dir}" "${zig}" "${PREFIX}"; then
   :
 else
   echo "ERROR: zig-build failed. Set CMAKE_BUILD=1 to force the cmake path explicitly." >&2
@@ -500,10 +769,51 @@ dbg echo "=== pre-wrapper compile ==="
 # - win-*: compile with -g0 (no debug info) so zig's PE/COFF link does not emit
 #   a CodeView .pdb sidecar, which trips package_contents strict checks. A
 #   defensive *.pdb removal after the build catches any sidecar that slips through.
-_WRAPPER_CC_EXTRA=""
+# - osx-* (cross only, e.g. osx-64 built from linux-64/osx-arm64 host): the
+#   just-built cross zig's runtime native-target detection can disagree with
+#   its own build-time target when invoked under host/Rosetta emulation, so
+#   `zig cc` with no -target picks the wrong bundled Darwin headers and fails
+#   to find stdio.h. Pass --target= explicitly (no -isysroot/SDK needed: per
+#   zig-wrapper.c's macOS notes, zig resolves libSystem/headers via its own
+#   bundled stubs, not a shipped SDK). Native osx builds are unaffected.
+#   Even with --target= set, zig's own libc-detection (LibCDirs.zig
+#   detectFromBuilding, confirmed via grep of
+#   tmp/src/zig-0.15.2/lib/std/zig/LibCDirs.zig:157:
+#   "{s}/libc/include/any-macos-any" under zig_lib_dir) can still fail to
+#   surface the bundled cross-libc headers on this host/target combo.
+#   CONFIRMED (CI run 31027435721, job 92379661683): passing the headers via
+#   `-idirafter` is silently DROPPED by zig's cc frontend for this triple
+#   (x86_64-macos.11.0-none) — the flag is present on the invoked command
+#   line and the header exists on disk, but LibCDirs' triple-based
+#   auto-detection still falls back to zig's bundled freestanding headers.
+#   Fix: bypass auto-detection entirely with an explicit libc file via
+#   `--libc <path>` (zig's documented libc.txt key=value format) instead of
+#   `-idirafter`. Darwin dynamic executables don't need crt objects from this
+#   file, so only include_dir/sys_include_dir are populated. Packaged path
+#   confirmed via recipe.yaml's `lib/zig/libc/*` glob ->
+#   ${PREFIX}/lib/zig/libc/include/any-macos-any.
+# Array (not scalar string): IFS is set to $'\n\t' near the top of this file
+# (excludes space), so an unquoted scalar expansion of a multi-token value
+# like the osx-* case below would NOT word-split and would be passed to
+# `zig cc` as a single malformed argument. Array expansion is immune to IFS.
+_WRAPPER_CC_EXTRA=()
 case "${target_platform}" in
-    linux-ppc64le) _WRAPPER_CC_EXTRA="--target=${ZIG_TRIPLET}" ;;
-    win-*)         _WRAPPER_CC_EXTRA="-g0" ;;
+    linux-ppc64le) _WRAPPER_CC_EXTRA=(--target="${ZIG_TRIPLET}") ;;
+    win-*)         _WRAPPER_CC_EXTRA=(-g0) ;;
+    osx-*)
+        if is_cross; then
+          _WRAPPER_OSX_LIBC_TXT="${WRAPPER_OBJDIR}/osx-cross-libc.txt"
+          cat > "${_WRAPPER_OSX_LIBC_TXT}" <<EOF
+include_dir=${PREFIX}/lib/zig/libc/include/any-macos-any
+sys_include_dir=${PREFIX}/lib/zig/libc/include/any-macos-any
+crt_dir=
+msvc_lib_dir=
+kernel32_lib_dir=
+gcc_dir=
+EOF
+          _WRAPPER_CC_EXTRA=(--target="${ZIG_TRIPLET}" --libc "${_WRAPPER_OSX_LIBC_TXT}")
+        fi
+        ;;
 esac
 
 # macOS: bin/zig references zig-llvm dylibs via @loader_path/<name> (inherited from
@@ -539,9 +849,24 @@ if is_osx; then
   fi
 fi
 
+# Non-fatal diagnostic: confirm whether zig's bundled libc headers landed on
+# disk for osx cross builds. Never allowed to fail the build.
+if is_osx && is_cross; then
+  echo "=== osx cross libc header diagnostic ===" || true
+  ls -la "${PREFIX}/lib/zig" 2>/dev/null || true
+  ls -la "${PREFIX}/lib/zig/libc" 2>/dev/null || true
+  ls -la "${PREFIX}/lib/zig/libc/include" 2>/dev/null || true
+  if [[ -f "${PREFIX}/lib/zig/libc/include/any-macos-any/stdio.h" ]]; then
+    echo "  FOUND: any-macos-any/stdio.h present" || true
+  else
+    echo "  MISSING: any-macos-any/stdio.h not present" || true
+  fi
+  ls -la "${PREFIX}/share/zig" 2>/dev/null || true
+fi
+
 # Compile wrapper using the just-built zig
 PRIMARY_WRAPPER="${WRAPPER_BIN_DIR}/${CONDA_TRIPLET}-zig${EXE_EXT}"
-"${PREFIX}/bin/zig" cc -O2 ${_WRAPPER_CC_EXTRA} ${WRAPPER_LDFLAGS} -I"${RECIPE_DIR}/building" "${WRAPPER_C}" -o "${PRIMARY_WRAPPER}"
+"${PREFIX}/bin/zig" cc -O2 "${_WRAPPER_CC_EXTRA[@]}" ${WRAPPER_LDFLAGS} -iquote "${RECIPE_DIR}/building" "${WRAPPER_C}" -o "${PRIMARY_WRAPPER}"
 
 # Cross-arch wrapper detection note for downstream consumers:
 # All Windows variant wrappers (x86_64-w64-mingw32-zig.exe,

@@ -503,8 +503,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
-          key: zig15-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-${{ matrix.target }}-
+          key: zig15-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          restore-keys: zig15-v2-${{ matrix.target }}-
       - name: Build zig15
         shell: bash
         run: |
@@ -526,7 +526,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: output/${{ matrix.target }}/zig15*.conda
-          key: zig15-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          key: zig15-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
 
       # - name: Build zig-zig-llvm
       #   shell: bash

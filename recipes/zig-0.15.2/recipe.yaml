@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  build_number: 38
+  build_number: 47
   name: zig15
   version: "0.15.2"
 
@@ -47,7 +47,7 @@ context:
       "s390x-linux-gnu." ~ _c_v         if xc_s390x                            else
       "x86_64-macos." ~ _c_v ~ "-none"  if xc_o64                              else
       "aarch64-macos." ~ _c_v ~ "-none" if xc_oarm64                           else
-      "x86_64-windows-msvc"             if xc_w64                              else
+      "x86_64-windows-gnu"              if xc_w64                              else
       "aarch64-windows-msvc"            if xc_warm64                           else
       "x86-windows-msvc"                if xc_win32                            else
       "native"
@@ -121,6 +121,7 @@ source:
     sha256: ebe6eb7006f6bbb72e54bd25d0675f2794084909d63a95aa315f2dcf2af5fd99
     patches:
       - patches/relax-llvm-required-targets.patch
+      - patches/Findllvm-clang-lld-manual-override.patch
       # Neutralize zig codegen refs to LLVM targets absent from curated zig-llvm libLLVM
       # (Mips/Sparc/LoongArch/etc -> unreachable). Ported from recipes/zig-zig; verified
       # to apply cleanly against zig 0.15.2. Fixes undefined LLVMInitialize{Mips,Sparc,LoongArch}*.
@@ -263,15 +264,21 @@ outputs:
         - if: arm64
           then:
             - libxml2-devel
-        - if: build_platform != target_platform
+        - if: build_platform != target_platform and not osx
           then:
             - llvmdev ${{ llvm_version }}.*
             - if: linux
               then:
                 - qemu-execve-${{ target_platform | replace("linux-", "") }}
 
-        # Self-hosting: build zig with zig
-        - zig_impl_${{ build_platform }} >=0.15.2,<=${{ version }}
+        # Self-hosting: build zig with zig (conda-forge zig)
+        - zig >=0.15.2,<0.16
+        - if: xc_ppc64le
+          then:
+            # zig's ppc64le linker redirect spawns powerpc64le-conda-linux-gnu-gcc
+            # by bare name via PATH; the cross-compiler must be in the BUILD env.
+            - gcc_linux-ppc64le
+            - binutils_linux-ppc64le
       host:
         # --- Development ---
         - zig-llvm ${{ llvm_version }}.*
@@ -338,7 +345,9 @@ outputs:
             - ${{ library }}lib/zig/libunwind/*
             - ${{ library }}lib/zig/libtsan/*
             - ${{ library }}lib/zig/std/*
-            - etc/conda/test-files/zig*
+            - if: is_native
+              then:
+                - etc/conda/test-files/zig*
           lib:
             - if: ppc64le
               then:
@@ -589,7 +598,7 @@ outputs:
             - ${{ stdlib("c") }}
         - ${{ m2 }}bash
         - python 3.12.*
-        - zig_impl_${{ build_platform }} >=0.15.2
+        - zig15_impl_${{ build_platform }} >=0.15.2
         - if: not unix
           then:
             - ${{ compiler('c') }}
@@ -608,7 +617,7 @@ outputs:
         # For cross-compiler: depend on zig_impl for BUILD platform (external package)
         - if: is_cross_compiler
           then:
-            - zig_impl_${{ build_platform }} >=0.15.2,<=${{ version }}
+            - zig15_impl_${{ build_platform }} >=0.15.2,<=${{ version }}
           else:
             - ${{ pin_subpackage("zig15_impl_" ~ cross_target_platform_, exact=True) }}
         - if: xc_ppc64le
@@ -637,43 +646,57 @@ outputs:
             - etc/conda/activate.d/zig_activate${{ sh }}
             - etc/conda/deactivate.d/zig_deactivate${{ sh }}
             # Post-install tests
-            - etc/conda/test-files/zig*
-      - script:
-          - if: linux or is_native
-            then:
-              - ${{ conda_triplet }}-zig version
-            else:
-              - echo "Skip functional tests on non-native or non-emulated"
-          # Verify CONDA_ZIG_BUILD and CONDA_ZIG_HOST are set by activation
-          - if: unix
-            then:
-              - test -n "$CONDA_ZIG_BUILD"
-              - test -n "$CONDA_ZIG_HOST"
-              - test "$CONDA_ZIG_HOST" = "${{ conda_triplet }}-zig"
-            else:
-              - if not defined CONDA_ZIG_BUILD exit /b 1
-              - if not defined CONDA_ZIG_HOST exit /b 1
-          # Wrapper + functional validation tests (Python, cross-platform)
-          - if: unix
-            then: PYTHONIOENCODING=utf-8 python testing/test_zig_toolchain.py
-          - if: not unix
-            then: set PYTHONIOENCODING=utf-8 && python testing/test_zig_toolchain.py
-          # Cross-compiler .exe shim test (non-Unix only)
-          - if: is_cross_compiler and not unix
-            then:
-              - set "CONDA_TRIPLET=${{ conda_triplet }}" && testing\test-cross-shim.bat
-        requirements:
-          run:
-            - python >=3.10
-            - if: ppc64le
+            - if: is_native
               then:
-                - bash >=5.2
-                - libclang-cpp ${{ llvm_version }}.*
-        files:
-          recipe:
-            - testing/_test_utils.py
-            - testing/test-cross-shim.bat
-            - testing/test_zig_toolchain.py
+                - etc/conda/test-files/zig*
+      # Cross builds: skip this test item entirely. It is a `script:` test,
+      # which (unlike `package_contents:` above) requires rattler-build to
+      # solve a full TEST env. That env install includes this package's own
+      # unconditional run: dependency zig15_impl_${{ build_platform }} (see
+      # requirements.run above), a build_platform-only local-channel package
+      # that can never resolve when the TEST env's platform is the (different)
+      # target_platform of a cross build -- "excluded because due to strict
+      # channel priority". Gating this whole item (not just its script/
+      # requirements internals) ensures no TEST env is solved at all for
+      # cross builds of this output.
+      - if: build_platform == target_platform
+        then:
+          - script:
+              - if: linux or is_native
+                then:
+                  - ${{ conda_triplet }}-zig version
+                else:
+                  - echo "Skip functional tests on non-native or non-emulated"
+              # Verify CONDA_ZIG_BUILD and CONDA_ZIG_HOST are set by activation
+              - if: unix
+                then:
+                  - test -n "$CONDA_ZIG_BUILD"
+                  - test -n "$CONDA_ZIG_HOST"
+                  - test "$CONDA_ZIG_HOST" = "${{ conda_triplet }}-zig"
+                else:
+                  - if not defined CONDA_ZIG_BUILD exit /b 1
+                  - if not defined CONDA_ZIG_HOST exit /b 1
+              # Wrapper + functional validation tests (Python, cross-platform)
+              - if: unix
+                then: PYTHONIOENCODING=utf-8 python testing/test_zig_toolchain.py
+              - if: not unix
+                then: set PYTHONIOENCODING=utf-8 && python testing/test_zig_toolchain.py
+              # Cross-compiler .exe shim test (non-Unix only)
+              - if: is_cross_compiler and not unix
+                then:
+                  - set "CONDA_TRIPLET=${{ conda_triplet }}" && testing\test-cross-shim.bat
+            requirements:
+              run:
+                - python >=3.10
+                - if: ppc64le
+                  then:
+                    - bash >=5.2
+                    - libclang-cpp ${{ llvm_version }}.*
+            files:
+              recipe:
+                - testing/_test_utils.py
+                - testing/test-cross-shim.bat
+                - testing/test_zig_toolchain.py
 
   # ==========================================================================
   # METAPACKAGE: zig (native symlinks)
