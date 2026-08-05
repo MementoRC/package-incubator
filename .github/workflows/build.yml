@@ -25,34 +25,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Restore zig-llvm cache
+      - name: Restore zig-llvm-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/linux-64/*.conda
-          key: zig-llvm-linux-64-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: zig-llvm-linux-64-
-      - name: Build zig-llvm
+          key: zig-llvm-16-linux-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Build zig-llvm-16
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-llvm \
+          rattler-build build --recipe recipes/zig-llvm-16 \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-llvm artifacts
+      - name: Prune stale zig-llvm-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
-      - name: Save zig-llvm cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-16-*'
+      - name: Save zig-llvm-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/linux-64/*.conda
-          key: zig-llvm-linux-64-${{ hashFiles('recipes/zig-llvm/**') }}
+          key: zig-llvm-16-linux-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -80,9 +79,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -93,32 +92,31 @@ jobs:
           name: native-linux-64-phase1
           path: output/linux-64/
 
-      - name: Restore zig-0.15.2 cache
+      - name: Restore zig-0.16.0 cache
         uses: actions/cache/restore@v4
         with:
-          path: output/linux-64/zig15*.conda
-          key: zig15-linux-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-linux-64-
-      - name: Build zig15
+          path: output/linux-64/zig-16*.conda
+          key: zig-16-linux-64-${{ hashFiles('recipes/zig-0.16.0/**') }}
+      - name: Build zig-16
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-0.15.2 \
+          rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig15 artifacts
+      - name: Prune stale zig-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
-      - name: Save zig15 cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-16-[0-9]*'
+      - name: Save zig-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/linux-64/zig15*.conda
-          key: zig15-linux-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          path: output/linux-64/*.conda
+          key: zig-16-linux-64-${{ hashFiles('recipes/zig-0.16.0/**') }}
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-linux-64-phase2
-          path: output/linux-64/zig15*.conda
+          path: output/linux-64/zig-16*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -139,34 +137,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Restore zig-llvm cache
+      - name: Restore zig-llvm-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/osx-arm64/*.conda
-          key: zig-llvm-osx-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: zig-llvm-osx-arm64-
-      - name: Build zig-llvm
+          key: zig-llvm-16-osx-arm64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Build zig-llvm-16
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-llvm \
+          rattler-build build --recipe recipes/zig-llvm-16 \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-llvm artifacts
+      - name: Prune stale zig-llvm-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
-      - name: Save zig-llvm cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-16-*'
+      - name: Save zig-llvm-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/osx-arm64/*.conda
-          key: zig-llvm-osx-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+          key: zig-llvm-16-osx-arm64-${{ hashFiles('recipes/zig-llvm-16/**') }}
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -194,9 +191,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -207,32 +204,31 @@ jobs:
           name: native-osx-arm64-phase1
           path: output/osx-arm64/
 
-      - name: Restore zig15 cache
+      - name: Restore zig-16 cache
         uses: actions/cache/restore@v4
         with:
-          path: output/osx-arm64/zig15*.conda
-          key: zig15-osx-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-osx-arm64-
-      - name: Build zig15
+          path: output/osx-arm64/zig-16*.conda
+          key: zig-16-osx-arm64-${{ hashFiles('recipes/zig-0.16.0/**') }}
+      - name: Build zig-16
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-0.15.2 \
+          rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig15 artifacts
+      - name: Prune stale zig-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
-      - name: Save zig15 cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-16-[0-9]*'
+      - name: Save zig-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/osx-arm64/zig15*.conda
-          key: zig15-osx-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          path: output/osx-arm64/*.conda
+          key: zig-16-osx-arm64-${{ hashFiles('recipes/zig-0.16.0/**') }}
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-osx-arm64-phase2
-          path: output/osx-arm64/zig15*.conda
+          path: output/osx-arm64/zig-16*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -248,40 +244,162 @@ jobs:
 
   build-native-windows:
     name: win-64 (native)
-    runs-on: windows-latest
+    # pinned: windows-latest moved to the VS2026 image (runner-images#14017, Jun 2026);
+    # conda-forge's vswhere-based MSVC activation resolves to VS2026 and vcvars64 fails
+    # with "input line too long" status 255 (see conda-build#6012)
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
 
-      - name: Restore zig-llvm cache
+      - name: Trim PATH headroom for vcvars (win-64)
+        shell: pwsh
+        run: |
+          # rattler-build activates BOTH h_env and build_env in one process, so
+          # vcvars64.bat runs TWICE and each run prepends VS/SDK dirs to PATH
+          # without dedup. The second run overflows cmd.exe's 8191-char limit
+          # ("The input line is too long.", PR #17 run 31289796068 job 93184921225).
+          # Shrink the starting PATH so the doubled result still fits. PATH is
+          # never echoed by vcvars (@echo off), so print lengths to make the
+          # headroom measurable in future runs.
+          $before = $env:PATH
+          Write-Host "PATH length before: $($before.Length)"
+          $drop = @(
+            '\Android\', '\android-sdk', '\Java\', '\jdk', '\Microsoft SDKs\Azure',
+            '\Program Files\dotnet', '\chocolatey', '\Strawberry\', '\Ruby',
+            '\ghcup', '\cabal', '\mingw64\bin', '\Program Files\R\',
+            '\SeleniumWebDrivers', '\Program Files\PowerShell\7-preview',
+            '\hostedtoolcache\windows\Ruby', '\hostedtoolcache\windows\go',
+            '\hostedtoolcache\windows\node', '\Microsoft Service Fabric',
+            # second pass: none of the below are used by this build, and they
+            # survived the original list. Keep Git (bash), CMake, Python,
+            # PowerShell 7, pixi and the C:\Windows core dirs.
+            '\MongoDB', '\mongosh', '\aliyun-cli', '\vcpkg', '\NSIS',
+            '\tools\zstd', '\Mercurial', '\hostedtoolcache\windows\stack',
+            '\MySQL', '\sbt\bin', '\GitHub CLI', '\pipx_bin', '\npm\prefix',
+            '\OpenSSL\bin', '\kotlinc', '\Java_Temurin', '\ImageMagick',
+            '\ProgramData\kind', '\Web Platform Installer', '\TortoiseSVN',
+            '\Microsoft SQL Server', '\Windows Performance Toolkit',
+            '\WiX Toolset', '\Service Fabric', '\Program Files\nodejs',
+            '\tools\php', '\Amazon\', '\Program Files\LLVM',
+            '\Program Files (x86)\LLVM', '\.dotnet\tools', '\.cargo\bin',
+            '\WindowsApps'
+          )
+          $kept = @()
+          foreach ($p in ($before -split ';')) {
+            if (-not $p) { continue }
+            $skip = $false
+            foreach ($d in $drop) { if ($p -like "*$d*") { $skip = $true; break } }
+            if (-not $skip -and ($kept -notcontains $p)) { $kept += $p }
+          }
+          $after = ($kept -join ';')
+          Write-Host "PATH length after:  $($after.Length)  (entries: $($kept.Count))"
+          Write-Host "PATH budget: cmd.exe hard limit is 8191 chars"
+          "PATH=$after" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Restore zig-llvm-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/win-64/*.conda
-          key: zig-llvm-win-64-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: zig-llvm-win-64-
-      - name: Build zig-llvm
+          key: zig-llvm-16-win-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Measure environment size before rattler-build (win-64)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # win-64 dies with "The input line is too long." right after the
+          # SECOND vcvars64.bat run (rattler-build activates h_env and then
+          # build_env, and each prepends VS/SDK dirs to PATH/INCLUDE/LIB).
+          # cmd.exe's per-command limit is 8191 chars and the whole environment
+          # block has its own ~32767-char ceiling -- but NOTHING here has ever
+          # been measured, so every proposed fix is a guess. Print the numbers
+          # so the next failure is interpretable. This step is diagnostic only
+          # and must never fail the job.
+          $ErrorActionPreference = 'Continue'
+          $vars = Get-ChildItem env: | ForEach-Object {
+            [pscustomobject]@{ Name = $_.Name; Len = $_.Name.Length + ("" + $_.Value).Length + 2 }
+          }
+          $total = ($vars | Measure-Object -Property Len -Sum).Sum
+          Write-Host "ENV total block : $total chars (block limit ~32767)"
+          Write-Host "ENV var count   : $($vars.Count)"
+          $pathLen    = if ($env:PATH)    { $env:PATH.Length }    else { 0 }
+          $includeLen = if ($env:INCLUDE) { $env:INCLUDE.Length } else { 0 }
+          $libLen     = if ($env:LIB)     { $env:LIB.Length }     else { 0 }
+          Write-Host "PATH length     : $pathLen (cmd line limit 8191)"
+          Write-Host "INCLUDE length  : $includeLen"
+          Write-Host "LIB length      : $libLen"
+          Write-Host "--- top 15 variables by size ---"
+          $vars | Sort-Object Len -Descending | Select-Object -First 15 | ForEach-Object {
+            Write-Host ("{0,8}  {1}" -f $_.Len, $_.Name)
+          }
+
+      - name: Simulate rattler-build double vcvars activation (win-64 diagnostic)
+        shell: cmd
+        continue-on-error: true
+        run: |
+          @echo off
+          setlocal EnableExtensions
+          rem rattler-build activates h_env AND build_env in one process, so
+          rem vcvars64.bat runs TWICE and each run prepends to PATH/INCLUDE/LIB
+          rem without dedup. win-64 then dies with "The input line is too long."
+          rem Reproduce that doubling here, in a step that is cache-free and
+          rem cannot affect any other lane, and measure after EACH activation.
+          rem Called with no args (the doubling behaviour is identical) to avoid
+          rem a spurious failure if a pinned toolset version is absent.
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" goto :novswhere
+          set "VSINSTALL="
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSINSTALL=%%i"
+          echo VSINSTALL=%VSINSTALL%
+          set "VCVARS=%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+          if not exist "%VCVARS%" goto :novcvars
+          echo VCVARS=%VCVARS%
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\scripts\win-envsize.ps1 BEFORE
+
+          echo === vcvars call #1 ===
+          call "%VCVARS%"
+          echo vcvars#1 errorlevel=%ERRORLEVEL%
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\scripts\win-envsize.ps1 AFTER-1
+
+          echo === vcvars call #2 (rattler-build dies here) ===
+          call "%VCVARS%"
+          echo vcvars#2 errorlevel=%ERRORLEVEL%
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\scripts\win-envsize.ps1 AFTER-2
+
+          echo === simulation complete ===
+          exit /b 0
+
+          :novswhere
+          echo VSWHERE NOT FOUND - cannot simulate
+          exit /b 0
+
+          :novcvars
+          echo VCVARS NOT FOUND - cannot simulate
+          exit /b 0
+
+      - name: Build zig-llvm-16
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
-          rattler-build build --recipe recipes/zig-llvm \
+          rattler-build build --recipe recipes/zig-llvm-16 \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-llvm artifacts
+      - name: Prune stale zig-llvm-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
-      - name: Save zig-llvm cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-16-*'
+      - name: Save zig-llvm-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: output/win-64/*.conda
-          key: zig-llvm-win-64-${{ hashFiles('recipes/zig-llvm/**') }}
+          key: zig-llvm-16-win-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -304,17 +422,63 @@ jobs:
   build-native-windows-phase2:
     needs: build-native-windows
     name: win-64 (native PHASE 2)
-    runs-on: windows-latest
+    # pinned: see win-64 (native) above
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Trim PATH headroom for vcvars (win-64 PHASE 2)
+        shell: pwsh
+        run: |
+          # rattler-build activates BOTH h_env and build_env in one process, so
+          # vcvars64.bat runs TWICE and each run prepends VS/SDK dirs to PATH
+          # without dedup. The second run overflows cmd.exe's 8191-char limit
+          # ("The input line is too long.", PR #17 run 31289796068 job 93184921225).
+          # Shrink the starting PATH so the doubled result still fits. PATH is
+          # never echoed by vcvars (@echo off), so print lengths to make the
+          # headroom measurable in future runs.
+          $before = $env:PATH
+          Write-Host "PATH length before: $($before.Length)"
+          $drop = @(
+            '\Android\', '\android-sdk', '\Java\', '\jdk', '\Microsoft SDKs\Azure',
+            '\Program Files\dotnet', '\chocolatey', '\Strawberry\', '\Ruby',
+            '\ghcup', '\cabal', '\mingw64\bin', '\Program Files\R\',
+            '\SeleniumWebDrivers', '\Program Files\PowerShell\7-preview',
+            '\hostedtoolcache\windows\Ruby', '\hostedtoolcache\windows\go',
+            '\hostedtoolcache\windows\node', '\Microsoft Service Fabric',
+            # second pass: none of the below are used by this build, and they
+            # survived the original list. Keep Git (bash), CMake, Python,
+            # PowerShell 7, pixi and the C:\Windows core dirs.
+            '\MongoDB', '\mongosh', '\aliyun-cli', '\vcpkg', '\NSIS',
+            '\tools\zstd', '\Mercurial', '\hostedtoolcache\windows\stack',
+            '\MySQL', '\sbt\bin', '\GitHub CLI', '\pipx_bin', '\npm\prefix',
+            '\OpenSSL\bin', '\kotlinc', '\Java_Temurin', '\ImageMagick',
+            '\ProgramData\kind', '\Web Platform Installer', '\TortoiseSVN',
+            '\Microsoft SQL Server', '\Windows Performance Toolkit',
+            '\WiX Toolset', '\Service Fabric', '\Program Files\nodejs',
+            '\tools\php', '\Amazon\', '\Program Files\LLVM',
+            '\Program Files (x86)\LLVM', '\.dotnet\tools', '\.cargo\bin',
+            '\WindowsApps'
+          )
+          $kept = @()
+          foreach ($p in ($before -split ';')) {
+            if (-not $p) { continue }
+            $skip = $false
+            foreach ($d in $drop) { if ($p -like "*$d*") { $skip = $true; break } }
+            if (-not $skip -and ($kept -notcontains $p)) { $kept += $p }
+          }
+          $after = ($kept -join ';')
+          Write-Host "PATH length after:  $($after.Length)  (entries: $($kept.Count))"
+          Write-Host "PATH budget: cmd.exe hard limit is 8191 chars"
+          "PATH=$after" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Download native win-64 artifacts
         uses: actions/download-artifact@v4
@@ -322,33 +486,32 @@ jobs:
           name: native-win-64-phase1
           path: output/win-64/
 
-      - name: Restore zig15 cache
+      - name: Restore zig-16 cache
         uses: actions/cache/restore@v4
         with:
-          path: output/win-64/zig15*.conda
-          key: zig15-win-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-win-64-
-      - name: Build zig15
+          path: output/win-64/zig-16*.conda
+          key: zig-16-win-64-${{ hashFiles('recipes/zig-0.16.0/**') }}
+      - name: Build zig-16
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
-          rattler-build build --recipe recipes/zig-0.15.2 \
+          rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig15 artifacts
+      - name: Prune stale zig-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
-      - name: Save zig15 cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-16-[0-9]*'
+      - name: Save zig-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/win-64/zig15*.conda
-          key: zig15-win-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          path: output/win-64/*.conda
+          key: zig-16-win-64-${{ hashFiles('recipes/zig-0.16.0/**') }}
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
         with:
           name: native-win-64-phase2
-          path: output/win-64/zig15*.conda
+          path: output/win-64/zig-16*.conda
           retention-days: 1
 
       - name: Upload packages to prefix.dev
@@ -367,7 +530,8 @@ jobs:
   # builds gcc - llvm - zig for the cross target.
 
   build-cross-linux:
-    needs: [build-native-linux, build-native-linux-phase2]
+    needs: [build-native-linux]
+    # needs: [build-native-linux, build-native-linux-phase2]
     strategy:
       matrix:
         include:
@@ -381,9 +545,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -398,8 +562,8 @@ jobs:
       - name: Index local channel
         run: pixi run python -m conda_index output/
 
-      - name: Debug - list downloaded artifacts
-        run: find output/linux-64/ -type f | sort
+      # - name: Debug - list downloaded artifacts
+      #   run: find output/linux-64/ -type f | sort
 
       - name: Restore zig-zlib cache
         uses: actions/cache/restore@v4
@@ -470,13 +634,12 @@ jobs:
           path: output/${{ matrix.target }}/zig-libxml2*.conda
           key: zig-libxml2-${{ matrix.target }}-${{ hashFiles('recipes/zig-libxml2/**') }}
 
-      - name: Restore zig-llvm cache
+      - name: Restore zig-llvm-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
-          key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: zig-llvm-${{ matrix.target }}-
-      - name: Build zig-llvm
+          key: zig-llvm-16-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Build zig-llvm-16
         shell: bash
         run: |
           # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
@@ -485,27 +648,26 @@ jobs:
             _HB_PID=$!
             trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           fi
-          rattler-build build --recipe recipes/zig-llvm \
+          rattler-build build --recipe recipes/zig-llvm-16 \
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-llvm artifacts
+      - name: Prune stale zig-llvm-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
-      - name: Save zig-llvm cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-16-*'
+      - name: Save zig-llvm-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/${{ matrix.target }}/zig-llvm*.conda
-          key: zig-llvm-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm/**') }}
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-llvm-16-${{ matrix.target }}-${{ hashFiles('recipes/zig-llvm-16/**') }}
 
-      - name: Restore zig15 cache
+      - name: Restore zig-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/${{ matrix.target }}/*.conda
-          key: zig15-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-v2-${{ matrix.target }}-
-      - name: Build zig15
+          key: zig-16-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.16.0/**') }}
+      - name: Build zig-16
         shell: bash
         run: |
           # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
@@ -514,30 +676,30 @@ jobs:
             _HB_PID=$!
             trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           fi
-          rattler-build build --recipe recipes/zig-0.15.2 \
+          rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig15 artifacts
+      - name: Prune stale zig-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
-      - name: Save zig15 cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-16-[0-9]*'
+      - name: Save zig-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/${{ matrix.target }}/zig15*.conda
-          key: zig15-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          path: output/${{ matrix.target }}/*.conda
+          key: zig-16-v2-${{ matrix.target }}-${{ hashFiles('recipes/zig-0.16.0/**') }}
 
-      # - name: Build zig-zig-llvm
+      # - name: Build zig-zig-llvm-16
       #   shell: bash
       #   run: |
-      #     rattler-build build --recipe recipes/zig-zig-llvm \
+      #     rattler-build build --recipe recipes/zig-zig-llvm-16 \
       #       --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
       #       -c file://${{ github.workspace }}/output \
       #       -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      # - name: Prune stale zig-zig-llvm artifacts
+      # - name: Prune stale zig-zig-llvm-16 artifacts
       #   shell: bash
-      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-llvm-*'
+      #   run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-zig-llvm-16-*'
 
       # - name: Upload packages to prefix.dev
       #   if: github.event_name == 'push'
@@ -548,16 +710,17 @@ jobs:
       #     done
 
   build-cross-macos:
-    needs: [build-native-macos, build-native-macos-phase2]
+    needs: [build-native-macos]
+    # needs: [build-native-macos, build-native-macos-phase2]
     name: osx-64 (cross)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
@@ -572,52 +735,50 @@ jobs:
       - name: Index local channel
         run: pixi run python -m conda_index output/
 
-      - name: Debug - list downloaded artifacts
-        run: find output/osx-arm64/ -type f | sort
+      # - name: Debug - list downloaded artifacts
+      #   run: find output/osx-arm64/ -type f | sort
 
-      - name: Restore zig-llvm cache
+      - name: Restore zig-llvm-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/osx-64/*.conda
-          key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: zig-llvm-osx-64-
-      - name: Build zig-llvm
+          key: zig-llvm-16-osx-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Build zig-llvm-16
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-llvm \
+          rattler-build build --recipe recipes/zig-llvm-16 \
             --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig-llvm artifacts
+      - name: Prune stale zig-llvm-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
-      - name: Save zig-llvm cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-16-*'
+      - name: Save zig-llvm-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/osx-64/zig-llvm*.conda
-          key: zig-llvm-osx-64-${{ hashFiles('recipes/zig-llvm/**') }}
+          path: output/osx-64/*.conda
+          key: zig-llvm-16-osx-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
 
-      - name: Restore zig15 cache
+      - name: Restore zig-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/osx-64/*.conda
-          key: zig15-osx-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-osx-64-
-      - name: Build zig15
+          key: zig-16-osx-64-${{ hashFiles('recipes/zig-0.16.0/**') }}
+      - name: Build zig-16
         shell: bash
         run: |
-          rattler-build build --recipe recipes/zig-0.15.2 \
+          rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig15 artifacts
+      - name: Prune stale zig-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
-      - name: Save zig15 cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-16-[0-9]*'
+      - name: Save zig-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/osx-64/zig15*.conda
-          key: zig15-osx-64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          path: output/osx-64/*.conda
+          key: zig-16-osx-64-${{ hashFiles('recipes/zig-0.16.0/**') }}
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'
         shell: bash
@@ -635,19 +796,66 @@ jobs:
           done
 
   build-cross-windows:
-    needs: [build-native-windows, build-native-windows-phase2]
+    needs: [build-native-windows]
+    # needs: [build-native-windows, build-native-windows-phase2]
     name: win-arm64 (cross)
-    runs-on: windows-latest
+    # pinned: see win-64 (native) above
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          pixi-version: v0.68.1
+          pixi-version: v0.76.1
       - name: Add .pixi/envs/default/bin to the $PATH
         shell: bash
         run: echo "$(pwd)/.pixi/envs/default/bin" >> $GITHUB_PATH
+
+      - name: Trim PATH headroom for vcvars (win-arm64)
+        shell: pwsh
+        run: |
+          # rattler-build activates BOTH h_env and build_env in one process, so
+          # vcvars64.bat runs TWICE and each run prepends VS/SDK dirs to PATH
+          # without dedup. The second run overflows cmd.exe's 8191-char limit
+          # ("The input line is too long.", PR #17 run 31289796068 job 93184921225).
+          # Shrink the starting PATH so the doubled result still fits. PATH is
+          # never echoed by vcvars (@echo off), so print lengths to make the
+          # headroom measurable in future runs.
+          $before = $env:PATH
+          Write-Host "PATH length before: $($before.Length)"
+          $drop = @(
+            '\Android\', '\android-sdk', '\Java\', '\jdk', '\Microsoft SDKs\Azure',
+            '\Program Files\dotnet', '\chocolatey', '\Strawberry\', '\Ruby',
+            '\ghcup', '\cabal', '\mingw64\bin', '\Program Files\R\',
+            '\SeleniumWebDrivers', '\Program Files\PowerShell\7-preview',
+            '\hostedtoolcache\windows\Ruby', '\hostedtoolcache\windows\go',
+            '\hostedtoolcache\windows\node', '\Microsoft Service Fabric',
+            # second pass: none of the below are used by this build, and they
+            # survived the original list. Keep Git (bash), CMake, Python,
+            # PowerShell 7, pixi and the C:\Windows core dirs.
+            '\MongoDB', '\mongosh', '\aliyun-cli', '\vcpkg', '\NSIS',
+            '\tools\zstd', '\Mercurial', '\hostedtoolcache\windows\stack',
+            '\MySQL', '\sbt\bin', '\GitHub CLI', '\pipx_bin', '\npm\prefix',
+            '\OpenSSL\bin', '\kotlinc', '\Java_Temurin', '\ImageMagick',
+            '\ProgramData\kind', '\Web Platform Installer', '\TortoiseSVN',
+            '\Microsoft SQL Server', '\Windows Performance Toolkit',
+            '\WiX Toolset', '\Service Fabric', '\Program Files\nodejs',
+            '\tools\php', '\Amazon\', '\Program Files\LLVM',
+            '\Program Files (x86)\LLVM', '\.dotnet\tools', '\.cargo\bin',
+            '\WindowsApps'
+          )
+          $kept = @()
+          foreach ($p in ($before -split ';')) {
+            if (-not $p) { continue }
+            $skip = $false
+            foreach ($d in $drop) { if ($p -like "*$d*") { $skip = $true; break } }
+            if (-not $skip -and ($kept -notcontains $p)) { $kept += $p }
+          }
+          $after = ($kept -join ';')
+          Write-Host "PATH length after:  $($after.Length)  (entries: $($kept.Count))"
+          Write-Host "PATH budget: cmd.exe hard limit is 8191 chars"
+          "PATH=$after" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Download native win-64 artifacts (phase 1 + phase 2)
         uses: actions/download-artifact@v4
@@ -659,20 +867,19 @@ jobs:
       - name: Index local channel
         run: pixi run python -m conda_index output/
 
-      - name: Debug - list downloaded artifacts
-        run: ls output/win-64/
+      # - name: Debug - list downloaded artifacts
+      #   run: ls output/win-64/
 
-      - name: Restore zig-llvm cache
+      - name: Restore zig-llvm-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/win-arm64/*.conda
-          key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
-          restore-keys: zig-llvm-win-arm64-
-      - name: Build zig-llvm
+          key: zig-llvm-16-win-arm64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Build zig-llvm-16
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
-          rattler-build build --recipe recipes/zig-llvm \
+          rattler-build build --recipe recipes/zig-llvm-16 \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: DIAG dump build_env.sh on failure (win-arm64)
@@ -690,38 +897,37 @@ jobs:
             echo "=== end $f ==="
           done
           [ "$found" = 1 ] || echo "no build_env.sh found under output/bld/"
-      - name: Prune stale zig-llvm artifacts
+      - name: Prune stale zig-llvm-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-*'
-      - name: Save zig-llvm cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-llvm-16-*'
+      - name: Save zig-llvm-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/win-arm64/zig-llvm*.conda
-          key: zig-llvm-win-arm64-${{ hashFiles('recipes/zig-llvm/**') }}
+          path: output/win-arm64/*.conda
+          key: zig-llvm-16-win-arm64-${{ hashFiles('recipes/zig-llvm-16/**') }}
 
-      - name: Restore zig15 cache
+      - name: Restore zig-16 cache
         uses: actions/cache/restore@v4
         with:
           path: output/win-arm64/*.conda
-          key: zig15-win-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
-          restore-keys: zig15-win-arm64-
-      - name: Build zig15
+          key: zig-16-win-arm64-${{ hashFiles('recipes/zig-0.16.0/**') }}
+      - name: Build zig-16
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
-          rattler-build build --recipe recipes/zig-0.15.2 \
+          rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
-      - name: Prune stale zig15 artifacts
+      - name: Prune stale zig-16 artifacts
         shell: bash
-        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig15-[0-9]*'
-      - name: Save zig15 cache
+        run: bash .github/scripts/prune-stale-artifacts.sh output 'zig-16-[0-9]*'
+      - name: Save zig-16 cache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
-          path: output/win-arm64/zig15*.conda
-          key: zig15-win-arm64-${{ hashFiles('recipes/zig-0.15.2/**') }}
+          path: output/win-arm64/*.conda
+          key: zig-16-win-arm64-${{ hashFiles('recipes/zig-0.16.0/**') }}
 
       - name: Upload packages to prefix.dev
         if: github.event_name == 'push'

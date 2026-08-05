@@ -1,0 +1,70 @@
+--- a/cmake/Findllvm.cmake
++++ b/cmake/Findllvm.cmake
+@@ -10,6 +10,17 @@
+
+
+ if(ZIG_USE_LLVM_CONFIG)
++  if(DEFINED ZIG_LLVM_MANUAL_OVERRIDE)
++    # Cross-builds: the only llvm-config runnable on the build machine
++    # cannot answer target-arch --libs/--includedir queries for the
++    # actual (cross-target) zig-llvm build. Use the values the recipe
++    # build script already computed instead of probing llvm-config.
++    set(LLVM_LIBRARIES "${ZIG_LLVM_MANUAL_LIBRARIES}")
++    set(LLVM_LIBDIRS "${ZIG_LLVM_MANUAL_LIBDIRS}")
++    set(LLVM_INCLUDE_DIRS "${ZIG_LLVM_MANUAL_INCLUDE_DIRS}")
++    set(LLVM_LINK_MODE "shared")
++    link_directories("${LLVM_LIBDIRS}")
++  else()
+   set(LLVM_CONFIG_ERROR_MESSAGES "")
+   while(1)
+     # If this variable is not unset, the same result is returned even though
+@@ -177,6 +188,7 @@
+   string(REPLACE " " ";" LLVM_INCLUDE_DIRS "${LLVM_INCLUDE_DIRS_SPACES}")
+
+   link_directories("${LLVM_LIBDIRS}")
++  endif()
+ else()
+   # Here we assume that we're cross compiling with Zig, of course. No reason
+   # to support more complicated setups.
+--- a/cmake/Findclang.cmake
++++ b/cmake/Findclang.cmake
+@@ -7,6 +7,10 @@
+ # CLANG_LIBRARIES
+ # CLANG_LIBDIRS
+
++if(DEFINED ZIG_LLVM_MANUAL_OVERRIDE)
++  set(CLANG_INCLUDE_DIRS "${LLVM_INCLUDE_DIRS}")
++  set(CLANG_LIBRARIES "${ZIG_LLVM_MANUAL_CLANG_LIBRARIES}")
++else()
+ find_path(CLANG_INCLUDE_DIRS NAMES clang/Frontend/ASTUnit.h
+   HINTS ${LLVM_INCLUDE_DIRS}
+   # Only look for Clang next to LLVM or in { CMAKE_PREFIX_PATH, CMAKE_LIBRARY_PATH, CMAKE_FRAMEWORK_PATH }
+@@ -70,6 +74,7 @@
+   FIND_AND_ADD_CLANG_LIB(clangInstallAPI)
+   FIND_AND_ADD_CLANG_LIB(clangAST)
+ endif()
++endif()
+
+ if (MSVC)
+   set(CLANG_LIBRARIES ${CLANG_LIBRARIES} "version.lib")
+--- a/cmake/Findlld.cmake
++++ b/cmake/Findlld.cmake
+@@ -6,6 +6,10 @@
+ # LLD_INCLUDE_DIRS
+ # LLD_LIBRARIES
+
++if(DEFINED ZIG_LLVM_MANUAL_OVERRIDE)
++  set(LLD_INCLUDE_DIRS "${LLVM_INCLUDE_DIRS}")
++  set(LLD_LIBRARIES "${ZIG_LLVM_MANUAL_LLD_LIBRARIES}")
++else()
+ find_path(LLD_INCLUDE_DIRS NAMES lld/Common/Driver.h
+     HINTS ${LLVM_INCLUDE_DIRS}
+     PATHS
+@@ -57,6 +61,7 @@
+     FIND_AND_ADD_LLD_LIB(lldMachO)
+     FIND_AND_ADD_LLD_LIB(lldCommon)
+ endif()
++endif()
+
+ include(FindPackageHandleStandardArgs)
+ find_package_handle_standard_args(lld DEFAULT_MSG LLD_LIBRARIES LLD_INCLUDE_DIRS)

@@ -1,0 +1,183 @@
+--- a/src/link/Lld.zig	2026-04-22 15:05:46
++++ b/src/link/Lld.zig	2026-04-22 15:07:08
+@@ -725,7 +725,11 @@
+         // libc++ dep
+         if (comp.config.link_libcpp) {
+             try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
+-            try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++            if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
++                try argv.append(shared_path);
++            } else {
++                try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++            }
+         }
+ 
+         // libunwind dep
+@@ -1206,7 +1210,13 @@
+             // libc++ dep
+             if (comp.config.link_libcpp) {
+                 try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
+-                try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++                if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
++                    try argv.append("--no-as-needed");
++                    try argv.append(shared_path);
++                    try argv.append("--as-needed");
++                } else {
++                    try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++                }
+             }
+ 
+             // libunwind dep
+@@ -1577,7 +1587,12 @@
+             }
+ 
+             if (comp.config.link_libcpp) {
+-                try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++                // WASM: no shared library concept; probe always returns null
++                if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
++                    try argv.append(shared_path);
++                } else {
++                    try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++                }
+                 try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
+             }
+         }
+@@ -1789,10 +1804,12 @@
+         };
+ 
+         if (comp.config.link_libcpp) {
+-            try argv.appendSlice(&.{
+-                try comp.libcxxabi_static_lib.?.full_object_path.toString(arena),
+-                try comp.libcxx_static_lib.?.full_object_path.toString(arena),
+-            });
++            try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
++            if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
++                try argv.append(shared_path);
++            } else {
++                try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++            }
+         }
+ 
+         try argv.append("-lSystem");
+@@ -1965,6 +1982,7 @@
+ const openbsd = @import("../libs/openbsd.zig");
+ const wasi_libc = @import("../libs/wasi_libc.zig");
+ const link = @import("../link.zig");
++const libcxx_shared = @import("libcxx_shared.zig");
+ const lldMain = @import("../main.zig").lldMain;
+ const target_util = @import("../target.zig");
+ const trace = @import("../tracy.zig").trace;
+--- a/src/link/MachO.zig	2026-04-22 15:02:50
++++ b/src/link/MachO.zig	2026-04-22 15:07:16
+@@ -426,7 +426,11 @@
+     if (comp.config.link_libcpp) {
+         try system_libs.ensureUnusedCapacity(2);
+         system_libs.appendAssumeCapacity(.{ .path = comp.libcxxabi_static_lib.?.full_object_path });
+-        system_libs.appendAssumeCapacity(.{ .path = comp.libcxx_static_lib.?.full_object_path });
++        if (try libcxx_shared.findSharedLibCxxPath(comp, arena)) |shared_path| {
++            system_libs.appendAssumeCapacity(.{ .path = shared_path });
++        } else {
++            system_libs.appendAssumeCapacity(.{ .path = comp.libcxx_static_lib.?.full_object_path });
++        }
+     }
+ 
+     const is_exe_or_dyn_lib = comp.config.output_mode == .Exe or
+@@ -807,10 +811,12 @@
+         }
+ 
+         if (comp.config.link_libcpp) {
+-            try argv.appendSlice(&.{
+-                try comp.libcxxabi_static_lib.?.full_object_path.toString(arena),
+-                try comp.libcxx_static_lib.?.full_object_path.toString(arena),
+-            });
++            try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
++            if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
++                try argv.append(shared_path);
++            } else {
++                try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
++            }
+         }
+ 
+         try argv.append("-lSystem");
+@@ -5458,6 +5464,7 @@
+ const dead_strip = @import("MachO/dead_strip.zig");
+ const eh_frame = @import("MachO/eh_frame.zig");
+ const fat = @import("MachO/fat.zig");
++const libcxx_shared = @import("libcxx_shared.zig");
+ const link = @import("../link.zig");
+ const load_commands = @import("MachO/load_commands.zig");
+ const relocatable = @import("MachO/relocatable.zig");
+--- a/src/link/libcxx_shared.zig	1970-01-01 01:00:00
++++ b/src/link/libcxx_shared.zig	2026-04-22 15:06:53
+@@ -0,0 +1,71 @@
++//! Shared libc++ discovery for conda-forge zig packaging.
++//! Probes for a shared libc++ library relative to zig_lib_dir,
++//! falling back to null (caller uses static libc++.a).
++//!
++//! Cross-compilation guard: zig_lib_dir points to the BUILD host's
++//! zig installation. When target arch != host arch, the shared libs
++//! there are for the wrong architecture. Skip probing in that case
++//! and let the caller fall back to static libc++.a.
++
++const std = @import("std");
++const builtin = @import("builtin");
++const Io = std.Io;
++const Allocator = std.mem.Allocator;
++const Cache = std.Build.Cache;
++const Compilation = @import("../Compilation.zig");
++
++/// Platform-specific shared library names for libc++.
++/// Keyed by target OS tag.
++fn sharedLibCxxNames(os_tag: std.Target.Os.Tag) []const []const u8 {
++    if (os_tag.isDarwin()) {
++        return &.{ "libc++.1.dylib", "libc++.dylib" };
++    }
++    return switch (os_tag) {
++        .linux, .freebsd, .netbsd, .openbsd, .dragonfly => &.{ "libc++.so.1", "libc++.so" },
++        .windows => &.{"libc++.dll.a"},
++        else => &.{},
++    };
++}
++
++/// Probe directories relative to zig_lib (which is <prefix>/lib/zig/).
++/// Two levels up reaches <prefix>/, then:
++///   - <prefix>/lib/zig-llvm/lib/  (preferred: dedicated zig-llvm package)
++///   - <prefix>/lib/                (fallback: standard lib dir)
++const probe_subdirs = [_][]const u8{
++    "../../lib/zig-llvm/lib",
++    "../../lib",
++};
++
++/// Find shared libc++ and return its path as a string (for argv-based linkers).
++/// Returns null if no shared libc++ found. Errors only on allocation failure.
++pub fn findSharedLibCxxString(comp: *const Compilation, arena: Allocator) !?[]const u8 {
++    const target = &comp.root_mod.resolved_target.result;
++
++    // Cross-compilation: zig_lib_dir is on the build host, so probed
++    // shared libs have the host architecture, not the target's.
++    if (target.cpu.arch != builtin.cpu.arch) return null;
++
++    const names = sharedLibCxxNames(target.os.tag);
++    if (names.len == 0) return null;
++
++    const zig_lib_path = comp.dirs.zig_lib.path orelse return null;
++    const io = comp.io;
++
++    for (&probe_subdirs) |subdir| {
++        for (names) |name| {
++            const probe = try std.fs.path.join(arena, &.{ zig_lib_path, subdir, name });
++            // Check if file exists via access()
++            Io.Dir.cwd().access(io, probe, .{}) catch continue;
++            return probe;
++        }
++    }
++    return null;
++}
++
++// Find shared libc++ and return its Cache.Path (for MachO system_libs).
++// Uses Cache.Path.initCwd() -- probe string is absolute since zig_lib_path is absolute.
++// Returns null if no shared libc++ found.
++pub fn findSharedLibCxxPath(comp: *const Compilation, arena: Allocator) !?Cache.Path {
++    const str = try findSharedLibCxxString(comp, arena) orelse return null;
++    return Cache.Path.initCwd(str);
++}
