@@ -226,9 +226,41 @@ EOF
       [[ -f "${_fpreset_stub}" ]] || { echo "ERROR: _fpreset stub still missing after compile"; exit 1; }
       echo "    inline stub: ${_fpreset_stub} ($(wc -c < "${_fpreset_stub}") bytes)"
     fi
+    # Windows ARM64 only: libc++'s string.cpp unconditionally implements
+    #   std::__1::stold(const std::wstring&) via the libc entry point wcstold.
+    # mingw-w64's ARM64 CRT does not provide it (on the ARM64 Windows ABI
+    # long double is bit-identical to double, so the long-double-specific
+    # wide-char parser that exists on x86_64 is absent), and the link dies with
+    #   lld-link: error: undefined symbol: wcstold
+    #   >>> referenced by libcxx/src/string.cpp:283
+    # It is fatal for every target pulling in string.cpp.obj -- lib/libc++.dll
+    # here, and bin/libLLVM-21.dll in the main build (see _cmake_flags.sh).
+    # (PR #17 run 31547433304, win-arm64 job 93962966657, log lines 6845/18721.)
+    # Forwarding to wcstod is value-exact, not an approximation, because the
+    # two types are the same on this ABI.
+    _wcstold_stub="${LLVM_BUILD}/wcstold_arm64.o"
+    if [[ ! -f "${_wcstold_stub}" ]]; then
+      _wcstold_src="${LLVM_BUILD}/wcstold_arm64.c"
+      mkdir -p "${LLVM_BUILD}"
+      cat > "${_wcstold_src}" << 'EOF'
+// mingw-w64 ARM64 does not export wcstold. long double == double on the
+// ARM64 Windows ABI, so forwarding to wcstod is value-exact.
+#include <stdlib.h>
+#include <wchar.h>
+long double wcstold(const wchar_t *s, wchar_t **endptr) {
+  return (long double)wcstod(s, endptr);
+}
+EOF
+      "${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe" cc \
+        -target aarch64-windows-gnu -c "${_wcstold_src}" -o "${_wcstold_stub}" \
+        || { echo "ERROR: failed to compile wcstold_arm64.o stub"; exit 1; }
+      rm -f "${_wcstold_src}"
+      [[ -f "${_wcstold_stub}" ]] || { echo "ERROR: wcstold stub still missing after compile"; exit 1; }
+      echo "    wcstold stub: ${_wcstold_stub} ($(wc -c < "${_wcstold_stub}") bytes)"
+    fi
     _RUNTIMES_CMAKE+=(
-      -DCMAKE_SHARED_LINKER_FLAGS="${_fpreset_stub}"
-      -DCMAKE_EXE_LINKER_FLAGS="${_fpreset_stub}"
+      -DCMAKE_SHARED_LINKER_FLAGS="${_fpreset_stub} ${_wcstold_stub}"
+      -DCMAKE_EXE_LINKER_FLAGS="${_fpreset_stub} ${_wcstold_stub}"
     )
   fi
 fi

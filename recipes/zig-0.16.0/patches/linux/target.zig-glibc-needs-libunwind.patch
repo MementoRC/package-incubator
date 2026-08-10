@@ -1,18 +1,35 @@
-# Purpose: Force libunwind dependency for all glibc targets (not just static), required by conda-forge glibc 2.17 floor
+# Purpose: Force libunwind dependency for glibc targets on the conda-forge glibc
+#          2.17 floor. Upstream only forces it for STATIC glibc links.
 # Affects: src/target.zig
 # Upstream: not filed
 # Drop-when: conda-forge linux glibc floor reaches a version that no longer needs libunwind forced
-# Last-verified: 2026-05-13 (build 23, zig 0.16.0)
+# Last-verified: 2026-08-12 (zig 0.16.0)
+#
+# riscv64 is EXCLUDED from the forcing and keeps upstream behaviour. Its
+# conda-forge sysroot is glibc 2.39 (c_stdlib_version), not the 2.17 floor this
+# workaround exists for, so it never needed the force. Forcing it made every
+# dynamic riscv64-linux-gnu link build zig's bundled libunwind from source, and
+# that sub-compilation fails with missing stdint.h / assert.h / inttypes.h /
+# stdbool.h -- all resolved against lib/zig/libunwind/include/, i.e. with the
+# clang resource dir and the libc include dirs absent from the search path.
+# Passing --libc does not help: the build-phase docgen invocation already passes
+# it and still fails. Symptom on PR #17 run 31547433304, job 93962873769:
+# "error: sub-compilation of libunwind failed" x4 during docgen (non-fatal, see
+# build.sh's Phase 2 langref guard) and fatally in the -fuse-ld=lld test.
 
 --- a/src/target.zig
 +++ b/src/target.zig
-@@ -32,7 +32,8 @@
+@@ -32,7 +32,12 @@
  }
 
  pub fn libCNeedsLibUnwind(target: *const std.Target, link_mode: std.builtin.LinkMode) bool {
 -    return target.isGnuLibC() and link_mode == .static;
-+    _ = link_mode;
-+    return target.isGnuLibC();
++    if (!target.isGnuLibC()) return false;
++    // riscv64: conda-forge sysroot is glibc 2.39, not the 2.17 floor this
++    // override exists for, and zig 0.16.0 cannot build its bundled libunwind
++    // for riscv64-linux-gnu. Keep upstream behaviour there.
++    if (target.cpu.arch == .riscv64) return link_mode == .static;
++    return true;
  }
 
  pub fn libCxxNeedsLibUnwind(target: *const std.Target) bool {

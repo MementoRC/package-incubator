@@ -152,13 +152,15 @@ if is_unix; then
   )
 fi
 
-# CONDA_BUILD_SYSROOT is normally exported by the conda-forge compiler
-# activation, but this recipe depends on gcc_impl/binutils_impl directly
-# (not compiler('c')), so on the gcc_impl targets (e.g. ppc64le) that
-# activation never runs and the var is unset under `set -u`. Derive the
-# TARGET sysroot the same way _cross.sh:21 does (:= is a no-op if a real
-# activation already set it). CONDA_TRIPLET is the TARGET triplet.
-: "${CONDA_BUILD_SYSROOT:=${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot}"
+# Composed, not inherited: this recipe has no gcc dep, so the conda-forge
+# compiler package that would normally export a sysroot variable is absent
+# by design. ZIG_SYSROOT_SUBPATH comes from recipe.yaml's env: (prefix-
+# relative, e.g. /riscv64-conda-linux-gnu/sysroot; empty on non-linux).
+if [[ -n "${ZIG_SYSROOT_SUBPATH:-}" ]]; then
+  export ZIG_SYSROOT="${BUILD_PREFIX}${ZIG_SYSROOT_SUBPATH}"
+else
+  export ZIG_SYSROOT="${BUILD_PREFIX}/${CONDA_TRIPLET}/sysroot"
+fi
 
 if is_linux && is_cross; then
   # CI run 31321865432 (linux-aarch64 cross, build_zig_with_zig):
@@ -197,22 +199,26 @@ if is_linux && is_cross; then
   # lib64/<file> through the symlink. riscv64-only: no other cross target
   # has this zig-internal lp64d assumption.
   if [[ "${target_platform}" == "linux-riscv64" ]] \
-     && [[ -d "${CONDA_BUILD_SYSROOT}/lib64" ]] \
-     && [[ ! -e "${CONDA_BUILD_SYSROOT}/lib64/lp64d" ]]; then
-    ln -sf . "${CONDA_BUILD_SYSROOT}/lib64/lp64d"
+     && [[ -d "${ZIG_SYSROOT}/lib64" ]] \
+     && [[ ! -e "${ZIG_SYSROOT}/lib64/lp64d" ]]; then
+    ln -sf . "${ZIG_SYSROOT}/lib64/lp64d"
   fi
-  # PR #123 run 90907370350: sysroot_linux-riscv64's usr/lib/libc.so is a
-  # GNU ld script (GROUP referencing bare-absolute /lib64/lp64d/libc.so.6,
-  # /usr/lib64/lp64d/libc_nonshared.a, AS_NEEDED(/lib/ld-linux-riscv64-lp64d.so.1)).
-  # zig's build_zig_with_zig link step doesn't pass --sysroot, so ld.lld
-  # resolves those absolute paths against / and fails to open them. Replace
-  # the script with a direct symlink to the real shared object.
-  if [[ "${target_platform}" == "linux-riscv64" ]] \
-     && [[ -f "${CONDA_BUILD_SYSROOT}/usr/lib/libc.so" ]] \
-     && file "${CONDA_BUILD_SYSROOT}/usr/lib/libc.so" | grep -qE "ASCII text|script"; then
-    ln -sf libc.so.6 "${CONDA_BUILD_SYSROOT}/usr/lib/libc.so"
-  fi
-  _libc_runtimes_dir="${CONDA_BUILD_SYSROOT}"/lib64
+  # REMOVED (PR #17, run 31614917304). This block used to replace the riscv64
+  # sysroot's usr/lib/libc.so GNU-ld script with a symlink, to work
+  # around ld.lld resolving the script's bare-absolute GROUP() operands
+  # against / (zig's link step passes no --sysroot).
+  #
+  # fix_sysroot_libc_scripts() above (_sysroot_fix.sh) ALREADY handles exactly
+  # that: its sed rewrites those operands to sysroot-absolute, including the
+  # `s| /lib/ld-|` rule that keeps AS_NEEDED(ld-linux-riscv64-lp64d.so.1)
+  # resolvable. The old symlink then ran AFTER that rewrite and threw the whole
+  # script away, taking the AS_NEEDED loader entry with it. __tls_get_addr is
+  # defined ONLY in the dynamic loader, never in libc.so.6, so every langref
+  # doctest link failed with `ld.lld: undefined symbol: __tls_get_addr`
+  # (referenced from debug.defaultPanic). The ZIG_LLVM_LIBRARIES perl edit
+  # further down diagnosed this but only patched the zig binary's own link via
+  # config.h -- it never reached the doctest sub-compiles. Do not re-add.
+  _libc_runtimes_dir="${ZIG_SYSROOT}"/lib64
   EXTRA_ZIG_ARGS+=(
     --libc "${zig_build_dir}"/libc_file
     --libc-runtimes "${_libc_runtimes_dir}"
@@ -249,17 +255,15 @@ if is_linux && ! is_cross && [[ "${target_platform}" == "linux-riscv64" ]]; then
   # Same zig-internal lp64d assumption applies to native riscv64 builds
   # (see the cross-block comment above for the full root cause); mirror
   # the self-referential symlink here so it resolves identically.
-  if [[ -d "${CONDA_BUILD_SYSROOT}/lib64" ]] \
-     && [[ ! -e "${CONDA_BUILD_SYSROOT}/lib64/lp64d" ]]; then
-    ln -sf . "${CONDA_BUILD_SYSROOT}/lib64/lp64d"
+  if [[ -d "${ZIG_SYSROOT}/lib64" ]] \
+     && [[ ! -e "${ZIG_SYSROOT}/lib64/lp64d" ]]; then
+    ln -sf . "${ZIG_SYSROOT}/lib64/lp64d"
   fi
-  # Same broken GNU-ld libc.so script as the cross block above (PR #123 run
-  # 90907370350) -- fix it here too for the native build.
-  if [[ -f "${CONDA_BUILD_SYSROOT}/usr/lib/libc.so" ]] \
-     && file "${CONDA_BUILD_SYSROOT}/usr/lib/libc.so" | grep -qE "ASCII text|script"; then
-    ln -sf libc.so.6 "${CONDA_BUILD_SYSROOT}/usr/lib/libc.so"
-  fi
-  export ZIG_EXTRA_LIBDIR="${CONDA_BUILD_SYSROOT}"/lib64
+  # REMOVED (PR #17) for the same reason as the cross block above: it discarded
+  # AS_NEEDED(ld-linux-riscv64-lp64d.so.1) and broke __tls_get_addr resolution.
+  # build_native.sh calls fix_sysroot_libc_scripts "${ENV_DIR}", which rewrites
+  # the script's GROUP() operands correctly instead. Do not re-add.
+  export ZIG_EXTRA_LIBDIR="${ZIG_SYSROOT}"/lib64
 fi
 
 # --- libzigcpp Configuration ---
@@ -373,6 +377,146 @@ if is_linux; then
     -DCMAKE_C_COMPILER="${ZIG_CC_STUB_WRAPPER}"
     -DCMAKE_CXX_COMPILER="${ZIG_CXX_STUB_WRAPPER}"
   )
+elif is_not_unix; then
+  # win-64/win-arm64: same ABI-consistency requirement as linux above, different
+  # mechanism. With no pin, CMake auto-detects MSVC and builds zigcpp.lib with it;
+  # those objects carry /DEFAULTLIB:MSVCRT, OLDNAMES and msvcprt directives, and the
+  # final `zig build-exe -target x86_64-windows-gnu` resolves them the gnu way:
+  #   error: lld-link: could not open 'libmsvcprt.a': no such file or directory
+  #   error: lld-link: could not open 'libMSVCRT.a':  no such file or directory
+  #   error: lld-link: could not open 'libOLDNAMES.a': no such file or directory
+  # (PR #17 run 31614917304 job 94226523362 lines 1083-1086; byte-identical in the
+  # earlier job 93962966644, so this predates the 0.16.0 work.)
+  #
+  # The linux stub wrappers above are .sh and cannot serve as CMAKE_C_COMPILER on
+  # Windows, and CMake requires a single executable -- `zig cc` as two words does
+  # not work. These triple-prefixed .exe wrappers normally ship pre-built from the
+  # zig_${{ cross_target_platform_ }} output (install_zig_activation.py's
+  # _compile_c_shim(), compiling building/zig-cc-nonunix.c) -- but that output
+  # pin_subpackages zig_impl_ with exact=True and is NOT a zig_impl_ build
+  # dependency (adding one would be a cycle: it builds AFTER and FROM zig_impl_),
+  # so it can never be present at this point. CI run 31720942719 confirmed this on
+  # BOTH windows lanes (win-64 native job 94517681073, win-arm64 cross job
+  # 94517680964): `ls -1` of BUILD_PREFIX/Library/bin (352 entries) contained no
+  # *-zig-cc*/*-zig-cxx* at all, only the plain ${CONDA_ZIG_BUILD}.exe. Self-generate
+  # the shims here instead, mirroring the dependency-free linux
+  # ZIG_CC_STUB_WRAPPER/ZIG_CXX_STUB_WRAPPER pattern above: same source
+  # (zig-cc-nonunix.c), same compile recipe and @PLACEHOLDER@ set as
+  # _compile_c_shim()/install_zig_cc_wrappers() use, just run locally instead of
+  # consuming a pre-built package. BUILD_PREFIX carries backslashes on Windows, so
+  # normalize before composing paths.
+  _bp_fwd="${BUILD_PREFIX//\\//}"
+
+  # BUILD_ZIG is a bare command name (build_triplet-zig), not a path -- resolve via
+  # PATH first, same fallback idiom as _mingw.sh:88-96.
+  _win_build_zig_path="$(command -v "${BUILD_ZIG}" 2>/dev/null || true)"
+  if [[ -z "${_win_build_zig_path}" ]]; then
+    _win_build_zig_path="${_bp_fwd}/Library/bin/${BUILD_ZIG}"
+  fi
+
+  _win_zig_cc="${ZIG_LOCAL_CACHE_DIR}/${CONDA_TRIPLET}-zig-cc.exe"
+  _win_zig_cxx="${ZIG_LOCAL_CACHE_DIR}/${CONDA_TRIPLET}-zig-cxx.exe"
+  _win_shim_src="${RECIPE_DIR}/building/zig-cc-nonunix.c"
+  _win_shim_log="${ZIG_LOCAL_CACHE_DIR}/win-cc-shim-compile.log"
+  mkdir -p "${ZIG_LOCAL_CACHE_DIR}"
+  : > "${_win_shim_log}"
+
+  # find_zig() inside the compiled shim resolves the real zig binary at ITS OWN
+  # (later) runtime via getenv("CONDA_PREFIX") + "\Library\bin\" + ZIG_BIN_NAME
+  # (building/zig-cc-nonunix.c:170-178) -- the same lookup the shipped, install-time
+  # shim uses. build-zig.sh never otherwise sets CONDA_PREFIX, so point it at
+  # BUILD_PREFIX (where BUILD_ZIG actually lives) for the rest of this script.
+  export CONDA_PREFIX="${_bp_fwd}"
+
+  _win_compile_shim() {
+    # $1=ZIG_CC_MODE (cc|c++)  $2=tmp source filename tag  $3=output .exe path
+    local _mode="$1" _tag="$2" _dst="$3" _src_copy
+    _src_copy="${ZIG_LOCAL_CACHE_DIR}/zig-${_tag}-nonunix.c"
+    sed \
+      -e "s/@ZIG_CC_MODE@/${_mode}/g" \
+      -e "s/@ZIG_BIN_NAME@/${BUILD_ZIG}.exe/g" \
+      -e "s/@ZIG_TARGET@/${ZIG_TRIPLET}/g" \
+      -e "s/@ZIG_TARGET_ARCH@/${ZIG_TRIPLET%%-*}/g" \
+      -e "s/@IS_MINGW_TARGET@/1/g" \
+      "${_win_shim_src}" > "${_src_copy}"
+    "${_win_build_zig_path}" cc -O2 -I"${_win_shim_src%/*}" -o "${_dst}" "${_src_copy}" -lkernel32
+  }
+
+  if ! { _win_compile_shim cc cc "${_win_zig_cc}" \
+      && _win_compile_shim c++ cxx "${_win_zig_cxx}"; } >>"${_win_shim_log}" 2>&1 \
+     || [[ ! -x "${_win_zig_cc}" ]] || [[ ! -x "${_win_zig_cxx}" ]]; then
+    # Fail loudly and early. Falling through to CMake's auto-detection is what
+    # produced the MSVC/gnu ABI split in the first place, and it only surfaces
+    # ~10 minutes later at the final link.
+    echo "FATAL: failed to self-compile zig-cc/zig-cxx shims, cannot pin zigcpp compiler:" >&2
+    echo "         compiler used: ${_win_build_zig_path}" >&2
+    echo "         ${_win_zig_cc}" >&2
+    echo "         ${_win_zig_cxx}" >&2
+    echo "       compile log:" >&2
+    sed 's/^/         /' "${_win_shim_log}" >&2
+    echo "       contents of ${_bp_fwd}/Library/bin:" >&2
+    ls -1 "${_bp_fwd}/Library/bin" 2>&1 | sed 's/^/         /' >&2
+    exit 1
+  fi
+  # COMPILER_FORCED (below) skips CMake's own compiler-identification probe,
+  # which is also what normally populates CMAKE_<LANG>_COMPILER_VERSION. Left
+  # unset, target_compile_features() dies with an empty "version ." error
+  # (CMakeLists.txt:489; PR #17 CI run 31839606806 job 94893570540). Derive the
+  # real version from the shim we just compiled -- it wraps zig's clang driver
+  # -- same "clang version" banner probe used by
+  # zig-llvm/zig-zig-llvm building/_zig_wrappers.sh.
+  _win_clang_version_banner="$("${_win_zig_cc}" --version 2>&1 || true)"
+  _win_clang_version="$(printf '%s\n' "${_win_clang_version_banner}" | grep -oE 'clang version [0-9]+\.[0-9]+\.[0-9]+' | head -n1 | awk '{print $3}')"
+  if [[ -z "${_win_clang_version}" ]]; then
+    echo "FATAL: could not determine clang version from '${_win_zig_cc} --version' output, cannot pin CMAKE_C_COMPILER_VERSION/CMAKE_CXX_COMPILER_VERSION:" >&2
+    echo "         ${_win_clang_version_banner}" >&2
+    exit 1
+  fi
+  # Pre-seed the CMake cache so CMake skips its compiler test-compile: it emits
+  # MSVC-style link args that zig's driver rejects. COMPILER_FORCED is the
+  # documented switch for "trust me, skip the ABI/works checks". The -target flags
+  # force windows-gnu rather than the native windows-msvc default -- otherwise
+  # _MSC_VER is defined and zig.h reaches for MSVC intrinsics (_InterlockedOr64).
+  _win_cache_seed="${SRC_DIR}/zigcpp-win-cache.cmake"
+  cat > "${_win_cache_seed}" << WCEOF
+set(CMAKE_C_COMPILER_ID "Clang" CACHE STRING "")
+set(CMAKE_CXX_COMPILER_ID "Clang" CACHE STRING "")
+set(CMAKE_C_COMPILER_FORCED TRUE CACHE BOOL "")
+set(CMAKE_CXX_COMPILER_FORCED TRUE CACHE BOOL "")
+set(CMAKE_C_COMPILER_VERSION "${_win_clang_version}" CACHE STRING "")
+set(CMAKE_CXX_COMPILER_VERSION "${_win_clang_version}" CACHE STRING "")
+set(CMAKE_C_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
+set(CMAKE_CXX_FLAGS "-target ${ZIG_TRIPLET}" CACHE STRING "")
+# COMPILER_FORCED above suppresses CMake's own compiler-standard detection, so
+# CMAKE_<LANG>_STANDARD/EXTENSIONS_COMPUTED_DEFAULT are never computed; but
+# find_package(Threads)'s TryCompile subproject re-runs project() and hard-
+# requires them (CMakeCommonCompilerMacros.cmake:42: "CMAKE_C_STANDARD_COMPUTED_
+# DEFAULT and CMAKE_C_EXTENSIONS_COMPUTED_DEFAULT should be set for Clang"; CI
+# run 31912407764 job 95079442716). Seed clang 21's real defaults (gnu17/gnu++17).
+set(CMAKE_C_STANDARD_COMPUTED_DEFAULT "17" CACHE STRING "")
+set(CMAKE_C_EXTENSIONS_COMPUTED_DEFAULT "ON" CACHE STRING "")
+set(CMAKE_CXX_STANDARD_COMPUTED_DEFAULT "17" CACHE STRING "")
+set(CMAKE_CXX_EXTENSIONS_COMPUTED_DEFAULT "ON" CACHE STRING "")
+# COMPILER_FORCED also suppresses Modules/Compiler/Clang-CXX.cmake, which is what
+# normally populates CMAKE_<LANG>_COMPILE_FEATURES. zig's CMakeLists.txt:487 calls
+# target_compile_features(zigcpp PRIVATE cxx_std_17), and with an empty feature
+# table CMake fails "no known features for CXX compiler Clang version 21.1.8"
+# (run 31976828144, jobs 95237537846 win-64 / 95237537840 win-arm64).
+set(CMAKE_CXX_COMPILE_FEATURES "cxx_std_17" CACHE STRING "")
+set(CMAKE_CXX17_STANDARD_COMPILE_OPTION "-std=c++17" CACHE STRING "")
+set(CMAKE_CXX17_EXTENSION_COMPILE_OPTION "-std=gnu++17" CACHE STRING "")
+WCEOF
+  echo "  windows: pinned zigcpp compiler to ${_win_zig_cc##*/} / ${_win_zig_cxx##*/} (-target ${ZIG_TRIPLET})"
+  cat -n "${_win_cache_seed}" >&2
+  # Compiler paths go on the COMMAND LINE as -D args, not into the -C cache file:
+  # long quoted FILEPATH values have been observed splitting across physical lines
+  # in CMake's cache-file parser ("Parse error. Expected a command name"), while -D
+  # args are read from argv and sidestep it entirely.
+  EXTRA_CMAKE_ARGS+=(
+    -DCMAKE_C_COMPILER:FILEPATH="${_win_zig_cc}"
+    -DCMAKE_CXX_COMPILER:FILEPATH="${_win_zig_cxx}"
+    -C "${_win_cache_seed}"
+  )
 fi
 
 # llvm-config discovery for BOTH linux and osx cross is handled by the unified is_unix
@@ -461,9 +605,11 @@ elif is_not_unix && ! is_cross; then
   # PREFIX/lib directly. ZIG_SHARED_LLVM=OFF on windows (EXTRA_CMAKE_ARGS
   # above), so the unix-only ZIG_SHARED_LLVM=ON shared-library
   # existence-probe staging above does not apply here. True cross
-  # (win-arm64/win-32 built on a win-64 agent) is out of scope here -- left to
-  # whatever native-tool path those lanes already use (see
-  # _native_llvm_config.sh's build_native_llvm_config comment).
+  # (win-arm64/win-32 built on a win-64 agent, is_cross() true) is handled by
+  # the dedicated elif branch below, via the llvm-tools build-dep staged at
+  # ${BUILD_PREFIX}/Library/bin (see _native_llvm_config.sh's
+  # build_native_llvm_config comment: that self-built native llvm-config path
+  # is unix-only and returns early on windows).
   _llvm_config_dir="${PREFIX}/Library/lib/zig-llvm/bin"
   if [[ ! -f "${_llvm_config_dir}/llvm-config.exe" ]]; then
     echo "FATAL: expected llvm-config.exe at ${_llvm_config_dir} for zigcpp configure" >&2
@@ -545,6 +691,70 @@ elif is_not_unix && ! is_cross; then
   echo "    libLLVM  = ${_libllvm_win}"
   echo "    libclang = ${_libclang_win}"
   echo "    lld      = ${_lldlibs_win}"
+
+  # zig's gnu-target linker searches libNAME.a but NOT libNAME.dll.a; both are ar
+  # import archives, so expose .a aliases so the Stage-2 self-hosted `zig build` links.
+  # Ported from recipes/zig-0.15.2/build.sh:148-154, which this block otherwise mirrors.
+  # Its absence here is why PR #17 run 31437494403 win-64 PHASE 2 failed with
+  # "libLLVM-21.a: file not found" at the final zig build-exe.
+  for _dlla in "${_libllvm_win}" "${_libclang_win}" "${_lldlibs_win}"; do
+    if [[ -f "${_dlla}" ]]; then
+      cp -f "${_dlla}" "${_dlla%.dll.a}.a"
+    fi
+  done
+  unset _dlla
+elif is_not_unix && is_cross; then
+  # Windows cross (win-arm64/win-32 built on a win-64 agent; is_cross() is true
+  # here since build_platform != target_platform, unlike the win-64 self-cross
+  # case handled by the branch above). PREFIX's own llvm-config.exe is a
+  # TARGET-arch (e.g. aarch64) binary -- it cannot execute on this x86_64
+  # win-64 host. The previous fix here prepended a "build-arch llvm-config.exe"
+  # from the llvm-tools build-dep at ${BUILD_PREFIX}/Library/bin, but that
+  # premise is DISPROVEN: llvm-tools 21.1.8 IS installed there (recipe.yaml
+  # selector "not unix and arm64"), yet it never ships llvm-config.exe at that
+  # path -- only llvm-nm/llvm-readobj -- so the guard below always fired FATAL
+  # (CI run 31912407764, job 95079442668). Abandon build-arch llvm-config
+  # discovery entirely: with ZIG_LLVM_MANUAL_OVERRIDE defined,
+  # cmake/Findllvm.cmake never calls execute_process(llvm-config ...) at all
+  # (patches/cmake/0007-manual-llvm-clang-lld-override.patch), so no runnable
+  # llvm-config is needed on this lane, build-arch or otherwise. Port the
+  # same manual-override cache vars the windows-native branch above
+  # (~lines 646-687) already uses, but resolve libraries from the TARGET
+  # (PREFIX) zig-llvm tree, matching the linux-cross block below
+  # (~lines 775-834). Existing zigcpp compiler pinning / -target
+  # ${ZIG_TRIPLET} flags (elif is_not_unix block above, ~lines 380-502)
+  # already apply to this lane unchanged.
+  _zig_llvm_wincross="${PREFIX}/Library/lib/zig-llvm"
+  _libllvm_wincross=$(ls "${_zig_llvm_wincross}"/lib/libLLVM*.dll.a 2>/dev/null | head -n1)
+  _libclang_wincross=$(ls "${_zig_llvm_wincross}"/lib/libclang-cpp*.dll.a 2>/dev/null | head -n1)
+  _lldlibs_wincross="${_zig_llvm_wincross}/lib/liblldZig.dll.a"
+  if [[ -z "${_libllvm_wincross}" || -z "${_libclang_wincross}" || ! -f "${_lldlibs_wincross}" ]]; then
+    echo "FATAL: windows cross manual override needs libLLVM/libclang-cpp/liblldZig .dll.a under ${_zig_llvm_wincross}/lib" >&2
+    ls -la "${_zig_llvm_wincross}/lib" 2>&1 | sed 's/^/    /' >&2 || true
+    exit 1
+  fi
+  EXTRA_CMAKE_ARGS+=(
+    -DZIG_LLVM_MANUAL_OVERRIDE=1
+    -DZIG_LLVM_MANUAL_LIBRARIES="${_libllvm_wincross}"
+    -DZIG_LLVM_MANUAL_LIBDIRS="${_zig_llvm_wincross}/lib"
+    -DZIG_LLVM_MANUAL_INCLUDE_DIRS="${_zig_llvm_wincross}/include"
+    -DZIG_LLVM_MANUAL_CLANG_LIBRARIES="${_libclang_wincross}"
+    -DZIG_LLVM_MANUAL_LLD_LIBRARIES="${_lldlibs_wincross}"
+  )
+  echo "  windows cross: ZIG_LLVM_MANUAL_OVERRIDE on"
+  echo "    libLLVM  = ${_libllvm_wincross}"
+  echo "    libclang = ${_libclang_wincross}"
+  echo "    lld      = ${_lldlibs_wincross}"
+
+  # .dll.a -> .a aliasing so zig's gnu-target linker (searches .dll/.lib/.a
+  # but NOT .dll.a) resolves the final Stage-2 self-hosted `zig build` link.
+  # Mirrors the windows-native branch above (~lines 677-687).
+  for _dlla in "${_libllvm_wincross}" "${_libclang_wincross}" "${_lldlibs_wincross}"; do
+    if [[ -f "${_dlla}" ]]; then
+      cp -f "${_dlla}" "${_dlla%.dll.a}.a"
+    fi
+  done
+  unset _dlla
 fi
 
 if is_linux && is_cross; then
@@ -655,9 +865,9 @@ is_linux &&             perl -pi -e "s@(ZIG_LLVM_LIBRARIES \".*)\"@\$1;${ZIG_SHA
 # sysroot. Compile weak-symbol syscall() stubs and inject the .o into
 # both the zig-build path (via config.h's ZIG_LLVM_LIBRARIES) and the
 # CMake fallback path (via cmake/0002 target_link_libraries).
-# Guard on CONDA_BUILD_SYSROOT: outside conda-forge CI (e.g. local
+# Guard on ZIG_SYSROOT: outside conda-forge CI (e.g. local
 # dev with a modern glibc system), the stubs aren't needed.
-if is_linux && [[ -n "${CONDA_BUILD_SYSROOT:-}" ]]; then
+if is_linux && [[ -n "${ZIG_SYSROOT:-}" ]]; then
   source "${RECIPE_DIR}/building/_glibc217_syscall_stubs.sh"
   create_glibc217_syscall_stubs "${ZIG_CC_STUB_WRAPPER}" "${ZIG_LOCAL_CACHE_DIR}"
   perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${ZIG_LOCAL_CACHE_DIR}/glibc217_syscall_stubs.o\"|g" "${cmake_build_dir}/config.h"
@@ -691,7 +901,7 @@ if is_linux; then
   # (same mechanism already used for libc++.so.1 above). Not a stub -- no
   # reimplementation risk. The sysroot is sourced from the recipe-owned
   # BUILD_PREFIX + CONDA_TOOLCHAIN_HOST (the target triplet), NOT the
-  # gcc-activation-only CONDA_BUILD_SYSROOT.
+  # gcc-activation-only sysroot the conda-forge compiler would export.
   if [[ "${target_platform}" == "linux-riscv64" ]]; then
     perl -pi -e "s|(#define ZIG_LLVM_LIBRARIES \".*)\"|\$1;${BUILD_PREFIX}/${CONDA_TOOLCHAIN_HOST}/sysroot/lib64/ld-linux-riscv64-lp64d.so.1\"|g" "${cmake_build_dir}/config.h"
   fi
@@ -713,7 +923,7 @@ fi
 # any test phase would ever run.
 if [[ "${target_platform}" == "linux-riscv64" ]]; then
   echo "=== RISCV64 TLS DIAGNOSTIC ==="
-  _riscv64_sysroot_libc="${CONDA_BUILD_SYSROOT}/lib64/lp64d/libc.so.6"
+  _riscv64_sysroot_libc="${ZIG_SYSROOT}/lib64/lp64d/libc.so.6"
   echo "  [1/2] __tls_get_addr export check: ${_riscv64_sysroot_libc}"
   nm -D --defined-only "${_riscv64_sysroot_libc}" 2>&1 | grep -i tls_get_addr || echo "  NOT FOUND"
   # LLVM_BUILD is a plain (unexported) variable set by zig-llvm/build.sh,
@@ -909,15 +1119,19 @@ if is_linux; then
 fi
 
 # --- Phase 2: build langref via stage3 (full compiler with translate_c) ---
+# Policy: Phase 2 langref only runs on NATIVE lanes. langref.html is
+# architecture-independent HTML, so a native lane's output is exactly what a
+# cross lane would (eventually) produce -- emulating a cross-built compiler
+# under qemu just to regenerate identical HTML costs hours (e.g. linux-riscv64
+# burned 2h30m+ in this single step under qemu-riscv64, run 31823428053 job
+# 94841924369) for zero content difference. Docs are provided by other
+# (native) platforms, so every cross lane skips it outright.
+# Historical note: ppc64le was the first lane special-cased this way, because
+# 0.16.0 std/Io/Threaded uses pthread_*, and cross-linking to glibc 2.17 lacks
+# -lpthread -- that pthread/glibc-2.17 gap is no longer the operative
+# condition, since ALL cross lanes are now skipped regardless of reason.
 _can_run_stage3() {
   if ! is_cross; then return 0; fi
-  if ! is_unix; then return 1; fi
-  # ppc64le: 0.16.0 std/Io/Threaded uses pthread_*; cross-link to glibc 2.17 lacks -lpthread.
-  # Skip Phase 2 langref on ppc64le; docs are provided by other platforms.
-  if [[ "${target_platform}" == "linux-ppc64le" ]]; then return 1; fi
-  if is_linux; then
-    command -v "qemu-${ZIG_QEMU_ARCH}" &>/dev/null && return 0
-  fi
   return 1
 }
 

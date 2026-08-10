@@ -157,7 +157,7 @@ outputs:
             - pkg-config
         - if: not unix and arm64
           then:
-            - llvm-tools 20.*  # provides llvm-nm and llvm-readobj for extract_symbols.py
+            - llvm-tools 21.*  # provides llvm-nm and llvm-readobj for extract_symbols.py; must match llvm 21.1.8 or tblgen lacks -gen-target-features
       host:
         - ${{ zig }}zlib
         - ${{ zig }}zstd
@@ -388,7 +388,7 @@ outputs:
               - zig targets 2>/dev/null | head -20 || true  # pipe causes WriteFailed; ignore
             requirements:
               run:
-                - zig ==0.16.0
+                - zig ==0.16.0 *_9
 
 about:
   homepage: http://llvm.org/

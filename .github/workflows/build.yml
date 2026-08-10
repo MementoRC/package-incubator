@@ -37,11 +37,32 @@ jobs:
         with:
           path: output/linux-64/*.conda
           key: zig-llvm-16-linux-64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Start resource sampler
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          cat > "${RUNNER_TEMP}/resmon/sampler.sh" <<'SAMPLER_EOF'
+          #!/usr/bin/env bash
+          while true; do
+            ts=$(date -u +%H:%M:%S)
+            disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+            if command -v free >/dev/null 2>&1; then
+              mem=$(free -m | awk '/^Mem:/{print $7}')
+            else
+              mem=NA
+            fi
+            printf '%s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem"
+            sleep 30
+          done
+          SAMPLER_EOF
+          chmod +x "${RUNNER_TEMP}/resmon/sampler.sh"
+          nohup "${RUNNER_TEMP}/resmon/sampler.sh" > "${RUNNER_TEMP}/resmon/res.log" 2>&1 &
+          echo "sampler started pid=$!"
       - name: Build zig-llvm-16
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm-16 \
-            --skip-existing=local --target-platform=linux-64 \
+            --skip-existing=all --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm-16 artifacts
         shell: bash
@@ -68,6 +89,21 @@ jobs:
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done
 
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-linux-64-phase1
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
+
 
 
 
@@ -75,6 +111,7 @@ jobs:
     needs: build-native-linux
     name: linux-64 (native PHASE 2)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,6 +137,20 @@ jobs:
       - name: Build zig-16
         shell: bash
         run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          ( while true; do
+              ts=$(date -u +%H:%M:%S)
+              disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+              if command -v free >/dev/null 2>&1; then
+                mem=$(free -m | awk '/^Mem:/{print $7}')
+              else
+                mem=NA
+              fi
+              printf '[heartbeat] %s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem" | tee -a "${RUNNER_TEMP}/resmon/res.log"
+              sleep 30
+            done ) &
+          _HB_PID=$!
+          trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --target-platform=linux-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
@@ -127,6 +178,21 @@ jobs:
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done
 
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-linux-64-phase2
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
+
 
 
 
@@ -149,11 +215,32 @@ jobs:
         with:
           path: output/osx-arm64/*.conda
           key: zig-llvm-16-osx-arm64-${{ hashFiles('recipes/zig-llvm-16/**') }}
+      - name: Start resource sampler
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          cat > "${RUNNER_TEMP}/resmon/sampler.sh" <<'SAMPLER_EOF'
+          #!/usr/bin/env bash
+          while true; do
+            ts=$(date -u +%H:%M:%S)
+            disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+            if command -v free >/dev/null 2>&1; then
+              mem=$(free -m | awk '/^Mem:/{print $7}')
+            else
+              mem=NA
+            fi
+            printf '%s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem"
+            sleep 30
+          done
+          SAMPLER_EOF
+          chmod +x "${RUNNER_TEMP}/resmon/sampler.sh"
+          nohup "${RUNNER_TEMP}/resmon/sampler.sh" > "${RUNNER_TEMP}/resmon/res.log" 2>&1 &
+          echo "sampler started pid=$!"
       - name: Build zig-llvm-16
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm-16 \
-            --skip-existing=local --target-platform=osx-arm64 \
+            --skip-existing=all --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm-16 artifacts
         shell: bash
@@ -180,6 +267,21 @@ jobs:
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done
 
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-osx-arm64-phase1
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
+
 
 
 
@@ -187,6 +289,7 @@ jobs:
     name: osx-arm64 (native PHASE 2)
     needs: build-native-macos
     runs-on: macos-14
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -212,6 +315,20 @@ jobs:
       - name: Build zig-16
         shell: bash
         run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          ( while true; do
+              ts=$(date -u +%H:%M:%S)
+              disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+              if command -v free >/dev/null 2>&1; then
+                mem=$(free -m | awk '/^Mem:/{print $7}')
+              else
+                mem=NA
+              fi
+              printf '[heartbeat] %s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem" | tee -a "${RUNNER_TEMP}/resmon/res.log"
+              sleep 30
+            done ) &
+          _HB_PID=$!
+          trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --target-platform=osx-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
@@ -238,6 +355,21 @@ jobs:
           for file in output/**/*.conda; do
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done
+
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-osx-arm64-phase2
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
 
 
 
@@ -384,12 +516,33 @@ jobs:
           echo VCVARS NOT FOUND - cannot simulate
           exit /b 0
 
+      - name: Start resource sampler
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          cat > "${RUNNER_TEMP}/resmon/sampler.sh" <<'SAMPLER_EOF'
+          #!/usr/bin/env bash
+          while true; do
+            ts=$(date -u +%H:%M:%S)
+            disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+            if command -v free >/dev/null 2>&1; then
+              mem=$(free -m | awk '/^Mem:/{print $7}')
+            else
+              mem=NA
+            fi
+            printf '%s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem"
+            sleep 30
+          done
+          SAMPLER_EOF
+          chmod +x "${RUNNER_TEMP}/resmon/sampler.sh"
+          nohup "${RUNNER_TEMP}/resmon/sampler.sh" > "${RUNNER_TEMP}/resmon/res.log" 2>&1 &
+          echo "sampler started pid=$!"
       - name: Build zig-llvm-16
         shell: bash
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-llvm-16 \
-            --skip-existing=local --target-platform=win-64 \
+            --skip-existing=all --target-platform=win-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm-16 artifacts
         shell: bash
@@ -416,6 +569,21 @@ jobs:
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done
 
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-win-64-phase1
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
+
 
 
 
@@ -424,6 +592,7 @@ jobs:
     name: win-64 (native PHASE 2)
     # pinned: see win-64 (native) above
     runs-on: windows-2022
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -494,6 +663,20 @@ jobs:
       - name: Build zig-16
         shell: bash
         run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          ( while true; do
+              ts=$(date -u +%H:%M:%S)
+              disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+              if command -v free >/dev/null 2>&1; then
+                mem=$(free -m | awk '/^Mem:/{print $7}')
+              else
+                mem=NA
+              fi
+              printf '[heartbeat] %s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem" | tee -a "${RUNNER_TEMP}/resmon/res.log"
+              sleep 30
+            done ) &
+          _HB_PID=$!
+          trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-0.16.0 \
             --skip-existing=local --target-platform=win-64 \
@@ -521,6 +704,21 @@ jobs:
           for file in output/**/*.conda; do
             rattler-build upload prefix -c prefix-package-incubator "$file"
           done
+
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-win-64-phase2
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
 
 
 
@@ -571,6 +769,27 @@ jobs:
           path: output/${{ matrix.target }}/*.conda
           key: zig-zlib-${{ matrix.target }}-${{ hashFiles('recipes/zig-zlib/**') }}
           restore-keys: zig-zlib-${{ matrix.target }}-
+      - name: Start resource sampler
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/resmon"
+          cat > "${RUNNER_TEMP}/resmon/sampler.sh" <<'SAMPLER_EOF'
+          #!/usr/bin/env bash
+          while true; do
+            ts=$(date -u +%H:%M:%S)
+            disk=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+            if command -v free >/dev/null 2>&1; then
+              mem=$(free -m | awk '/^Mem:/{print $7}')
+            else
+              mem=NA
+            fi
+            printf '%s avail_disk_mb=%s avail_mem_mb=%s\n' "$ts" "$disk" "$mem"
+            sleep 30
+          done
+          SAMPLER_EOF
+          chmod +x "${RUNNER_TEMP}/resmon/sampler.sh"
+          nohup "${RUNNER_TEMP}/resmon/sampler.sh" > "${RUNNER_TEMP}/resmon/res.log" 2>&1 &
+          echo "sampler started pid=$!"
       - name: Build zig-zlib
         shell: bash
         run: |
@@ -642,14 +861,17 @@ jobs:
       - name: Build zig-llvm-16
         shell: bash
         run: |
-          # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
-          if [ "${{ matrix.target }}" = "linux-riscv64" ]; then
+          # TEMP DEBUG (riscv64 + aarch64 OOM/hang investigation): timestamped mem+load heartbeat.
+          # aarch64 added for PR17 run 31400296588: `zig build` was invoked and the log
+          # stopped with zero output before the next step ran -- a silent kill, not a
+          # build error. MemAvailable sampling makes an OOM cliff visible instead.
+          if [ "${{ matrix.target }}" = "linux-riscv64" ] || [ "${{ matrix.target }}" = "linux-aarch64" ]; then
             ( while true; do printf '[heartbeat] %s ' "$(date -u +%H:%M:%S)"; awk '/MemAvailable|MemTotal/{printf "%s=%s ", $1, $2}' /proc/meminfo; printf 'load=%s\n' "$(cut -d" " -f1-3 /proc/loadavg)"; sleep 30; done ) &
             _HB_PID=$!
             trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
           fi
           rattler-build build --recipe recipes/zig-llvm-16 \
-            --skip-existing=local --build-platform=linux-64 --target-platform=${{ matrix.target }} \
+            --skip-existing=all --build-platform=linux-64 --target-platform=${{ matrix.target }} \
             -c file://${{ github.workspace }}/output \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm-16 artifacts
@@ -670,8 +892,11 @@ jobs:
       - name: Build zig-16
         shell: bash
         run: |
-          # TEMP DEBUG (riscv64 OOM/hang investigation): timestamped mem+load heartbeat.
-          if [ "${{ matrix.target }}" = "linux-riscv64" ]; then
+          # TEMP DEBUG (riscv64 + aarch64 OOM/hang investigation): timestamped mem+load heartbeat.
+          # aarch64 added for PR17 run 31400296588: `zig build` was invoked and the log
+          # stopped with zero output before the next step ran -- a silent kill, not a
+          # build error. MemAvailable sampling makes an OOM cliff visible instead.
+          if [ "${{ matrix.target }}" = "linux-riscv64" ] || [ "${{ matrix.target }}" = "linux-aarch64" ]; then
             ( while true; do printf '[heartbeat] %s ' "$(date -u +%H:%M:%S)"; awk '/MemAvailable|MemTotal/{printf "%s=%s ", $1, $2}' /proc/meminfo; printf 'load=%s\n' "$(cut -d" " -f1-3 /proc/loadavg)"; sleep 30; done ) &
             _HB_PID=$!
             trap 'kill "${_HB_PID}" 2>/dev/null || true' EXIT
@@ -708,6 +933,21 @@ jobs:
       #     for file in output/**/*.conda; do
       #       rattler-build upload prefix -c prefix-package-incubator "$file"
       #     done
+
+      - name: Resource sampler report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== last 60 resource samples ==="
+          tail -n 60 "${RUNNER_TEMP}/resmon/res.log" 2>/dev/null || echo "(no sampler log)"
+      - name: Upload resource log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resmon-cross-${{ matrix.target }}
+          path: ${{ runner.temp }}/resmon/res.log
+          if-no-files-found: ignore
+          retention-days: 3
 
   build-cross-macos:
     needs: [build-native-macos]
@@ -747,7 +987,7 @@ jobs:
         shell: bash
         run: |
           rattler-build build --recipe recipes/zig-llvm-16 \
-            --skip-existing=local --build-platform=osx-arm64 --target-platform=osx-64 \
+            --skip-existing=all --build-platform=osx-arm64 --target-platform=osx-64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: Prune stale zig-llvm-16 artifacts
         shell: bash
@@ -880,7 +1120,7 @@ jobs:
         run: |
           env -u 'ProgramFiles(x86)' -u 'CommonProgramFiles(x86)' \
           rattler-build build --recipe recipes/zig-llvm-16 \
-            --skip-existing=local --build-platform=win-64 --target-platform=win-arm64 \
+            --skip-existing=all --build-platform=win-64 --target-platform=win-arm64 \
             -c https://prefix.dev/prefix-package-incubator -c conda-forge
       - name: DIAG dump build_env.sh on failure (win-arm64)
         if: failure()

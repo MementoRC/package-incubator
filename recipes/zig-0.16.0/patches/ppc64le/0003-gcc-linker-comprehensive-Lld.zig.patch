@@ -1,222 +1,343 @@
-# Purpose: Intercept ppc64le ELF final links in Lld.zig::elfLink and invoke GCC linker instead of LLD
+# Purpose: Intercept ppc64le ELF final links in Lld.zig::elfLink and invoke
+# GNU ld DIRECTLY (no gcc driver).
 # Affects: src/link/Lld.zig
-# Upstream: TBD
-# Drop-when: Upstream LLD gains full PowerPC64 ELF relocation support (R_PPC64_REL24, TOC, etc.)
-# Last-verified: 2026-07-30
-# Fix (2026-07-30): the libunwind branch previously emitted a bare -Wl,-lunwind,
-# which requires an -L search path that the packaged/installed zig binary never
-# receives (the build-time-only linker wrapper injecting -L.../zig-llvm/lib is
-# not shipped). Confirmed via CI: PR #123,
+# Upstream: TBD (no issue filed)
+# Drop-when: Upstream LLD gains full PowerPC64 ELF relocation support
+# (R_PPC64_REL24, TOC/.opd handling, etc.)
+# Last-verified: 2026-08-15
+#
+# Rewrite (2026-08-15): previously this patch built a gcc argv and spawned
+# a gcc driver by bare name ("powerpc64le-conda-linux-gnu-gcc"). That only
+# ever worked at build time, where a gcc_impl build dependency happened to
+# be present; recipe.yaml's declared ppc64le RUN dependency is
+# binutils_impl_${{ cross_target_platform_ }} only -- no gcc driver exists
+# in the packaged/tested environment, and conda-forge zig recipes carry a
+# hard prohibition on adding real gcc/clang compiler packages as
+# dependencies (build or run). This rewrite drives
+# powerpc64le-conda-linux-gnu-ld DIRECTLY, resolved by name via PATH (never
+# a hardcoded absolute path). Everything a gcc driver implicitly supplied
+# -- CRT objects, default -L search paths, the -lc/-lgcc equivalent,
+# --dynamic-linker -- is now supplied EXPLICITLY by locating it in the
+# target sysroot, reusing the crawl building/_cross.sh:13-33 already
+# performs for the same purpose at build time, extended to also run when
+# comp.libc_installation is null (the test-time / packaged-binary case).
+#
+# Fix (2026-07-30, preserved from the prior version of this patch): the
+# libunwind branch previously emitted a bare -Wl,-lunwind, which requires
+# an -L search path the installed/packaged zig binary never receives (the
+# build-time-only linker wrapper injecting -L.../zig-llvm/lib is not
+# shipped). Confirmed via CI: PR #123,
 # linux_ppc64le_cross_target_platform_linux-ppc64le failed with
 # "cannot find -lunwind: No such file or directory" at package-test time.
-# Fix mirrors the sibling libc++ branch: resolve libunwind.so's absolute path
-# (co-located with libc++.so.1/libc++.so in zig-llvm/lib/, confirmed via
-# recipe/zig-llvm/building/_cmake_flags.sh:161 and _runtimes_build.sh) instead
-# of relying on -L + bare -lunwind.
+# Fix mirrors the sibling libc++ branch: resolve libunwind.so's absolute
+# path (co-located with libc++.so.1/libc++.so in zig-llvm/lib/, confirmed
+# via recipe/zig-llvm/building/_cmake_flags.sh:161 and
+# _runtimes_build.sh) instead of relying on -L + bare -lunwind.
 
 diff --git a/src/link/Lld.zig b/src/link/Lld.zig
 --- a/src/link/Lld.zig
 +++ b/src/link/Lld.zig
-@@ -872,6 +872,431 @@ fn elfLink(lld: *Lld, arena: Allocator) !void {
+@@ -800,6 +800,52 @@
+     return null;
+ }
+
++/// Fixed-depth CRT object lookup: checks `sysroot/usr/lib` then
++/// `sysroot/usr/lib64` for `basename`.  Mirrors the crt_dir path written
++/// by building/_cross.sh:30 (crt_dir=${ZIG_SYSROOT}/usr/lib) plus its
++/// lib64 sibling used by the -L block in elfLink's ppc64le ld-direct
++/// branch -- both are populated unconditionally by the packaged sysroot,
++/// independent of comp.libc_installation.
++fn findSysrootCrt(arena: Allocator, io: Io, sysroot: []const u8, basename: []const u8) !?[]const u8 {
++    for ([_][]const u8{ "usr/lib", "usr/lib64" }) |sub| {
++        const candidate = try std.fs.path.join(arena, &[_][]const u8{ sysroot, sub, basename });
++        Io.Dir.cwd().access(io, candidate, .{}) catch continue;
++        return candidate;
++    }
++    return null;
++}
++
++/// Best-effort recursive crawl for GCC-runtime CRT objects (crtbeginS.o /
++/// crtendS.o), which live under lib/gcc/<triple>/<gcc-version>/ -- a
++/// SIBLING tree of the sysroot, not inside it.  Ports the shell crawl in
++/// building/_cross.sh:13-17 (find "$gcc_lib_dir" -name crtbeginS.o) into
++/// Zig so it also runs when comp.libc_installation is null (packaged zig
++/// binary).  Returns null (not an error) if this gcc-runtime tree is
++/// absent -- the intended end state once no gcc package is installed at
++/// all -- exactly as the pre-existing libc_installation.gcc_dir fallback
++/// already tolerated: crtbeginS.o/crtendS.o are best-effort
++/// constructor/destructor bracketing objects, not required for a valid
++/// link of the plain C code the ppc64le tests compile.
++fn findGccRuntimeCrt(arena: Allocator, gpa: Allocator, io: Io, sysroot: []const u8, basename: []const u8) !?[]const u8 {
++    const triple_dir = std.fs.path.dirname(sysroot) orelse return null;
++    const prefix = std.fs.path.dirname(triple_dir) orelse return null;
++    const triple = std.fs.path.basename(triple_dir);
++    const gcc_lib_root = try std.fs.path.join(arena, &[_][]const u8{ prefix, "lib", "gcc", triple });
++
++    var dir = Io.Dir.openDirAbsolute(io, gcc_lib_root, .{ .iterate = true }) catch return null;
++    defer dir.close(io);
++    var walker = dir.walk(gpa) catch return null;
++    defer walker.deinit();
++    while (true) {
++        const maybe_entry = walker.next(io) catch return null;
++        const entry = maybe_entry orelse break;
++        if (entry.kind == .file and std.mem.eql(u8, entry.basename, basename)) {
++            return try std.fs.path.join(arena, &[_][]const u8{ gcc_lib_root, entry.path });
++        }
++    }
++    return null;
++}
++
+ fn elfLink(lld: *Lld, arena: Allocator) !void {
+     const comp = lld.base.comp;
+     const gpa = comp.gpa;
+@@ -874,6 +920,461 @@
              .{},
          );
      } else {
-+        // PowerPC64: Use GCC linker (LLD lacks full PowerPC64 relocation support)
-+        // Only redirect the FINAL link, not sub-compilations (e.g., glibc stub
-+        // generation).  Sub-compilations set skip_linker_dependencies=true and
-+        // produce synthetic .so stubs that zig's own linker (with our 0001 arch
-+        // patches) handles correctly.  ld.bfd cannot process these synthetic
-+        // stubs because it does not understand zig's version-node encoding.
-+        // Also skip for compile-only operations (output_mode == .Obj) such as
-+        // `zig cc -c -o test.o test.c` — these produce object files without
-+        // linking, so invoking the GCC linker would fail with "undefined
-+        // reference to main" because no link step is needed at all.
++        // PowerPC64: LLD lacks full PowerPC64 ELF relocation support
++        // (R_PPC64_REL24, TOC/.opd handling) -- see the 0001 arch-support
++        // patch. The final ELF link for this arch is therefore redirected
++        // to GNU ld DIRECTLY, not through a gcc driver: the only ppc64le
++        // run dependency this recipe declares is
++        // binutils_impl_${{ cross_target_platform_ }} (see recipe.yaml) --
++        // no gcc package ships in the packaged/tested environment, and
++        // conda-forge zig recipes carry a hard prohibition on adding real
++        // gcc/clang compiler packages as dependencies. A prior version of
++        // this patch spawned a gcc driver by bare name; it only ever
++        // worked when a gcc package happened to be present at build time
++        // and always failed the packaged zig binary's own tests, which
++        // run with no gcc anywhere on PATH. Everything a gcc driver
++        // implicitly supplied (CRT objects, default -L search paths, the
++        // -lc/-lgcc equivalent, --dynamic-linker) is now supplied
++        // EXPLICITLY below by locating it in the target sysroot, reusing
++        // the crawl building/_cross.sh:13-33 already does for the same
++        // purpose at build time instead of inventing new machinery.
++        // Only redirect the FINAL link, not sub-compilations (e.g. glibc
++        // stub generation). Sub-compilations set
++        // skip_linker_dependencies=true and produce synthetic .so stubs
++        // that zig's own linker (with our 0001 arch patches) handles
++        // correctly; ld.bfd cannot process these synthetic stubs because
++        // it does not understand zig's version-node encoding. Also skip
++        // for compile-only operations (output_mode == .Obj) such as
++        // `zig cc -c -o test.o test.c` -- these produce object files
++        // without linking, so invoking the linker would fail with
++        // "undefined reference to main" because no link step is needed.
++        // Upstream: TBD (no issue filed).
 +        const is_ppc64 = target.cpu.arch == .powerpc64le or target.cpu.arch == .powerpc64;
-+        const use_gcc_linker = is_ppc64 and !comp.skip_linker_dependencies and output_mode != .Obj;
++        const use_ld_linker = is_ppc64 and !comp.skip_linker_dependencies and output_mode != .Obj;
 +
-+        if (use_gcc_linker) {
++        if (use_ld_linker) {
 +            var argv = std.array_list.Managed([]const u8).init(gpa);
 +            defer argv.deinit();
 +
-+            // Determine GCC path - use arch-specific name directly.
-+            // Do NOT read CC env var: in conda builds, CC is set to the
-+            // zig-cc wrapper by activation scripts, causing infinite recursion.
-+            const gcc_path: []const u8 = if (target.cpu.arch == .powerpc64le)
-+                "powerpc64le-conda-linux-gnu-gcc"
++            // Resolve the linker by NAME only (never a hardcoded absolute
++            // path) so std.process.spawn's PATH search locates whatever
++            // binutils_impl_${{ cross_target_platform_ }} installs. A
++            // missing binary surfaces as a clear spawn error below --
++            // no gcc driver is spawned anywhere in this branch.
++            const ld_path: []const u8 = if (target.cpu.arch == .powerpc64le)
++                "powerpc64le-conda-linux-gnu-ld"
 +            else
-+                "powerpc64-conda-linux-gnu-gcc";
-+            try argv.append(gcc_path);
++                "powerpc64-conda-linux-gnu-ld";
++            try argv.append(ld_path);
 +
-+            // Output
 +            try argv.append("-o");
 +            try argv.append(full_out_path);
 +
-+            // Link mode
++            // Link mode: native `ld` spelling, identical to the unpatched
++            // LLD-invocation branch below -- no gcc-driver translation
++            // needed here.
 +            if (link_mode == .static) {
 +                try argv.append("-static");
 +            } else if (is_dyn_lib) {
 +                try argv.append("-shared");
 +            }
 +
-+            // CRT strategy: three modes depending on compilation type.
-+            //
-+            // 1. Build-time (libc_installation != null, has CRT files):
-+            //    Zig provides CRT files.  Use -nostartfiles so GCC doesn't add
-+            //    its own (would cause duplicate symbols).  Manually pass zig's
-+            //    CRT, -L paths from libc_installation, and explicit -lc/-lpthread.
-+            //
-+            // 2. Zig code (ZCU present, no libc_installation):
-+            //    ZCU contains _start from std/start.zig.  Use -nostartfiles to
-+            //    avoid duplicate _start with GCC's crt1.o.  GCC still links libc
-+            //    automatically (we only skip CRT startup files, not libc).
-+            //
-+            // 3. Pure C via zig cc (no ZCU, no libc_installation):
-+            //    Let GCC handle everything — CRT, startup, libc.  No
-+            //    -nostartfiles needed.
-+            const csu = try comp.getCrtPaths(arena);
-+            const has_zig_crt = csu.crt0 != null or csu.crti != null or csu.crtbegin != null;
-+            const has_libc_install = comp.libc_installation != null;
-+            const link_libc = comp.config.link_libc;
-+            const use_zig_crt = has_zig_crt and has_libc_install;
-+            const has_zcu = zcu_obj_path != null;
-+
-+            if (use_zig_crt or (has_zcu and !link_libc)) {
-+                // Zig provides startup code (either CRT files or ZCU with _start).
-+                // Use -nostartfiles to prevent GCC from adding its own crt1.o
-+                // (avoids duplicate _start definition errors).  GCC still links
-+                // libc automatically — -nostartfiles only skips CRT objects.
-+                try argv.append("-nostartfiles");
-+            }
-+
-+            // PIE for executables
 +            if (comp.config.pie and output_mode == .Exe) {
 +                try argv.append("-pie");
 +            }
-+
-+            // Essential flags (comprehensive - following LLD structure)
-+            // NOTE: --error-limit is LLD-specific, not supported by GNU ld
 +
 +            if (comp.sysroot) |sysroot| {
 +                try argv.append(try std.fmt.allocPrint(arena, "--sysroot={s}", .{sysroot}));
 +            }
 +
-+            // Entry point
++            // Entry point (native ld: two argv elements, no -Wl, wrapper)
 +            if (elf.entry_name) |name| {
-+                try argv.append(try std.fmt.allocPrint(arena, "-Wl,--entry,{s}", .{name}));
++                try argv.append("--entry");
++                try argv.append(name);
 +            }
 +
-+            // Stack size
 +            if (output_mode == .Exe) {
-+                try argv.append(try std.fmt.allocPrint(arena, "-Wl,-z,stack-size={d}", .{base.stack_size}));
++                try argv.append("-z");
++                try argv.append(try std.fmt.allocPrint(arena, "stack-size={d}", .{base.stack_size}));
 +            }
 +
-+            // Hash style
 +            switch (elf.hash_style) {
-+                .gnu => try argv.append("-Wl,--hash-style=gnu"),
-+                .sysv => try argv.append("-Wl,--hash-style=sysv"),
++                .gnu => try argv.append("--hash-style=gnu"),
++                .sysv => try argv.append("--hash-style=sysv"),
 +                .both => {}, // this is the default
 +            }
 +
-+            // Build ID
 +            switch (base.build_id) {
-+                .none => try argv.append("-Wl,--build-id=none"),
-+                .fast, .uuid, .sha1, .md5 => try argv.append(try std.fmt.allocPrint(arena, "-Wl,--build-id={s}", .{
++                .none => try argv.append("--build-id=none"),
++                .fast, .uuid, .sha1, .md5 => try argv.append(try std.fmt.allocPrint(arena, "--build-id={s}", .{
 +                    @tagName(base.build_id),
 +                })),
-+                .hexstring => |hs| try argv.append(try std.fmt.allocPrint(arena, "-Wl,--build-id=0x{x}", .{hs.toSlice()})),
++                .hexstring => |hs| try argv.append(try std.fmt.allocPrint(arena, "--build-id=0x{x}", .{hs.toSlice()})),
 +            }
 +
-+            // Image base: intentionally omitted for GCC/ld.bfd redirect.
-+            // zig's default image_base is x86_64-centric and not aligned to
-+            // ppc64le's 64KB pages, causing ld.bfd to warn/fail.  Let ld.bfd
-+            // choose the arch-appropriate default.
++            // Image base: intentionally omitted, same as before -- zig's
++            // default image_base is x86_64-centric and not aligned to
++            // ppc64le's 64KB pages. Let ld choose the arch default.
 +
-+            // GC sections
 +            if (base.gc_sections) {
-+                try argv.append("-Wl,--gc-sections");
++                try argv.append("--gc-sections");
 +            }
 +
-+            // EH frame header (CRITICAL)
 +            if (comp.link_eh_frame_hdr) {
-+                try argv.append("-Wl,--eh-frame-hdr");
++                try argv.append("--eh-frame-hdr");
 +            }
 +
-+            // Z flags
 +            if (elf.z_nodelete) {
-+                try argv.append("-Wl,-z,nodelete");
++                try argv.append("-z");
++                try argv.append("nodelete");
 +            }
 +            if (elf.z_notext) {
-+                try argv.append("-Wl,-z,notext");
++                try argv.append("-z");
++                try argv.append("notext");
 +            }
 +            if (elf.z_defs) {
-+                try argv.append("-Wl,-z,defs");
++                try argv.append("-z");
++                try argv.append("defs");
 +            }
 +            if (elf.z_origin) {
-+                try argv.append("-Wl,-z,origin");
++                try argv.append("-z");
++                try argv.append("origin");
 +            }
 +            if (elf.z_nocopyreloc) {
-+                try argv.append("-Wl,-z,nocopyreloc");
++                try argv.append("-z");
++                try argv.append("nocopyreloc");
 +            }
 +            if (elf.z_now) {
-+                // LLD defaults to -zlazy
-+                try argv.append("-Wl,-znow");
++                try argv.append("-znow");
 +            }
 +            if (!elf.z_relro) {
-+                // LLD defaults to -zrelro
-+                try argv.append("-Wl,-znorelro");
++                try argv.append("-znorelro");
 +            }
 +
 +            // Emulation (CRITICAL for PowerPC)
 +            if (getLDMOption(target)) |ldm| {
-+                try argv.append(try std.fmt.allocPrint(arena, "-Wl,-m,{s}", .{ldm}));
++                try argv.append("-m");
++                try argv.append(ldm);
 +            }
 +
-+            // Dynamic linker (CRITICAL)
-+            if (link_mode == .dynamic and is_exe_or_dyn_lib and
-+                (comp.config.link_libc or comp.root_mod.resolved_target.is_explicit_dynamic_linker))
-+            {
++            // Dynamic linker. target.dynamic_linker.get() already returns
++            // the correct ppc64le loader ("/lib64/ld64.so.2" for the gnu
++            // ABI -- verified against lib/std/Target.zig); only the -Wl,
++            // wrapper is dropped here versus the gcc-driver version.
++            if (output_mode == .Exe and link_mode == .dynamic) {
 +                if (target.dynamic_linker.get()) |dynamic_linker| {
-+                    try argv.append(try std.fmt.allocPrint(arena, "-Wl,--dynamic-linker,{s}", .{dynamic_linker}));
++                    try argv.append("--dynamic-linker");
++                    try argv.append(dynamic_linker);
++                } else {
++                    try argv.append("--no-dynamic-linker");
 +                }
 +            }
 +
-+            // CRT files — only when zig provides them AND libc_installation is
-+            // available (build-time).  At runtime, GCC handles CRT via its sysroot.
-+            if (use_zig_crt) {
-+                // For executables: crt0 + crti.  For shared libs: only crti.
-+                if (!is_dyn_lib) {
-+                    if (csu.crt0) |p| try argv.append(try p.toString(arena));
-+                }
-+                if (csu.crti) |p| try argv.append(try p.toString(arena));
++            // --- CRT objects and default library search paths ---
++            // A gcc driver supplies these implicitly (from its own spec
++            // files) even when comp.libc_installation is null -- the
++            // test-time / packaged-binary case, since plain `zig cc`
++            // without --libc never sets it. `ld` supplies NONE of this
++            // implicitly, so it is resolved explicitly here in both the
++            // build-time (libc_installation present) and test-time
++            // (sysroot crawl) cases.
++            const crt_basenames = if (comp.config.link_libc)
++                std.zig.LibCInstallation.CrtBasenames.get(.{
++                    .target = target,
++                    .link_libc = true,
++                    .output_mode = output_mode,
++                    .link_mode = link_mode,
++                    .pie = comp.config.pie,
++                })
++            else
++                std.zig.LibCInstallation.CrtBasenames{};
 +
-+                // crtbegin: Provides __dso_handle for shared libraries
-+                if (csu.crtbegin) |p| {
-+                    try argv.append(try p.toString(arena));
-+                } else if (comp.libc_installation) |libc_installation| {
-+                    if (libc_installation.gcc_dir) |gcc_dir| {
++            var crt_lib_dir: ?[]const u8 = null; // feeds the __tls_get_addr fixup below
++            var wrote_crt0 = false;
++
++            if (comp.config.link_libc) {
++                if (comp.libc_installation) |libc_installation| {
++                    // Build-time: zig already resolved these via the libc
++                    // file building/_cross.sh writes.
++                    const csu = try comp.getCrtPaths(arena);
++                    crt_lib_dir = libc_installation.crt_dir;
++                    if (!is_dyn_lib) {
++                        if (csu.crt0) |p| {
++                            try argv.append(try p.toString(arena));
++                            wrote_crt0 = true;
++                        }
++                    }
++                    if (csu.crti) |p| try argv.append(try p.toString(arena));
++                    if (csu.crtbegin) |p| {
++                        try argv.append(try p.toString(arena));
++                    } else if (libc_installation.gcc_dir) |gcc_dir| {
 +                        // Fallback: crtbeginS.o for shared libraries
-+                        const crtbegin_path = try std.fs.path.join(arena, &[_][]const u8{ gcc_dir, "crtbeginS.o" });
-+                        try argv.append(crtbegin_path);
++                        try argv.append(try std.fs.path.join(arena, &[_][]const u8{ gcc_dir, "crtbeginS.o" }));
++                    }
++                } else if (comp.sysroot) |sysroot| {
++                    // Test-time / packaged binary: comp.libc_installation
++                    // is null (pure `zig cc`, no --libc), so crawl the
++                    // target sysroot ourselves. crt1.o/Scrt1.o/crti.o
++                    // live at a fixed, predictable path -- mirrors
++                    // building/_cross.sh:30 (crt_dir=${ZIG_SYSROOT}/usr/lib)
++                    // plus its lib64 sibling. crtbeginS.o is a gcc-RUNTIME
++                    // artifact that lives in a SIBLING tree
++                    // (lib/gcc/<triple>/<ver>/, NOT under sysroot/ at all)
++                    // -- mirror building/_cross.sh:13-17's own crawl for
++                    // it, but tolerate absence exactly as the
++                    // libc_installation branch above already does via its
++                    // optional gcc_dir field: crtbeginS.o/crtendS.o are
++                    // constructor/destructor bracketing objects, not
++                    // required for a valid link of the plain C code these
++                    // tests compile.
++                    crt_lib_dir = try std.fs.path.join(arena, &[_][]const u8{ sysroot, "usr", "lib" });
++                    if (!is_dyn_lib) {
++                        if (crt_basenames.crt0) |name| {
++                            if (try findSysrootCrt(arena, io, sysroot, name)) |p| {
++                                try argv.append(p);
++                                wrote_crt0 = true;
++                            }
++                        }
++                    }
++                    if (crt_basenames.crti) |name| {
++                        if (try findSysrootCrt(arena, io, sysroot, name)) |p| try argv.append(p);
++                    }
++                    if (try findGccRuntimeCrt(arena, gpa, io, sysroot, "crtbeginS.o")) |p| {
++                        try argv.append(p);
 +                    }
 +                }
 +            }
 +
-+            // rpath
 +            for (elf.rpath_list) |rpath| {
-+                try argv.append(try std.fmt.allocPrint(arena, "-Wl,-rpath,{s}", .{rpath}));
++                try argv.append("-rpath");
++                try argv.append(rpath);
 +            }
 +
-+            // Library paths — only when libc_installation is available (build-time)
-+            // At runtime, GCC finds libraries via its own sysroot configuration
++            // Default library search paths
 +            if (comp.config.link_libc) {
 +                if (comp.libc_installation) |libc_installation| {
 +                    const crt_dir = libc_installation.crt_dir.?;
-+                    try argv.append(try std.fmt.allocPrint(arena, "-L{s}", .{crt_dir}));
-+
-+                    // PowerPC64LE: Also add lib64 where pthread/libc actually reside
-+                    // crt_dir is .../sysroot/usr/lib but libraries are in .../sysroot/usr/lib64
++                    try argv.append("-L");
++                    try argv.append(crt_dir);
 +                    const lib64_dir = try std.fs.path.join(arena, &[_][]const u8{ crt_dir, "..", "lib64" });
-+                    try argv.append(try std.fmt.allocPrint(arena, "-L{s}", .{lib64_dir}));
++                    try argv.append("-L");
++                    try argv.append(lib64_dir);
++                } else if (comp.sysroot) |sysroot| {
++                    try argv.append("-L");
++                    try argv.append(try std.fs.path.join(arena, &[_][]const u8{ sysroot, "usr", "lib" }));
++                    try argv.append("-L");
++                    try argv.append(try std.fs.path.join(arena, &[_][]const u8{ sysroot, "usr", "lib64" }));
 +                }
 +            }
 +
@@ -239,7 +360,8 @@ diff --git a/src/link/Lld.zig b/src/link/Lld.zig
 +                try argv.append(try p.toString(arena));
 +            }
 +
-+            // Link inputs (objects and archives only)
++            // Link inputs (objects and archives only). Native ld
++            // spelling for whole-archive bracketing (no -Wl, wrapper).
 +            for (base.comp.link_inputs) |link_input| switch (link_input) {
 +                .res => unreachable,
 +                .dso => continue, // Handled separately below
@@ -247,12 +369,9 @@ diff --git a/src/link/Lld.zig b/src/link/Lld.zig
 +                    try argv.append(try obj.path.toString(arena));
 +                },
 +                .archive => |obj| {
-+                    // Honour CMake's --whole-archive: zig's cc driver sets must_link
-+                    // on archives that appeared between -Wl,--whole-archive and
-+                    // -Wl,--no-whole-archive (fix landed in zig 0.14.0, PR #21973).
-+                    if (obj.must_link) try argv.append("-Wl,--whole-archive");
++                    if (obj.must_link) try argv.append("-whole-archive");
 +                    try argv.append(try obj.path.toString(arena));
-+                    if (obj.must_link) try argv.append("-Wl,--no-whole-archive");
++                    if (obj.must_link) try argv.append("-no-whole-archive");
 +                },
 +                .dso_exact => |dso_exact| {
 +                    const name = dso_exact.name;
@@ -263,32 +382,25 @@ diff --git a/src/link/Lld.zig b/src/link/Lld.zig
 +
 +            // Shared libraries and libc (for executables and dynamic libraries)
 +            if (is_exe_or_dyn_lib) {
-+                // Shared library files (.dso) - includes libLLVM-20.so.
-+                // Honor --no-as-needed / --as-needed per-library based on dso.needed,
-+                // mirroring upstream LLD's as-needed tracking logic.  Start with
-+                // --as-needed active so that BFD ld behavior is explicit and
-+                // independent of gcc spec file defaults on any given distribution.
-+                // dso.needed==true means the user had --no-as-needed active when the
-+                // library was specified (e.g. -Wl,--no-as-needed -lfoo), so forward
-+                // that intent as an explicit --no-as-needed flag to ld.bfd.
++                // Shared library files (.dso). Honor --no-as-needed /
++                // --as-needed per-library based on dso.needed (native ld
++                // spelling, no -Wl, wrapper).
 +                {
 +                    var dso_as_needed = true;
-+                    try argv.append("-Wl,--as-needed");
++                    try argv.append("--as-needed");
 +                    for (base.comp.link_inputs) |link_input| switch (link_input) {
 +                        .res, .object, .archive, .dso_exact => continue,
 +                        .dso => |dso| {
 +                            const want_as_needed = !dso.needed;
 +                            if (want_as_needed != dso_as_needed) {
-+                                try argv.append(if (want_as_needed) "-Wl,--as-needed" else "-Wl,--no-as-needed");
++                                try argv.append(if (want_as_needed) "--as-needed" else "--no-as-needed");
 +                                dso_as_needed = want_as_needed;
 +                            }
 +                            try argv.append(try dso.path.toString(arena));
 +                        },
 +                    };
-+                    // Restore --as-needed after user DSOs so that bundled libs below
-+                    // are not accidentally affected by a lingering --no-as-needed.
 +                    if (!dso_as_needed) {
-+                        try argv.append("-Wl,--as-needed");
++                        try argv.append("--as-needed");
 +                    }
 +                }
 +
@@ -296,57 +408,43 @@ diff --git a/src/link/Lld.zig b/src/link/Lld.zig
 +                if (comp.config.link_libcpp) {
 +                    if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
 +                        if (is_dyn_lib) {
-+                            // Shared library output: use dynamic -lc++ / -lc++abi.
-+                            // Don't inject zig's bundled static archives -- they have
-+                            // hidden visibility which conflicts with .so output.
-+                            try argv.append("-Wl,--no-as-needed");
++                            try argv.append("--no-as-needed");
 +                            try argv.append("-lc++");
 +                            try argv.append("-lc++abi");
-+                            try argv.append("-Wl,--as-needed");
++                            try argv.append("--as-needed");
 +                        } else {
-+                            // Executable: static libc++abi + shared libc++.so
 +                            try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
-+                            try argv.append("-Wl,--no-as-needed");
++                            try argv.append("--no-as-needed");
 +                            try argv.append(shared_path);
-+                            try argv.append("-Wl,--as-needed");
++                            try argv.append("--as-needed");
 +                        }
 +                    } else {
-+                        // No shared libc++ -- use bundled static archives
 +                        try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
 +                        try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
 +                    }
 +                }
 +
-+                // libunwind dependency — prefer shared from ZIG_SHARED_LIBCXX_DIR
-+                // (co-located with libc++.so in zig-llvm/lib/).
-+                // Zig's static libunwind.a has hidden visibility which conflicts
-+                // with shared libc++.so that depends on libunwind symbols.
++                // libunwind dependency
 +                if (comp.config.link_libunwind) {
 +                    if (try libcxx_shared.findSharedLibCxxString(comp, arena)) |shared_path| {
-+                        // Shared libunwind.so is co-located with libc++.so — resolve
-+                        // its absolute path directly (mirroring the libc++ branch
-+                        // above) instead of a bare -lunwind, which requires an -L
-+                        // path the installed/packaged zig binary never receives.
 +                        const unwind_dir = std.fs.path.dirname(shared_path) orelse ".";
 +                        const unwind_path = try std.fs.path.join(arena, &[_][]const u8{ unwind_dir, "libunwind.so" });
-+                        try argv.append("-Wl,--no-as-needed");
++                        try argv.append("--no-as-needed");
 +                        try argv.append(unwind_path);
-+                        try argv.append("-Wl,--as-needed");
++                        try argv.append("--as-needed");
 +                    } else {
 +                        try argv.append(try comp.libunwind_static_lib.?.full_object_path.toString(arena));
 +                    }
-+                    // libunwind uses pthread_rwlock_* and dl* from the sysroot.
-+                    // GCC ld.bfd is strict about link order ("DSO missing from
-+                    // command line"), so these must appear after libunwind.
-+                    try argv.append("-Wl,--no-as-needed");
-+                    try argv.append("-Wl,-lpthread");
-+                    try argv.append("-Wl,-ldl");
-+                    try argv.append("-Wl,--as-needed");
++                    try argv.append("--no-as-needed");
++                    try argv.append("-lpthread");
++                    try argv.append("-ldl");
++                    try argv.append("--as-needed");
 +                }
 +
-+                // pthread_atfork stub — only during conda-build (use_zig_crt path)
-+                // when SRC_DIR is set and the stub was created by the build script.
-+                if (use_zig_crt and comp.config.link_libc) {
++                // pthread_atfork stub -- only during conda-build when
++                // SRC_DIR is set and the stub was created by the build
++                // script.
++                if (wrote_crt0 and comp.config.link_libc) {
 +                    add_stub: {
 +                        const src_dir = comp.environ_map.get("SRC_DIR") orelse break :add_stub;
 +                        const stub_path = try std.fs.path.join(arena, &[_][]const u8{ src_dir, "zig-local-cache", "pthread_atfork_stub.o" });
@@ -355,97 +453,102 @@ diff --git a/src/link/Lld.zig b/src/link/Lld.zig
 +                    }
 +                }
 +
-+                // Glibc lib linking: unconditionally wrap with --no-as-needed/--as-needed
-+                // so bundled glibc libs always appear in DT_NEEDED regardless of whether
-+                // use_zig_crt is set.  Zig's frontend absorbs -lm/-lc/-lpthread etc. as
-+                // link_libc=true (isLibCLibName), so they never reach the link_inputs DSO
-+                // loop above — we must inject them here explicitly.  Mirror upstream
-+                // Lld.zig isGnuLibC() emission; emit -Wl,-l<name> because zig's bundled
-+                // .so stubs have @GLIBC_PRIVATE refs that ld.bfd rejects.
++                // Glibc lib linking: unconditionally wrap with
++                // --no-as-needed/--as-needed. Zig's frontend absorbs
++                // -lm/-lc/-lpthread etc. as link_libc=true (isLibCLibName),
++                // so they never reach the link_inputs DSO loop above -- we
++                // inject them here explicitly (native ld spelling, no
++                // -Wl, wrapper).
 +                if (comp.config.link_libc and target.isGnuLibC()) {
-+                    try argv.append("-Wl,--no-as-needed");
++                    try argv.append("--no-as-needed");
 +                    for (glibc.libs) |lib| {
 +                        if (lib.removed_in) |rem_in| {
 +                            if (target.os.versionRange().gnuLibCVersion().?.order(rem_in) != .lt) continue;
 +                        }
-+                        // "ld" is the dynamic linker; loaded via --dynamic-linker, not -l.
++                        // "ld" is the dynamic linker; loaded via
++                        // --dynamic-linker, not -l.
 +                        if (std.mem.eql(u8, lib.name, "ld")) continue;
-+                        try argv.append(try std.fmt.allocPrint(arena, "-Wl,-l{s}", .{lib.name}));
++                        try argv.append(try std.fmt.allocPrint(arena, "-l{s}", .{lib.name}));
 +                    }
-+                    try argv.append("-Wl,--as-needed");
++                    try argv.append("--as-needed");
 +
-+                    // PowerPC64: Dynamic linker provides __tls_get_addr (TLS support).
-+                    // Only needed in use_zig_crt (build-time -nostartfiles) path —
-+                    // at runtime, GCC spec files handle the dynamic linker automatically.
-+                    if (use_zig_crt) {
-+                        if (comp.libc_installation) |libc_installation| {
-+                            if (libc_installation.crt_dir) |crt_dir| {
-+                                if (target.dynamic_linker.get()) |dl_target_path| {
-+                                    // Extract basename from target path (e.g., "/lib64/ld64.so.2" -> "ld64.so.2")
-+                                    const dl_basename = std.fs.path.basename(dl_target_path);
-+                                    // crt_dir is .../sysroot/usr/lib, dynamic linker is in .../sysroot/lib64
-+                                    const ld_path = try std.fs.path.join(arena, &[_][]const u8{ crt_dir, "..", "..", "lib64", dl_basename });
-+                                    try argv.append(ld_path);
-+                                }
-+                            }
++                    // PowerPC64: on this glibc floor, __tls_get_addr is
++                    // provided by the dynamic linker (ld.so), not libc.so.
++                    // A gcc driver's spec files pull this in implicitly;
++                    // `ld` never does, in EITHER the build-time or
++                    // test-time case, so this now applies whenever a crt
++                    // lib dir was resolved above (previously gated to
++                    // build-time only, which happened to be masked by the
++                    // gcc driver at test time).
++                    if (crt_lib_dir) |lib_dir| {
++                        if (target.dynamic_linker.get()) |dl_target_path| {
++                            const dl_basename = std.fs.path.basename(dl_target_path);
++                            const dl_path = try std.fs.path.join(arena, &[_][]const u8{ lib_dir, "..", "lib64", dl_basename });
++                            try argv.append(dl_path);
 +                        }
 +                    }
 +                }
-+
 +            }
 +
-+            // Compiler-rt
++            // Compiler-rt (zig/clang's own -lgcc/-lgcc_s equivalent)
 +            if (compiler_rt_path) |p| {
 +                try argv.append(try p.toString(arena));
 +            }
 +
-+            // CRT end files — only when zig provides CRT (build-time)
-+            if (use_zig_crt) {
-+                if (csu.crtend) |p| {
-+                    try argv.append(try p.toString(arena));
-+                } else if (comp.libc_installation) |libc_installation| {
-+                    if (libc_installation.gcc_dir) |gcc_dir| {
++            // CRT end files
++            if (comp.config.link_libc) {
++                if (comp.libc_installation) |libc_installation| {
++                    const csu = try comp.getCrtPaths(arena);
++                    if (csu.crtend) |p| {
++                        try argv.append(try p.toString(arena));
++                    } else if (libc_installation.gcc_dir) |gcc_dir| {
 +                        // Fallback: crtendS.o is the finalization counterpart to crtbeginS.o
-+                        const crtend_path = try std.fs.path.join(arena, &[_][]const u8{ gcc_dir, "crtendS.o" });
-+                        try argv.append(crtend_path);
++                        try argv.append(try std.fs.path.join(arena, &[_][]const u8{ gcc_dir, "crtendS.o" }));
++                    }
++                    if (csu.crtn) |p| try argv.append(try p.toString(arena));
++                } else if (comp.sysroot) |sysroot| {
++                    if (try findGccRuntimeCrt(arena, gpa, io, sysroot, "crtendS.o")) |p| {
++                        try argv.append(p);
++                    }
++                    if (crt_basenames.crtn) |name| {
++                        if (try findSysrootCrt(arena, io, sysroot, name)) |p| try argv.append(p);
 +                    }
 +                }
-+                if (csu.crtn) |p| try argv.append(try p.toString(arena));
 +            }
 +
 +            // Diagnostic dump (verbose_link mode)
 +            if (comp.verbose_link) try Compilation.dumpArgv(io, argv.items);
 +
-+            // Spawn GCC as a child process with inherited stdio for debugging
++            // Spawn `ld` as a child process with inherited stdio for
++            // debugging. No gcc driver is spawned anywhere in this file.
 +            var child = std.process.spawn(io, .{
 +                .argv = argv.items,
 +                .stdin = .inherit,
 +                .stdout = .inherit,
 +                .stderr = .inherit,
 +            }) catch |err| {
-+                std.log.err("Failed to spawn GCC: {s}", .{@errorName(err)});
++                std.log.err("Failed to spawn {s} (searched PATH): {s}", .{ ld_path, @errorName(err) });
 +                return error.LinkFailed;
 +            };
 +
 +            const term = child.wait(io) catch |err| {
-+                std.log.err("Failed to wait for GCC: {s}", .{@errorName(err)});
++                std.log.err("Failed to wait for {s}: {s}", .{ ld_path, @errorName(err) });
 +                return error.LinkFailed;
 +            };
 +
 +            switch (term) {
 +                .exited => |code| {
 +                    if (code == 0) return; // Success!
-+                    std.log.err("GCC linker exited with code: {d}", .{code});
++                    std.log.err("{s} exited with code: {d}", .{ ld_path, code });
 +                    return error.LinkFailed;
 +                },
 +                else => |sig| {
-+                    std.log.err("GCC linker terminated: {}", .{sig});
++                    std.log.err("{s} terminated: {}", .{ ld_path, sig });
 +                    return error.LinkFailed;
 +                },
 +            }
 +        }
 +
-+         // Original LLD code path continues below for non-PowerPC64 targets
          // Create an LLD command line and invoke it.
          var argv = std.array_list.Managed([]const u8).init(gpa);
          defer argv.deinit();

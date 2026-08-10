@@ -76,10 +76,38 @@ _build_zig = os.environ.get("CONDA_ZIG_BUILD", "")
 _is_cross_compiler = _build_zig != _host and _build_zig != "" and _host != ""
 
 _prefix = Path(os.environ.get("CONDA_PREFIX", ""))
-if _build_is_win:
-    _wrapper_dir = _prefix / "Library" / "bin"
-else:
-    _wrapper_dir = _prefix / "bin"
+
+
+def _resolve_wrapper_dir() -> tuple[Path, str]:
+    """Resolve the directory holding the zig wrapper scripts.
+
+    Test envs may have no meaningful BUILD_PREFIX, and CONDA_PREFIX can
+    itself resolve to the build prefix inside a test env (see project
+    history) -- so prefer the directory of the actual ZIG_CC wrapper
+    (ground truth) before falling back to PREFIX, then BUILD_PREFIX, then
+    CONDA_PREFIX.
+    """
+    def _bin_dir(root: str) -> Path:
+        base = Path(root)
+        return base / "Library" / "bin" if _build_is_win else base / "bin"
+
+    zig_cc = os.environ.get("ZIG_CC", "")
+    if zig_cc:
+        candidate = Path(zig_cc).parent
+        if candidate.is_dir():
+            return candidate, "ZIG_CC"
+
+    for var in ("PREFIX", "BUILD_PREFIX"):
+        root = os.environ.get(var, "")
+        if root:
+            candidate = _bin_dir(root)
+            if candidate.is_dir():
+                return candidate, var
+
+    return _bin_dir(os.environ.get("CONDA_PREFIX", "")), "CONDA_PREFIX (fallback)"
+
+
+_wrapper_dir, _wrapper_dir_source = _resolve_wrapper_dir()
 
 def _env_var(name: str) -> str:
     """Return env var value or empty string."""
@@ -1131,7 +1159,7 @@ def main() -> int:
     print(f"  arch            = {_arch!r}")
     print(f"  cross-compiler  = {_is_cross_compiler}")
     print(f"  build OS        = {sys.platform}")
-    print(f"  wrapper dir     = {_wrapper_dir}")
+    print(f"  wrapper dir     = {_wrapper_dir}  (source: {_wrapper_dir_source})")
     print()
 
     # Overlay patched native zig if stashed by build (BUILD_NATIVE_ZIG=true)

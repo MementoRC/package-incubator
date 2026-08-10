@@ -10,7 +10,10 @@ c_stdlib:
       - vs
 
 c_stdlib_version:
-  - if: linux
+  - if: linux and not riscv64
+    then:
+      - "2.17"
+  - if: riscv64
     then:
       - "2.39"
   - if: osx
@@ -23,7 +26,7 @@ channel_targets:
 zig_compiler:
   - zig
 zig_compiler_version:
-  - "0.16.0"
+  - "0.16.0 *_9"
 
 cross_target_platform_:
   - linux-64

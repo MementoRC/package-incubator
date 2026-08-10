@@ -1,0 +1,35 @@
+# Purpose: Add misc/wcstold.c to mingw32_arm_src so the public wcstold symbol
+#          is compiled for thumb/aarch64-windows-gnu, not just x86/x86_64.
+#          misc/mingw_wcstold.c (the __mingw_wcstold implementation) is already
+#          compiled unconditionally for all arches via mingw32_generic_src, but
+#          misc/wcstold.c (the thin wrapper that exports the public `wcstold`
+#          symbol) is upstream-gated to mingw32_x86_src (x86/x86_64 only). This
+#          leaves aarch64-windows-gnu with an implementation but no exported
+#          entry point, so linking libc++ (libcxx/src/string.cpp:283 calls
+#          std::__1::stold -> wcstold) fails with:
+#            lld-link: error: undefined symbol: wcstold
+# Affects: src/libs/mingw.zig
+# Prerequisite: patches/non_unix/mingw-arm64-stubs.patch (applies immediately
+#          before this one in recipe.yaml; both patch the same file region).
+# Upstream: TBD
+# drop-when: zig upstream adds misc/wcstold.c to mingw32_arm_src (or otherwise
+#            compiles it for thumb/aarch64 targets)
+# Last-verified: 2026-08-11
+
+From: zig-feedstock
+Subject: [PATCH] mingw: add misc/wcstold.c to mingw32_arm_src for aarch64-windows-gnu
+
+The public wcstold wrapper is x86-gated upstream while its __mingw_wcstold
+implementation is generic, so aarch64-windows-gnu links fail on the public
+wcstold symbol. Adding misc/wcstold.c to mingw32_arm_src (compiled for both
+thumb and aarch64) resolves the undefined symbol without touching the
+generic __mingw_wcstold implementation or any x86 source list.
+
+drop-when: zig upstream adds misc/wcstold.c to mingw32_arm_src
+
+--- a/src/libs/mingw.zig
++++ b/src/libs/mingw.zig
+@@ -915,2 +915,3 @@
+     "math" ++ path.sep_str ++ "arm-common" ++ path.sep_str ++ "ldexpl.c",
++    "misc" ++ path.sep_str ++ "wcstold.c",
+ };

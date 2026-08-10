@@ -273,6 +273,27 @@ SYNCHRONIZATION_DEF
       _mingw_crt="${_mingw_common}/../crt"
       _mingw_inc="${_mingw_common}/../include"
       _win_inc="${_zig_lib}/libc/include/any-windows-any"
+      # ZIGDIAG (PR17 osx-64): search position 1 in clang's -cc1 -v include list
+      # ($PREFIX/lib/zig/include), named by the failing "cannot open file
+      # '.../lib/zig/include/oscalls.h'" error itself but never probed by any
+      # existing diagnostic below (those cover positions 2/3 only).
+      _zig_inc="${_zig_lib}/include"
+
+      # PR17 osx-64: canonicalize away the ".." component before either path is
+      # handed to clang. The crtdefs.h failure is a resolved-then-failed-open
+      # ("cannot open file '<abs path>'"), NOT a search miss ("'crtdefs.h' file
+      # not found") -- clang had already bound the include to this -I directory
+      # even though crtdefs.h is absent from it and IS present in the
+      # any-windows-any -isystem dir that appears in clang's own printed search
+      # list. The embedded ".." is the only non-canonical thing about the path,
+      # so remove it. Uses cd+pwd -P rather than realpath(1), which is not
+      # guaranteed present on the macOS build image or under MSYS2.
+      if [[ -d "${_mingw_inc}" ]]; then
+        _mingw_inc="$(cd "${_mingw_inc}" && pwd -P)"
+      fi
+      if [[ -d "${_mingw_crt}" ]]; then
+        _mingw_crt="$(cd "${_mingw_crt}" && pwd -P)"
+      fi
 
       if [[ -d "${_mingw_crt}" ]]; then
         dbg echo "=== Compiling MinGW CRT startup objects from ${_mingw_crt} -> ${_crt_outdir} ==="
@@ -281,7 +302,22 @@ SYNCHRONIZATION_DEF
         # CRT compile flags must match zig's internal addCrtCcArgs (src/libs/mingw.zig)
         # exactly, otherwise oscalls.h and other internal headers reject inclusion via
         # `#error ERROR: Use of C runtime library internal header file.`. Keep this in
-        # lockstep with upstream zig's addCcArgs+addCrtCcArgs flag set.
+        # lockstep with upstream zig's addCcArgs+addCrtCcArgs flag set. (No -mfpu=vfp:
+        # this recipe never targets thumb.)
+        #
+        # PR17 osx-64 crtdefs.h fix: both mingw/include and any-windows-any are
+        # passed as -isystem here, NOT -I (upstream zig uses -I for mingw/include).
+        # crtdefs.h does not exist under libc/mingw/include upstream (only a sparse
+        # 5-header dir) and is only present under libc/include/any-windows-any/.
+        # Clang buckets #include <> search dirs into "Angled" (-I) and "System"
+        # (-isystem), and always searches every Angled dir before any System dir
+        # regardless of argv order -- so with mingw/include passed via -I it won
+        # unconditionally over any-windows-any and clang never fell through to the
+        # -isystem candidate (confirmed via -H trace, CI run 31839606806 job
+        # 94893475923). Relative order WITHIN the System bucket IS preserved, so
+        # listing any-windows-any before mingw/include here makes any-windows-any
+        # win the lookup. This is a deliberate divergence from upstream zig, made
+        # because clang was observed not to fall through past the first candidate.
         _crt_flags=(-target "${_win_target}" -mcpu=baseline -c
                     -std=gnu11
                     -D__USE_MINGW_ANSI_STDIO=0
@@ -292,7 +328,7 @@ SYNCHRONIZATION_DEF
                     -DCRTDLL=1
                     -DHAVE_CONFIG_H
                     -isystem "${_win_inc}"
-                    -I"${_mingw_inc}")
+                    -isystem "${_mingw_inc}")
 
         # DIAGNOSTIC (PR17 osx-64): crt2.o compile has failed with
         # "cannot open file '<_mingw_inc>/crtdefs.h'" despite crtdefs.h being a plain
@@ -302,6 +338,10 @@ SYNCHRONIZATION_DEF
         for _inc_dir in "${_win_inc}" "${_mingw_inc}"; do
           if [[ -d "${_inc_dir}" ]]; then
             echo "INFO: [_mingw] include dir OK: ${_inc_dir} ($(ls -1 "${_inc_dir}" 2>/dev/null | wc -l | tr -d ' ') entries)" >&2
+            # TEMPORARY DIAGNOSTIC (PR17 osx-64): full long listing (type/perm/size/
+            # symlink arrow), not just the entry count above.
+            echo "INFO: [_mingw] ls -la ${_inc_dir}:" >&2
+            ls -la "${_inc_dir}" >&2 || true
           else
             echo "ERROR: [_mingw] include dir MISSING: ${_inc_dir}" >&2
           fi
@@ -315,6 +355,64 @@ SYNCHRONIZATION_DEF
         # dump the -I mingw include dir contents so we can confirm at failure time
         # that this is really the sparse 5-file dir and not something else.
         echo "INFO: [_mingw] -I mingw include dir contents (${_mingw_inc}): $(ls -1 "${_mingw_inc}" 2>/dev/null | tr '\n' ' ')" >&2
+        # TEMPORARY DIAGNOSTIC (PR17 osx-64): canonicalize both crtdefs.h candidates.
+        # readlink -f resolves symlinks/relative components; falls back to the same
+        # cd+pwd -P trick already used above for _mingw_inc/_mingw_crt in case the
+        # build host's BSD readlink lacks -f. Distinguishes a plain regular file from
+        # a symlink whose resolved target differs from what ls/stat report.
+        for _crtdefs_cand in "${_mingw_inc}/crtdefs.h" "${_win_inc}/crtdefs.h"; do
+          # set -e-safe: BSD readlink (macOS) has no -f and exits non-zero; this
+          # assignment's status would otherwise be the substitution's exit status
+          # and abort the script before the cd+pwd -P fallback below ever runs.
+          _crtdefs_resolved="$(readlink -f "${_crtdefs_cand}" 2>/dev/null || true)"
+          if [[ -z "${_crtdefs_resolved}" ]]; then
+            if [[ -e "${_crtdefs_cand}" ]]; then
+              _crtdefs_resolved="$(cd "$(dirname "${_crtdefs_cand}")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "${_crtdefs_cand}")" || true)"
+            else
+              _crtdefs_resolved="MISSING"
+            fi
+          fi
+          echo "INFO: [_mingw] readlink -f ${_crtdefs_cand} -> ${_crtdefs_resolved}" >&2
+        done
+        # ZIGDIAG position-1 include (_zig_inc) probe (PR17 osx-64): the -cc1 -v
+        # search list is $PREFIX/lib/zig/include (position 1), then any-windows-any
+        # (position 2, _win_inc), then mingw/include (position 3, _mingw_inc). The
+        # failing compile's own error names position 1
+        # ('.../lib/zig/include/oscalls.h'), but every existing diagnostic in this
+        # file probes only positions 2/3. Leading hypothesis: a stale/dangling
+        # directory entry for oscalls.h specifically at position 1 -- vadefs.h is
+        # known to open fine from that same directory in the same compile, so this
+        # is per-file, not per-directory. No CI log to date has shown this
+        # directory's contents, so dump it in full alongside both header
+        # candidates.
+        # set -e/pipefail-safe: every command below is diagnostics-only and must
+        # never be able to preempt or abort before the real compile/return below.
+        echo "=== ZIGDIAG position-1 include (_zig_inc) probe: ${_zig_inc} ===" >&2
+        echo "--- ls -1 ${_zig_inc} (full directory listing) ---" >&2
+        ls -1 "${_zig_inc}" >&2 || true
+        for _zig_inc_cand in "${_zig_inc}/oscalls.h" "${_zig_inc}/crtdefs.h"; do
+          echo "--- candidate: ${_zig_inc_cand}" >&2
+          echo "    ls -la (no -L, symlink arrow visible if present):" >&2
+          ls -la "${_zig_inc_cand}" >&2 || true
+          echo "    ls -laL (-L dereferences; dangling symlink reports 'No such file or directory'):" >&2
+          ls -laL "${_zig_inc_cand}" >&2 || true
+          echo "    readlink -f:" >&2
+          readlink -f "${_zig_inc_cand}" >&2 || true
+        done
+        echo "=== end ZIGDIAG position-1 include (_zig_inc) probe ===" >&2
+        # TEMPORARY DIAGNOSTIC (PR17 osx-64): print the exact resolved -I/-isystem
+        # flag array clang will receive, verbatim, immediately before the first CRT
+        # compile call -- rules out any shell-quoting/expansion mismatch between what
+        # this script constructed and what actually reaches clang's argv.
+        # set -u-safe: expanding "${_crt_flags[@]}" when the array is empty
+        # errors as "unbound variable" on bash < 4.4 (macOS ships bash 3.2).
+        # _crt_flags is always populated above, but guard explicitly anyway
+        # since this is diagnostics-only and must never be able to abort.
+        if [[ ${#_crt_flags[@]} -gt 0 ]]; then
+          echo "INFO: [_mingw] resolved _crt_flags argv: $(printf '%q ' "${_crt_flags[@]}" 2>/dev/null || true)" >&2
+        else
+          echo "INFO: [_mingw] resolved _crt_flags argv: (empty)" >&2
+        fi
 
         # Helper: compile one CRT object, surface errors (do NOT swallow).
         # Captures stderr to a log; on success emits dbg trace; on failure
@@ -324,19 +422,77 @@ SYNCHRONIZATION_DEF
           local log; log=$(mktemp)
           # TEMPORARY DIAGNOSTIC (PR17 osx-64, remove once header-search order is known):
           # -v makes clang print its resolved "#include <...> search starts here:"
-          # directory list/order to stderr. Does not affect codegen or exit status.
+          # directory list/order to stderr. -H makes clang trace every header as it
+          # is actually opened (one line per #include, showing which directory it
+          # resolved from) -- this is what will show whether crtdefs.h is reached via
+          # a directory other than the one named in the "cannot open file" error.
+          # Neither flag affects codegen or exit status; both write to stderr, which
+          # is already captured into ${log} below and surfaced on failure.
           # shellcheck disable=SC2086
-          if "${_zig_bin}" cc -v "${_crt_flags[@]}" ${extra} "${src}" -o "${obj}" >"${log}" 2>&1; then
+          if "${_zig_bin}" cc -v -H "${_crt_flags[@]}" ${extra} "${src}" -o "${obj}" >"${log}" 2>&1; then
             dbg cat "${log}"
             dbg echo "=== Compiled $(basename "${obj}") ==="
             rm -f "${log}"
             return 0
           fi
           echo "ERROR: failed to compile $(basename "${obj}") for ${_win_target}:" >&2
-          cat "${log}" >&2
+          cat "${log}" >&2 || true
           rm -f "${log}"
+          # DEEP DIAGNOSTIC (PR17 osx-64 crtdefs.h). This failure is a
+          # resolved-then-failed-open, not a search miss: clang reports
+          # "cannot open file '<full path>'" rather than "'crtdefs.h' file not
+          # found", and zig-feedstock-2's round-20 confirmed the -cc1 -v search
+          # list is correct and does carry any-windows-any. Flag permutations are
+          # ruled out -- _crt_flags order is pinned to upstream zig's
+          # addCrtCcArgs, and -D_CRTBLD makes reordering trip mingw's
+          # "Use of C runtime library internal header file" guard. So capture the
+          # real argv plus the physical state of both include roots instead.
+          # set -e/pipefail-safe: every command below is diagnostics-only and
+          # must not be able to preempt the `return 1` that follows this
+          # block (a diagnostic-dump command failing must not masquerade as
+          # -- or abort before -- the real compile failure being reported).
+          {
+            echo "=== ZIGDIAG crt-compile failure dump: $(basename "${src}") -> $(basename "${obj}") ==="
+            echo "--- _crt_flags (declare -p) ---"
+            declare -p _crt_flags 2>&1 || true
+            echo "--- extra args: ${extra}"
+            echo "--- zig binary: ${_zig_bin}"
+            echo "--- resolved cc1 argv (-###) ---"
+            # shellcheck disable=SC2086
+            "${_zig_bin}" cc -### "${_crt_flags[@]}" ${extra} "${src}" -o "${obj}" 2>&1 | head -40 || true
+            echo "--- ls -laL _mingw_inc (${_mingw_inc}) --- (-L dereferences: a dangling symlink shows as unreadable)"
+            ls -laL "${_mingw_inc}" 2>&1 || true
+            echo "--- ls -laL _win_inc (${_win_inc}) ---"
+            ls -laL "${_win_inc}" 2>&1 | head -30 || true
+            for _cand in "${_mingw_inc}/crtdefs.h" "${_win_inc}/crtdefs.h"; do
+              echo "--- candidate: ${_cand}"
+              ls -la "${_cand}" 2>&1 || true
+              stat "${_cand}" 2>&1 | head -12 || true
+              if [[ -r "${_cand}" ]]; then
+                echo "    readable; first 100 bytes follow:"
+                head -c 100 "${_cand}" 2>&1 || true
+                echo
+              else
+                echo "    NOT readable (absent, dangling symlink, or permission denied)"
+              fi
+            done
+            echo "=== end ZIGDIAG crt-compile failure dump ==="
+          } >&2
           return 1
         }
+
+        # ZIGDIAG pre-compile crtdefs.h probe (PR17 osx-64 search-order fix): dump
+        # existence + byte size of the crtdefs.h candidate in both include roots
+        # right before the first CRT object is compiled, so the next CI log makes
+        # it decisive whether the -isystem reorder above alone resolved the
+        # "cannot open file '.../mingw/include/crtdefs.h'" failure. `|| true` on
+        # every line: diagnostics-only, must never be able to fail the build.
+        echo "=== ZIGDIAG pre-crt2-compile crtdefs.h probe ===" >&2
+        echo "--- candidate (any-windows-any, expected present): ${_win_inc}/crtdefs.h" >&2
+        ls -l "${_win_inc}/crtdefs.h" >&2 || true
+        echo "--- candidate (mingw/include, expected absent): ${_mingw_inc}/crtdefs.h" >&2
+        ls -l "${_mingw_inc}/crtdefs.h" >&2 || true
+        echo "=== end ZIGDIAG pre-crt2-compile crtdefs.h probe ===" >&2
 
         # crt2.o -- console application entry (main)
         _crt2_obj="${_crt_outdir}/crt2.o"

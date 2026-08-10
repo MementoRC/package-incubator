@@ -156,6 +156,39 @@ if [[ "${ZIG_TRIPLET}" == aarch64-* ]] && is_not_unix; then
     CMAKE_PLATFORM_FLAGS+=(
       -DLLVM_ARM64_EXPORT_DEF="${LLVM_BUILD}/libLLVM.def"
     )
+
+    # win-arm64: the main LLVM build links bin/libLLVM-21.dll against zig's
+    # bundled libc++ (c++.lib, pulled in by -stdlib=libc++), whose string.obj
+    # references wcstold -- absent from mingw-w64's ARM64 CRT. Note this is a
+    # DIFFERENT libc++ copy than the runtimes build's own libc++.dll, so the
+    # stub has to be injected here as well; fixing only one leaves the other
+    # link broken. CMAKE_CXX_STANDARD_LIBRARIES is appended at the very END of
+    # every C++ link line, which is the correct slot for a definition object.
+    # (PR #17 run 31547433304, win-arm64 job 93962966657, log line 18721:
+    #  FAILED bin/libLLVM-21.dll, undefined symbol: wcstold, referenced by
+    #  %BUILD_PREFIX%\Library\lib\zig\libcxx\src\string.cpp:283 in c++.lib.)
+    _wcstold_stub="${LLVM_BUILD}/wcstold_arm64.o"
+    if [[ ! -f "${_wcstold_stub}" ]]; then
+      _wcstold_src="${LLVM_BUILD}/wcstold_arm64.c"
+      mkdir -p "${LLVM_BUILD}"
+      cat > "${_wcstold_src}" << 'EOF'
+// mingw-w64 ARM64 does not export wcstold. long double == double on the
+// ARM64 Windows ABI, so forwarding to wcstod is value-exact.
+#include <stdlib.h>
+#include <wchar.h>
+long double wcstold(const wchar_t *s, wchar_t **endptr) {
+  return (long double)wcstod(s, endptr);
+}
+EOF
+      "${BUILD_PREFIX}/Library/bin/x86_64-w64-mingw32-zig.exe" cc \
+        -target aarch64-windows-gnu -c "${_wcstold_src}" -o "${_wcstold_stub}" \
+        || { echo "ERROR: failed to compile wcstold_arm64.o stub"; exit 1; }
+      rm -f "${_wcstold_src}"
+    fi
+    CMAKE_PLATFORM_FLAGS+=(
+      "-DCMAKE_CXX_STANDARD_LIBRARIES=${_wcstold_stub}"
+    )
+    unset _wcstold_stub _wcstold_src
 fi
 
 # linux cross builds (aarch64, ppc64le, riscv64, s390x): libLLVM.so is linked

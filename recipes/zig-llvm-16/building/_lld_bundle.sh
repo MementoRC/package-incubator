@@ -47,10 +47,24 @@ function build_lld_bundle() {
   if is_linux; then
     local _out="${_lld_lib}/liblldZig.so"
     # Pass -target so zig-cc links for TARGET arch, not the build-host arch.
-    # On native (linux-64) this is a no-op; on cross (aarch64, ppc64le, …) it
-    # prevents ld.lld rejecting TARGET .a members as "incompatible with elf_x86_64".
-    # ZIG_TARGET_HOST is the bare zig triple for target_platform (set by recipe.yaml).
-    "${ZIG_CXX}" -target "${ZIG_TARGET_HOST}" -shared -fPIC \
+    # On native (linux-64) the ARCH part is a no-op; on cross (aarch64, ppc64le, …)
+    # it prevents ld.lld rejecting TARGET .a members as "incompatible with elf_x86_64".
+    #
+    # Use ZIG_TRIPLET (recipe.yaml zig_triplet), NOT ZIG_TARGET_HOST (zig_target).
+    # Both name the same arch, but only zig_triplet carries the glibc floor
+    # (".2.17" from c_stdlib_version); zig_target is deliberately bare because it
+    # doubles as the zig-cc wrapper FILENAME prefix (see recipe.yaml:29).
+    # With a bare -target, zig compiles its bundled libc++abi against its NEWEST
+    # bundled glibc, so the thread_local-destructor path emits
+    # __cxa_thread_atexit_impl@GLIBC_2.18 into THIS .so's own dynamic undefined
+    # set. zig-0.16.0 then links -Dtarget=x86_64-linux-gnu.2.17 with
+    # --no-allow-shlib-undefined and rejects the bundle (PR #17 run 31547433304,
+    # linux-64 PHASE2 job 93962873806). That check reads the shared library's OWN
+    # undef table, so the consumer-side cxa_thread_atexit_impl_stub.o cannot
+    # satisfy it -- the floor has to be applied HERE, at the bundle link.
+    # Every sibling linux link in this recipe already floors its target:
+    # _runtimes_build.sh:331, _cross_compile.sh:83, _native_llvm_config.sh:78-80.
+    "${ZIG_CXX}" -target "${ZIG_TRIPLET}" -shared -fPIC \
       -Wl,--whole-archive \
         "${_lld_lib}/liblldELF.a" \
         "${_lld_lib}/liblldCOFF.a" \

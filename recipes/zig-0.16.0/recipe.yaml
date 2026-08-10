@@ -42,7 +42,6 @@ context:
   m2: ${{ "m2-" if not unix else "" }}
   sh: ${{ ".bat" if not unix else ".sh" }}
   so: ${{ "so" if unix else "dll" }}
-
   _c_v: ${{ (c_stdlib_version | default("")) }}
   zig_triplet: >-
     ${{
@@ -165,6 +164,42 @@ context:
   is_cross_compiler: ${{ is_hosted_xcompiler or is_unhosted_xcompiler }}
   is_cross_target: ${{ build_platform != target_platform and cross_target_platform_ == target_platform }}
 
+  # Emulator + target sysroot for linux cross lanes.
+  #
+  # Gate is `build_platform != target_platform`, chosen over the two alternatives
+  # that were tried and failed:
+  #   - bare `linux`: matched linux-64 NATIVE too, where
+  #     `target_platform | replace("linux-", "")` yields the bogus arch `64` and
+  #     emits a nonexistent `qemu-execve-64`.
+  #   - `is_cross_target`: too narrow. It also requires
+  #     `cross_target_platform_ == target_platform`, so it goes EMPTY for the
+  #     cross-COMPILER sub-outputs on a cross lane (e.g. zig_linux-64 built on the
+  #     linux-aarch64 lane). Those still get a test env solved for target_platform,
+  #     so dropping the emulator there ran a foreign-arch python bare on the runner
+  #     -> "cannot execute binary file: Exec format error" (run 31544009798).
+  #
+  # Defined HERE rather than with the shortcuts near the top of context: because
+  # both depend on conda_triplet, which is defined later -- context vars resolve
+  # in order.
+  qemu: ${{ "qemu-execve-" ~ target_platform | replace("linux-", "") if linux and build_platform != target_platform else "" }}
+  # Prefix-RELATIVE sysroot path. Consumers compose it against the prefix they need:
+  # ${BUILD_PREFIX}<sysroot> on the build side, ${PREFIX}<sysroot> in tests
+  # (use PREFIX, not CONDA_PREFIX -- the latter resolved to the build prefix
+  # inside the test env, run 31544009798).
+  # Derived from target_triplet so the arch mapping (incl. ppc64le -> powerpc64le
+  # and linux-64 -> x86_64) lives in exactly one audited place.
+  #
+  # MUST be keyed on target_platform, NOT conda_triplet (PR #17, run 31614917304).
+  # `qemu` above is "qemu-execve-" ~ target_platform, i.e. it emulates the machine
+  # that RUNS the binary. QEMU_LD_PREFIX must name that same machine's sysroot.
+  # conda_triplet names what a cross-COMPILER output TARGETS, which for ordinary
+  # cross-target outputs is identical -- but for the unhosted cross-compiler
+  # sub-outputs (e.g. zig_linux-64 built on the linux-aarch64 lane) the two
+  # DIVERGE, and QEMU_LD_PREFIX pointed at the x86_64 sysroot while the emulator
+  # was aarch64. Result: `qemu-execve-aarch64: Could not open
+  # '/lib/ld-linux-aarch64.so.1': No such file or directory`.
+  sysroot: ${{ "/" ~ target_triplet ~ "/sysroot" if linux else "" }}
+
 recipe:
   name: zig-package
   version: ${{ version }}
@@ -204,6 +239,15 @@ source:
           # back-shift comparison trivially true and silently dropping the panic.
           # Affects all LLVM-backend targets (ppc64le, aarch64, riscv64, …).
           - patches/linux/Sema.zig-shr-exact-safety-downgrade.patch
+      # Manual LLVM/clang/lld override: adds the `if(DEFINED ZIG_LLVM_MANUAL_OVERRIDE)`
+      # branches to Findllvm/Findclang/Findlld.cmake. Unconditional because
+      # build-zig.sh feeds -DZIG_LLVM_MANUAL_OVERRIDE=1 for linux cross (:598),
+      # windows native (:537) and osx cross. Gating it to `linux` left the windows
+      # feed writing into a tree that never learned to read those vars: CMake
+      # reported all six ZIG_LLVM_MANUAL_* as unused-cli and Findclang.cmake fell
+      # through to normal probing -> CLANG_LIBRARIES-NOTFOUND -> Generate failed
+      # (run 31400296588, job 93544032314, win-64 native PHASE 2).
+      - patches/cmake/0007-manual-llvm-clang-lld-override.patch
       # ppc64le patches are gated on `linux` (any linux variant) so the
       # produced linux-64 / linux-aarch64 / linux-riscv64 zig binaries
       # can also `zig cc -target powerpc64le-linux-gnu`.
@@ -225,7 +269,6 @@ source:
           # Phase 0005-0006: CMake ppc64le configuration (mlongcall, lld bundle)
           - patches/cmake/0005-ppc64le-mlongcall-CMakeLists.txt.patch
           - patches/cmake/0006-ppc64le-lld-bundle-CMakeLists.txt.patch
-          - patches/cmake/0007-manual-llvm-clang-lld-override.patch
       - if: osx
         then:
           # Same generic ZIG_LLD_BUNDLE_SO CMakeLists.txt override as the linux
@@ -256,11 +299,18 @@ source:
       # mingw/std source under lib/libc/mingw/** and lib/std/** is compile-on-demand
       # material shipped in the package and read by `zig cc` at user invocation time
       # from the invoking zig's own lib dir -- it is NOT compiled into the zig binary.
-      # These six patches fix mingw/std source bugs (arm64 stubs, atexit chain,
-      # SelfInfo alignment, setjmp) that reproduce for ANY host cross-compiling to
-      # Windows, so they must apply unconditionally rather than being gated on
-      # `not unix` (which only covers windows-hosted builds).
+      # These seven patches fix mingw/std source bugs (arm64 stubs, arm
+      # wcstold, atexit chain, SelfInfo alignment, setjmp) that reproduce for
+      # ANY host cross-compiling to Windows, so they must apply
+      # unconditionally rather than being gated on `not unix` (which only
+      # covers windows-hosted builds).
       - patches/non_unix/mingw-arm64-stubs.patch
+      # win-arm64: the public wcstold wrapper is x86-gated upstream while its
+      # __mingw_wcstold implementation is generic, so aarch64-windows-gnu
+      # links fail on the public wcstold symbol pulled in by libc++'s
+      # std::__1::stold. Depends on mingw-arm64-stubs.patch (same file
+      # region), so it must apply immediately after it.
+      - patches/non_unix/mingw-arm-wcstold.patch
       - patches/non_unix/mingw-crtexe-no-atexit.patch
       - patches/non_unix/ucrtbase-export-atexit-alias.patch
       - patches/non_unix/selfinfo-windows-arm64-ptrcast-aligncast.patch
@@ -346,6 +396,7 @@ outputs:
         file: building/build-zig.sh
         env:
           CONDA_TRIPLET: ${{ conda_triplet }}
+          ZIG_SYSROOT_SUBPATH: ${{ sysroot }}
           ZIG_TRIPLET: ${{ zig_triplet }}
 
           CONDA_ZIG_BUILD: ${{ build_triplet ~ "-zig" }}
@@ -377,34 +428,11 @@ outputs:
             - ${{ m2 }}which
             - pkg-config
         - zig_impl_${{ build_platform }} >=0.15.2,<=${{ version }}
-        - if: build_platform != target_platform
+        - if: linux and build_platform != target_platform
           then:
-            # Cross-compiler arranged locally due to recipe cycle
-            - if: linux
-              then:
-                - qemu-execve-${{ target_platform | replace("linux-", "") }}
+            - ${{ qemu }}
         - if: ppc64le
           then:
-            # zig-cc spawns a literal `gcc` internally for a ppc64le-specific
-            # link/codegen fallback during the LLVM runtimes build; native
-            # builds need this dep too, not just cross (matches `run:` below).
-            # MUST key on cross_target_platform_ (not build_platform): the
-            # required binary is the ppc64le-TARGETING cross-gcc that RUNS on
-            # build_platform (conda-forge compiler packages are named by the
-            # architecture they target, regardless of which requirements
-            # section -- build/host/run -- installs them; see the working
-            # `gcc_impl_${{ cross_target_platform_ }}` precedent in the
-            # zig_${{ cross_target_platform_ }} output's run: section below).
-            # Using build_platform silently resolved to the NATIVE x86_64
-            # gcc_impl on the linux-64 -> linux-ppc64le cross lane (it only
-            # happened to work on the native ppc64le lane, where
-            # build_platform == target_platform), so BUILD_PREFIX/bin never
-            # had powerpc64le-conda-linux-gnu-gcc and the ppc64le GCC-linker
-            # redirect in patches/ppc64le/0003-gcc-linker-comprehensive-
-            # Lld.zig.patch failed with "Failed to spawn GCC: FileNotFound"
-            # while linking the LLVM/libc++ runtimes for ppc64le (PR #123,
-            # check linux_ppc64le_cross_target_platform_linux-ppc64le,
-            # 2026-07-24).
             - binutils_impl_${{ cross_target_platform_ }} >=2.45
             - gcc_impl_${{ cross_target_platform_ }} >=14.3
         - if: not unix and arm64
@@ -412,11 +440,6 @@ outputs:
             - llvm-tools ${{ llvm_version }}.*  # provides llvm-nm and llvm-readobj for extract_symbols.py
         - if: build_platform != target_platform
           then:
-            # Native llvm-config for build-zig.sh's cross-compile fallback lookup
-            # at $BUILD_PREFIX/lib/zig-llvm/bin/llvm-config (build-zig.sh:244-306).
-            # zig-llvm-tblgen's llvm-config binary is dynamically linked against
-            # libc++.so.1, so zig-libcxx must also be present at build time (same
-            # reasoning as recipes/zig-llvm-16/recipe.yaml's own cross bootstrap).
             - zig-llvm-tblgen
             - zig-libcxx
       host:
@@ -454,8 +477,9 @@ outputs:
               then:
                 - zig-lld-bundle
           files:
-            # qemu-ppc64le doesn't faithfully emulate traps
-            - if: is_native or (linux and not (xc_ppc64le or xc_riscv64))
+            # langref.html is produced on NATIVE lanes only, matching
+            # _can_run_stage3 in build-zig.sh (all cross lanes skip Phase 2).
+            - if: is_native
               then:
                 - ${{ library }}doc/langref.html
             - ${{ library }}lib/zig/{c,compiler_rt,fuzzer,ubsan_rt}.zig
@@ -477,42 +501,67 @@ outputs:
             - ${{ library }}lib/zig/std/*
             # Post-install tests
             - etc/conda/test-files/zig*
+
       # Shared libc++ discovery tests (Lld.zig-prefer-shared-libcxx.patch)
       - script:
-          # riscv64: conda-forge publishes no python for linux-riscv64, so the
-          # test env cannot solve. Skip every python-driven test on that target.
-          - if: unix and not riscv64
-            then: PYTHONIOENCODING=utf-8 python testing/test_libcxx_shared.py ${{ conda_triplet }} ${{ zig_triplet }}
-          - if: not unix
-            then: set PYTHONIOENCODING=utf-8 && python testing/test_libcxx_shared.py ${{ conda_triplet }} ${{ zig_triplet }}
-          - if: riscv64
-            then: echo "SKIP libc++ shared-discovery test (riscv64, no target python)"
+          - if: not riscv64
+            then:
+              - if: linux and build_platform != target_platform
+                then:
+                  - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+              - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
+              - ${{ qemu }} "$(command -v python)" testing/test_libcxx_shared.py ${{ conda_triplet }} ${{ zig_triplet }}
+            else:
+              - echo "SKIP libc++ shared-discovery test (riscv64, no target python)"
         requirements:
+          build:
+            - if: linux and build_platform != target_platform
+              then:
+                - ${{ qemu }}
           run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
             - if: not riscv64
               then:
                 - python >=3.10
-                - libcxx
         files:
           recipe:
             - testing/_test_utils.py
             - testing/test_libcxx_shared.py
+
       # Regression test: -Wl,--no-as-needed -lm must put libm in DT_NEEDED.
       - script:
           - if: linux and not riscv64
             then:
-              - python testing/test_dtneeded.py ${{ conda_triplet }}
+              - if: linux and build_platform != target_platform
+                then:
+                  - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+              - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
+              # NOTE: rattler-build 0.68.0 rejects a MULTI-ITEM list under `then:`
+              # in a script step ("expected scalar but got non-scalar"), at ANY
+              # nesting depth. Keep this probe as ONE ;-chained scalar item.
+              - if: target_platform == "linux-ppc64le"
+                then:
+                  - echo "=== ZIGDIAG ppc64le ld probe begin ===" || true; ls -la "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" || true; file "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" || true; head -c 200 "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" | od -c || true; echo "=== ZIGDIAG ppc64le ld probe end ===" || true; export ZIG_VERBOSE_LINK=1 || true
+              - ${{ qemu }} "$(command -v python)" testing/test_dtneeded.py ${{ conda_triplet }}
             else:
               - echo "SKIP DT_NEEDED test (non-linux, or riscv64, no target python)"
         requirements:
+          build:
+            - if: linux and build_platform != target_platform
+              then:
+                - ${{ qemu }}
           run:
             - if: linux and not riscv64
               then:
-                - python >=3.10
                 - binutils_impl_${{ target_platform }}
+                - python >=3.10
+                - sysroot_${{ target_platform }}
         files:
           recipe:
             - testing/test_dtneeded.py
+
       # Functional test using triplet-prefixed binary
       - script:
           - if: linux or is_native
@@ -522,33 +571,31 @@ outputs:
                   - export ZIG_GLOBAL_CACHE_DIR="${HOME:-${TMPDIR:-/tmp}}/.local/share/zig/zig-cache"
                 else:
                   - set ZIG_GLOBAL_CACHE_DIR=%TEMP%\zig-cache
-              - if: riscv64
+              - if: linux and build_platform != target_platform
                 then:
-                  # riscv64: cross-compiled zig binary is foreign to the x86_64
-                  # runner; execute it via the qemu-execve-riscv64 wrapper
-                  # (mirrors the ppc64le wrapper-test pattern below).
-                  - qemu-execve-riscv64 "$(command -v ${{ conda_triplet }}-zig)" version
-                  - qemu-execve-riscv64 "$(command -v ${{ conda_triplet }}-zig)" zen
-                  - qemu-execve-riscv64 "$(command -v ${{ conda_triplet }}-zig)" init
-                  - qemu-execve-riscv64 "$(command -v ${{ conda_triplet }}-zig)" test zig-source/test/behavior.zig
-                else:
-                  - ${{ conda_triplet }}-zig version
-                  - ${{ conda_triplet }}-zig zen
-                  - ${{ conda_triplet }}-zig init
-                  - if: osx
-                    then:
-                      - echo "=== otool -L diagnostics (LLVM dylib duplicate-load investigation, zig-feedstock) ==="
-                      - otool -L "$(command -v ${{ conda_triplet }}-zig)" || true
-                      - find "${PREFIX}/lib/zig-llvm" -name 'libLLVM*.dylib' -exec otool -L {} \; || true
-                      - echo "=== end otool -L diagnostics ==="
-                  - ${{ conda_triplet }}-zig test zig-source/test/behavior.zig
+                  - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+              - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
+              - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" version
+              - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" zen
+              - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" init
+              - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" test zig-source/test/behavior.zig
+              - if: osx
+                then:
+                  - echo "=== otool -L diagnostics (LLVM dylib duplicate-load investigation, zig-feedstock) ==="
+                  - otool -L "$(command -v ${{ conda_triplet }}-zig)" || true
+                  - find "${PREFIX}/lib/zig-llvm" -name 'libLLVM*.dylib' -exec otool -L {} \; || true
+                  - echo "=== end otool -L diagnostics ==="
             else:
               - echo "Skip test on non-emulated archs"
         requirements:
           build:
-            - if: riscv64
+            - if: linux and build_platform != target_platform
               then:
-                - qemu-execve-riscv64
+                - ${{ qemu }}
+          run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
         files:
           source:
             - zig-source/test
@@ -570,6 +617,10 @@ outputs:
               - export ZIG_GLOBAL_CACHE_DIR="${HOME:-${TMPDIR:-/tmp}}/.local/share/zig/zig-cache"
             else:
               - set ZIG_GLOBAL_CACHE_DIR=%TEMP%\zig-cache
+          - if: linux and build_platform != target_platform
+            then:
+              - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+          - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
           - if: linux and not ppc64le and not arm64
             then:
               # Linux: test with ELF --dynamic-list
@@ -580,9 +631,21 @@ outputs:
                   # riscv64: without -target, zig's native auto-detection selects
                   # musl and fails compiling musl crt1.c (0.16.0's bundled musl
                   # tree lacks arch/riscv64/features.h) -- force glibc explicitly
-                  - ${{ conda_triplet }}-zig cc -target ${{ zig_target_triplet }} -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
+                  # -target forces zig to build glibc CRT start files (Scrt1.o etc)
+                  # from its bundled glibc source tree for this arch. test_lld.c
+                  # itself has ZERO #include lines, so the TU that hits
+                  # libc-symbols.h -> <libc-symver.h> (angle-bracket, search-path
+                  # lookup, only under sysdeps/generic not include/) is zig's
+                  # internal glibc-CRT sub-compile, not test_lld.c. Whether an
+                  # outer -isystem here even propagates into that internal
+                  # sub-compile's argv is UNKNOWN -- -v is added to dump
+                  # every clang sub-invocation zig spawns (including the CRT
+                  # build) so the next CI log shows its real argv and settles it.
+                  # If that argv lacks our -isystem, the fix must move into zig's
+                  # glibc builder itself (a patch), not live on this test command.
+                  - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -target ${{ zig_target_triplet }} -isystem "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic" -v -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
                 else:
-                  - ${{ conda_triplet }}-zig cc -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
+                  - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
               - echo "PASS -fuse-ld=lld with --dynamic-list (Linux/ELF)"
           - if: not unix
             then:
@@ -601,13 +664,22 @@ outputs:
               # target: no targets are registered" (PR#123 CI) -- see
               # _zig-cc-common.sh:86-97 for why it is deliberately excluded there too.
               - echo 'int main(void){return 0;}' > /tmp/test_lld.c
-              - ${{ conda_triplet }}-zig cc -fuse-ld=lld -Wl,-rpath,/tmp -o /tmp/test_lld /tmp/test_lld.c
+              - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -fuse-ld=lld -Wl,-rpath,/tmp -o /tmp/test_lld /tmp/test_lld.c
               - echo "PASS -fuse-ld=lld with -rpath (macOS/Mach-O via LLD)"
           - if: ppc64le and linux
             then:
               # LLD lacks ppc64le relocation support; wrapper guard tested via
               # test_zig_toolchain.py (activation package). Raw binary has no wrapper.
               - echo "Skip -fuse-ld=lld test on ppc64le (no wrapper in zig_impl_)"
+        requirements:
+          build:
+            - if: linux and build_platform != target_platform
+              then:
+                - ${{ qemu }}
+          run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
 
       # Verify x86_64-windows-gnu CRT bootstrap: real mingw32 archives in lib-common
       - script:
@@ -642,6 +714,7 @@ outputs:
         env:
           ZIG_TRIPLET: ${{ zig_triplet }}
           CONDA_TRIPLET: ${{ conda_triplet }}
+          ZIG_SYSROOT_SUBPATH: ${{ sysroot }}
           CROSS_COMPILER: ${{ is_cross_compiler }}
           NATIVE_TRIPLET: ${{ xc_build_triplet }}
           NATIVE_ZIG_TRIPLET: ${{ xc_build_zig_triplet }}
@@ -729,6 +802,7 @@ outputs:
                 - bin/${{ xc_build_triplet }}-zig-force-load-cxx
             # Post-install tests
             - etc/conda/test-files/zig*
+
       - script:
           # Verify CONDA_ZIG_BUILD and CONDA_ZIG_HOST are set by activation
           - if: unix
@@ -745,6 +819,10 @@ outputs:
               - echo CONDA_ZIG_HOST=%CONDA_ZIG_HOST%
           # TEMPORARY: ppc64le qemu CI debug probe (SIGSEGV rc=-11 diagnosis,
           # remove once the LLVM-runtimes shared-lib resolution issue is confirmed/fixed).
+          - if: linux and build_platform != target_platform
+            then:
+              - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+          - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
           - if: ppc64le
             then:
               - echo "=== ppc64le qemu CI debug probe ==="
@@ -755,20 +833,15 @@ outputs:
               - export GLIBC_TUNABLES=glibc.pthread.rseq=0
               - echo "=== end ppc64le debug probe ==="
           # Wrapper + functional validation tests (Python, cross-platform)
-          - if: unix and not ppc64le and not riscv64 and not aarch64
-            then: PYTHONIOENCODING=utf-8 python testing/test_zig_toolchain.py
           - if: riscv64
-            then: echo "SKIP zig toolchain wrapper test (riscv64, no target python)"
-          - if: ppc64le
             then:
-              - PYTHONIOENCODING=utf-8 qemu-execve-ppc64le "$(command -v python)" testing/test_zig_toolchain.py; ZIG_TEST_RC=$?; if [ -f /tmp/zig-ppc64le-qemu-debug.log ]; then echo "=== qemu guest-error debug log (ppc64le) ==="; cat /tmp/zig-ppc64le-qemu-debug.log; fi; exit $ZIG_TEST_RC
-          - if: aarch64
-            then:
-              # aarch64: PREFIX/bin/python is target-arch (foreign to the x86_64
-              # runner); execute it via the qemu-execve-aarch64 wrapper.
-              - PYTHONIOENCODING=utf-8 qemu-execve-aarch64 "$(command -v python)" testing/test_zig_toolchain.py
-          - if: not unix
-            then: set PYTHONIOENCODING=utf-8 && python testing/test_zig_toolchain.py
+              - echo "SKIP zig toolchain wrapper test (riscv64, no target python)"
+            else:
+              - if: unix
+                then:
+                  - ${{ qemu }} "$(command -v python)" testing/test_zig_toolchain.py
+                else:
+                  - python testing\test_zig_toolchain.py
           # Cross-compiler .exe shim test (non-Unix only)
           - if: is_cross_compiler and not unix
             then:
@@ -784,23 +857,13 @@ outputs:
               - echo PASS zig cc /MANIFEST* filter
         requirements:
           build:
-            - if: ppc64le
+            - if: linux and build_platform != target_platform
               then:
-                # PR #123: without this, the CI test env runs ppc64le binaries under
-                # the runner's DEFAULT qemu-user, which lacks the rseq syscall
-                # (__NR_rseq=387 on powerpc64); glibc >=2.35 auto-registers rseq at
-                # thread startup -> "Unsupported syscall: 387" -> SIGSEGV in
-                # test_zig_toolchain.py (test_flag_filtering, rc=-11). qemu-execve-ppc64le
-                # (>=11) supports rseq; installing it into the TEST env makes the
-                # emulated python->wrapper->zig chain run under it (matching the build
-                # env's qemu-execve requirement). This is the real fix -- the
-                # GLIBC_TUNABLES=glibc.pthread.rseq=0 band-aid in the test script was
-                # insufficient.
-                - qemu-execve-ppc64le
-            - if: aarch64
-              then:
-                - qemu-execve-aarch64
+                - ${{ qemu }}
           run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
             - if: not riscv64
               then:
                 - python >=3.10
@@ -808,29 +871,47 @@ outputs:
               then:
                 - bash >=5.2
                 - libclang-cpp ${{ llvm_version }}.*
+            # aarch64: the zig-cc wrapper's `#!/usr/bin/env bash` shebang re-exec
+            # under qemu-execve-aarch64 needs a target-arch bash reachable so the
+            # emulated interpreter chain resolves (mirrors the ppc64le precedent
+            # above; run 31839606806 job 94893489213 verified rc=255 "Invalid ELF
+            # image for this architecture" on /usr/bin/env with no target bash).
+            - if: aarch64
+              then:
+                - bash >=5.2
         files:
           recipe:
             - testing/_test_utils.py
             - testing/test-cross-shim.bat
             - testing/test_zig_toolchain.py
+
       # Verify <triplet>-zig-windres wrapper: -o flag translation works
       - script:
           - if: xc_w64
             then:
               - if: unix
-                then: python testing/test_windres.py
-              - if: not unix
-                then: python testing\test_windres.py
+                then:
+                  - ${{ qemu }} "$(command -v python)" testing/test_windres.py
+                else:
+                  - python testing\test_windres.py
             else:
               - echo "SKIP windres wrapper test (non-Windows target)"
         files:
           recipe:
             - testing/test_windres.py
         requirements:
+          build:
+            - if: linux and build_platform != target_platform
+              then:
+                - ${{ qemu }}
           run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
             - if: not riscv64
               then:
                 - python >=3.10
+
       # Verify <triplet>-zig-cc wrapper: -Wl,-eSYM to -Wl,/ENTRY:SYM translation
       - script:
           - if: xc_w64
@@ -849,6 +930,7 @@ outputs:
             - if: not riscv64
               then:
                 - python >=3.10
+
       # Golden/characterization parity tests for the zig-cc wrapper flag
       # translation fragment (recipe/scripts/_zig-cc-common.sh) and its
       # generated C/bash translators (recipe/building/_translate.inc,
@@ -856,19 +938,24 @@ outputs:
       # unix and windows profiles via subprocess/bash-source-capture, so it
       # is NOT gated on xc_w64 and runs once per build.
       - script:
-          - if: unix and not riscv64
-            then: python testing/test_flag_translation_parity.py
-          - if: not unix
-            then: python testing\test_flag_translation_parity.py
-          # Drift guard: the committed generated translators
-          # (_translate.gen.sh / _translate.inc) must stay in sync with the
-          # flag_rules.py manifest they are generated from.
-          - if: unix and not riscv64
-            then: python building/gen_translators.py --check
           - if: riscv64
-            then: echo "SKIP flag-translation parity + drift guard (riscv64, no target python)"
-          - if: not unix
-            then: python building\gen_translators.py --check
+            then:
+              - echo "SKIP flag-translation parity + drift guard (riscv64, no target python)"
+            else:
+              - if: linux and build_platform != target_platform
+                then:
+                  - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+              - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
+              - if: unix
+                then:
+                  - ${{ qemu }} "$(command -v python)" testing/test_flag_translation_parity.py
+                else:
+                  - python testing\test_flag_translation_parity.py
+              - if: unix
+                then:
+                  - ${{ qemu }} "$(command -v python)" building/gen_translators.py --check
+                else:
+                  - python building\gen_translators.py --check
         files:
           recipe:
             - testing/test_flag_translation_parity.py
@@ -880,7 +967,14 @@ outputs:
             - building/_translate.gen.sh
             - building/_translate.inc
         requirements:
+          build:
+            - if: linux and build_platform != target_platform
+              then:
+                - ${{ qemu }}
           run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
             - if: not riscv64
               then:
                 - python >=3.10
@@ -898,6 +992,7 @@ outputs:
         file: install_zig_symlinks.py
         env:
           CONDA_TRIPLET: ${{ conda_triplet }}
+          ZIG_SYSROOT_SUBPATH: ${{ sysroot }}
           cross_target_platform_: ${{ cross_target_platform_ }}
     requirements:
       build:
@@ -915,17 +1010,26 @@ outputs:
           bin:
             - zig
       - script:
-          - if: not arm64
+          - if: linux and build_platform != target_platform
             then:
-              - zig version
+              - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
+              - ${{ qemu }} "$(command -v zig)" version
             else:
-              - echo "Skip on cross-compiled platform"
+              - if: not arm64
+                then:
+                  - zig version
+                else:
+                  - echo "Skip on cross-compiled platform"
         requirements:
           build:
-            - if: riscv64
+            - if: linux and build_platform != target_platform
               then:
-                - qemu-execve-riscv64
-
+                - ${{ qemu }}
+          run:
+            - if: linux and build_platform != target_platform
+              then:
+                - sysroot_${{ target_platform }}
+                
   # ==========================================================================
   # TOOLCHAIN META-PACKAGE: zig-compiler (toolchain metapackage)
   # Bundles zig with C toolchain for full development environment
@@ -953,7 +1057,7 @@ outputs:
           build:
             - if: riscv64
               then:
-                - qemu-execve-riscv64
+                - ${{ qemu }}
 
 about:
   homepage: https://ziglang.org/
