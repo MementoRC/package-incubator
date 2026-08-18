@@ -499,20 +499,31 @@ outputs:
             - ${{ library }}lib/zig/libunwind/*
             - ${{ library }}lib/zig/libtsan/*
             - ${{ library }}lib/zig/std/*
+            # Windows-only: .a alias copies of the .dll.a import libs (zig's
+            # gnu-target linker doesn't search .dll.a) - see build-zig.sh.
+            - if: not unix
+              then:
+                - ${{ library }}lib/zig-llvm/lib/*.a
             # Post-install tests
             - etc/conda/test-files/zig*
 
       # Shared libc++ discovery tests (Lld.zig-prefer-shared-libcxx.patch)
       - script:
-          - if: not riscv64
+          - if: not riscv64 and not xc_warm64
             then:
               - if: linux and build_platform != target_platform
                 then:
                   - export QEMU_LD_PREFIX="${PREFIX}${{ sysroot }}"
               - ${{ "export" if unix else "set" }} PYTHONIOENCODING=utf-8
-              - ${{ qemu }} "$(command -v python)" testing/test_libcxx_shared.py ${{ conda_triplet }} ${{ zig_triplet }}
+              - if: unix
+                then:
+                  # cmd.exe cannot parse `$(command -v python)`; keep it unix-only.
+                  - ${{ qemu }} "$(command -v python)" testing/test_libcxx_shared.py ${{ conda_triplet }} ${{ zig_triplet }}
+                else:
+                  # Windows: bare `python` resolves via PATH; ${{ qemu }} is empty here.
+                  - ${{ qemu }} python testing/test_libcxx_shared.py ${{ conda_triplet }} ${{ zig_triplet }}
             else:
-              - echo "SKIP libc++ shared-discovery test (riscv64, no target python)"
+              - echo "SKIP libc++ shared-discovery test (riscv64 and win-arm64, no target python)"
         requirements:
           build:
             - if: linux and build_platform != target_platform
@@ -522,7 +533,7 @@ outputs:
             - if: linux and build_platform != target_platform
               then:
                 - sysroot_${{ target_platform }}
-            - if: not riscv64
+            - if: not riscv64 and not xc_warm64
               then:
                 - python >=3.10
         files:
@@ -543,7 +554,7 @@ outputs:
               # nesting depth. Keep this probe as ONE ;-chained scalar item.
               - if: target_platform == "linux-ppc64le"
                 then:
-                  - echo "=== ZIGDIAG ppc64le ld probe begin ===" || true; ls -la "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" || true; file "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" || true; head -c 200 "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" | od -c || true; echo "=== ZIGDIAG ppc64le ld probe end ===" || true; export ZIG_VERBOSE_LINK=1 || true
+                  - echo "=== ZIGDIAG ppc64le ld probe begin ===" || true; ls -la "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" || true; file "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" || true; head -c 200 "$PREFIX/bin/powerpc64le-conda-linux-gnu-ld" | od -c || true; echo "=== ZIGDIAG ppc64le ld probe end ===" || true; export ZIG_VERBOSE_LINK=1 || true; set +e; echo "=== PPCDIAG interp/exec probe begin ==="; _ppcld="$PREFIX/bin/powerpc64le-conda-linux-gnu-ld"; if command -v readelf >/dev/null 2>&1; then readelf -l "$_ppcld" | grep -i "program interpreter"; else file "$_ppcld"; fi; _interp=$(readelf -l "$_ppcld" 2>/dev/null | sed -n 's/.*interpreter[:] \(.*\)\]/\1/p'); if [ -n "$_interp" ]; then if ls -la "$_interp" >/dev/null 2>&1; then echo "PPCDIAG interp PRESENT=$_interp"; ls -la "$_interp"; else echo "PPCDIAG interp ABSENT=$_interp"; fi; else echo "PPCDIAG interp UNKNOWN (readelf parse failed)"; fi; echo "PPCDIAG ldd begin"; ldd "$_ppcld"; echo "PPCDIAG ldd end"; echo "PPCDIAG direct-invoke begin"; "$_ppcld" --version; echo "PPCDIAG direct-invoke exit=$?"; echo "PPCDIAG QEMU_LD_PREFIX=${QEMU_LD_PREFIX:-<unset>}"; echo "PPCDIAG LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"; if [ -d /proc/sys/fs/binfmt_misc ]; then ls /proc/sys/fs/binfmt_misc | grep -i ppc || echo "PPCDIAG no ppc64le binfmt_misc entry"; else echo "PPCDIAG binfmt_misc unavailable"; fi; echo "=== PPCDIAG interp/exec probe end ==="; set -e
               - ${{ qemu }} "$(command -v python)" testing/test_dtneeded.py ${{ conda_triplet }}
             else:
               - echo "SKIP DT_NEEDED test (non-linux, or riscv64, no target python)"
@@ -636,14 +647,36 @@ outputs:
                   # itself has ZERO #include lines, so the TU that hits
                   # libc-symbols.h -> <libc-symver.h> (angle-bracket, search-path
                   # lookup, only under sysdeps/generic not include/) is zig's
-                  # internal glibc-CRT sub-compile, not test_lld.c. Whether an
-                  # outer -isystem here even propagates into that internal
-                  # sub-compile's argv is UNKNOWN -- -v is added to dump
-                  # every clang sub-invocation zig spawns (including the CRT
-                  # build) so the next CI log shows its real argv and settles it.
-                  # If that argv lacks our -isystem, the fix must move into zig's
-                  # glibc builder itself (a patch), not live on this test command.
-                  - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -target ${{ zig_target_triplet }} -isystem "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic" -v -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
+                  # internal glibc-CRT sub-compile, not test_lld.c.
+                  #
+                  # SETTLED by run 32062105848 + a read of zig's own source:
+                  #  1. The outer -isystem below does NOT help; it is present in
+                  #     the argv (log line 40751) and the compile still fails at
+                  #     log line 40767. Ineffective, kept only to avoid churn.
+                  #  2. -v does NOT dump zig's internal CRT sub-invocations -- no
+                  #     argv appears in the log between the test command and the
+                  #     fatal error. Confirms the recorded dead-end, so -v is
+                  #     removed here rather than left generating noise.
+                  #  3. src/libs/glibc.zig:458-459 appends
+                  #     -I <lib>/libc/glibc/sysdeps/generic UNCONDITIONALLY, for
+                  #     every target, at all three buildCrtFile call sites. So
+                  #     "zig's builder cannot see sysdeps/generic" is REFUTED --
+                  #     this is not a search-path-construction bug.
+                  #
+                  # RESOLVED (run 32211150065): the sysdeps subtree IS shipped --
+                  # $PREFIX/lib/zig/libc/glibc/sysdeps/generic/libc-symver.h exists
+                  # in the installed package, refuting "not packaged" alongside the
+                  # already-refuted "builder lacks the -I" and "-v shows the argv".
+                  # zig 0.16 reads ZIG_VERBOSE_CC (src/main.zig:853-856, sibling of
+                  # ZIG_VERBOSE_LINK) and dumps the full internal argv
+                  # (src/Compilation.zig:5755/5802); src/libs/glibc.zig:1249-1255
+                  # propagates .verbose_cc into the glibc sub-Compilation, so unlike
+                  # -v this reveals the real internal CRT sub-compile -I list.
+                  #
+                  # NOTE: rattler-build 0.68.0 rejects a MULTI-ITEM list under
+                  # `then:` at ANY nesting depth. The probe MUST stay ;-chained
+                  # into this one scalar item -- do not split it into a second item.
+                  - export ZIG_VERBOSE_CC=1; echo "=== RVDIAG glibc tree begin ==="; ls -la "${PREFIX}/lib/zig/libc/glibc/" || true; echo "--- RVDIAG include/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/include/" || true; echo "--- RVDIAG sysdeps/generic/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic/" || true; echo "--- RVDIAG find libc-symver.h under lib/zig ---"; find "${PREFIX}/lib/zig" -name 'libc-symver.h' -print || true; echo "--- RVDIAG find any sysdeps dir under lib/zig ---"; find "${PREFIX}/lib/zig" -type d -name 'sysdeps' -print || true; echo "=== RVDIAG glibc tree end ==="; ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -target ${{ zig_target_triplet }} -isystem "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic" -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
                 else:
                   - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
               - echo "PASS -fuse-ld=lld with --dynamic-list (Linux/ELF)"
@@ -696,7 +729,7 @@ outputs:
             - testing/test_mingw_crt.py
         requirements:
           run:
-            - if: not riscv64
+            - if: not riscv64 and not xc_warm64
               then:
                 - python >=3.10
 
@@ -833,9 +866,9 @@ outputs:
               - export GLIBC_TUNABLES=glibc.pthread.rseq=0
               - echo "=== end ppc64le debug probe ==="
           # Wrapper + functional validation tests (Python, cross-platform)
-          - if: riscv64
+          - if: riscv64 or xc_warm64
             then:
-              - echo "SKIP zig toolchain wrapper test (riscv64, no target python)"
+              - echo "SKIP zig toolchain wrapper test (riscv64 and win-arm64, no target python)"
             else:
               - if: unix
                 then:
@@ -864,7 +897,7 @@ outputs:
             - if: linux and build_platform != target_platform
               then:
                 - sysroot_${{ target_platform }}
-            - if: not riscv64
+            - if: not riscv64 and not xc_warm64
               then:
                 - python >=3.10
             - if: ppc64le
@@ -908,7 +941,7 @@ outputs:
             - if: linux and build_platform != target_platform
               then:
                 - sysroot_${{ target_platform }}
-            - if: not riscv64
+            - if: not riscv64 and not xc_warm64
               then:
                 - python >=3.10
 
@@ -927,7 +960,7 @@ outputs:
             - testing/test_wl_entry_translation.py
         requirements:
           run:
-            - if: not riscv64
+            - if: not riscv64 and not xc_warm64
               then:
                 - python >=3.10
 
@@ -938,9 +971,9 @@ outputs:
       # unix and windows profiles via subprocess/bash-source-capture, so it
       # is NOT gated on xc_w64 and runs once per build.
       - script:
-          - if: riscv64
+          - if: riscv64 or xc_warm64
             then:
-              - echo "SKIP flag-translation parity + drift guard (riscv64, no target python)"
+              - echo "SKIP flag-translation parity + drift guard (riscv64 and win-arm64, no target python)"
             else:
               - if: linux and build_platform != target_platform
                 then:
@@ -975,7 +1008,7 @@ outputs:
             - if: linux and build_platform != target_platform
               then:
                 - sysroot_${{ target_platform }}
-            - if: not riscv64
+            - if: not riscv64 and not xc_warm64
               then:
                 - python >=3.10
 

@@ -318,6 +318,33 @@ SYNCHRONIZATION_DEF
         # listing any-windows-any before mingw/include here makes any-windows-any
         # win the lookup. This is a deliberate divergence from upstream zig, made
         # because clang was observed not to fall through past the first candidate.
+        #
+        # PR17 osx-64 oscalls.h fix (general, per line 276-279/377-387 forecast):
+        # zig's own cc driver auto-injects "${_zig_inc}" (System bucket) ahead of
+        # both -isystem dirs above, and that directory holds dangling/partial
+        # entries for some CRT headers (oscalls.h) while genuinely lacking others
+        # (crtdefs.h) -- clang's header search stops at the FIRST bucket entry
+        # matching a filename and hard-fails on open rather than falling through
+        # to the next candidate, so any header with a broken entry in _zig_inc
+        # would fatal-error the same way oscalls.h did regardless of System-bucket
+        # ordering. The only bucket that unconditionally outranks _zig_inc
+        # (Angled, per the -H trace precedent above) is -I, so both real include
+        # roots are additionally passed via -I, in the same win_inc-before-
+        # mingw_inc order originally used by the -isystem pair (since
+        # removed, see below), so this generalizes to every mingw CRT
+        # header rather than special-casing oscalls.h.
+        #
+        # PR17 osx-64 duplicate-directory fix: the -isystem pair for
+        # _win_inc/_mingw_inc below was originally kept alongside the -I pair
+        # above, on the assumption -I unconditionally outranks -isystem. In
+        # practice clang resolves argv into a single deduplicated search list
+        # and, when the SAME path is registered both -I and -isystem, treats
+        # it as already-System and DROPS the -I copy ("ignoring duplicate
+        # directory" per clang -H trace) -- so the -isystem duplicate below
+        # silently defeated the -I fix, leaving zig/include's broken
+        # oscalls.h entry to win the lookup again. Do NOT reintroduce these
+        # -isystem lines for _win_inc/_mingw_inc: only the -I forms may be
+        # used for these two paths.
         _crt_flags=(-target "${_win_target}" -mcpu=baseline -c
                     -std=gnu11
                     -D__USE_MINGW_ANSI_STDIO=0
@@ -327,8 +354,8 @@ SYNCHRONIZATION_DEF
                     -D_WIN32_WINNT=0x0f00
                     -DCRTDLL=1
                     -DHAVE_CONFIG_H
-                    -isystem "${_win_inc}"
-                    -isystem "${_mingw_inc}")
+                    -I "${_win_inc}"
+                    -I "${_mingw_inc}")
 
         # DIAGNOSTIC (PR17 osx-64): crt2.o compile has failed with
         # "cannot open file '<_mingw_inc>/crtdefs.h'" despite crtdefs.h being a plain

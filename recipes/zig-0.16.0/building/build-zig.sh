@@ -1164,6 +1164,21 @@ elif _can_run_stage3; then
     _phase2_zig_args+=(-Ddoctest-libc="${ZIG_DOCTEST_LIBC_FILE}")
   fi
 
+  # ZIGDIAG (PR17 win-64 native PHASE2 segfault, run 32062105848): capture the
+  # exact zig binary and argv about to run, on every native lane, before the
+  # invocation that is known to segfault on win-64. Diagnostics only -- must
+  # not change pass/fail outcome.
+  echo "=== ZIGDIAG langref pre-flight ===" >&2
+  if [[ -f "${PREFIX}/bin/zig" ]]; then
+    echo "  ${PREFIX}/bin/zig exists, size: $(wc -c < "${PREFIX}/bin/zig" 2>/dev/null || echo unknown) bytes" >&2
+  else
+    echo "  ${PREFIX}/bin/zig MISSING -- langref invocation below will fail immediately" >&2
+  fi
+  "${PREFIX}/bin/zig" version >&2 || echo "  WARN: zig version failed" >&2
+  "${PREFIX}/bin/zig" env >&2 || echo "  WARN: zig env failed" >&2
+  echo "  argv: $(IFS=' '; echo "${_stage3_runner[*]:-}") ${PREFIX}/bin/zig build langref --prefix ${PREFIX} -Dversion-string=${PKG_VERSION} $(IFS=' '; echo "${_phase2_zig_args[*]}")" >&2
+  echo "=== end ZIGDIAG langref pre-flight ===" >&2
+
   (
     cd "${cmake_source_dir}" &&
     "${_stage3_runner[@]+"${_stage3_runner[@]}"}" "${PREFIX}/bin/zig" build langref \
@@ -1171,6 +1186,36 @@ elif _can_run_stage3; then
       -Dversion-string="${PKG_VERSION}" \
       "${_phase2_zig_args[@]}"
   ) || {
+    _phase2_rc=$?
+    _phase2_sig=0
+    [[ ${_phase2_rc} -gt 128 ]] && _phase2_sig=$(( _phase2_rc - 128 )) || true
+    echo "  ZIGDIAG: langref invocation exit code ${_phase2_rc} (signal ${_phase2_sig})" >&2
+    if is_not_unix; then
+      # win-64-only: re-run once with --verbose so the log shows the last
+      # build-runner step reached before the segfault (docgen compile,
+      # doctest, or the build runner itself). Failure-tolerant; does not
+      # change the outcome below. Gated to win-64 so the currently-GREEN
+      # linux-64/osx-arm64 native lanes see no extra output.
+      echo "=== ZIGDIAG win-64 langref failure: re-running with --verbose to localize crash step ===" >&2
+      _zigdiag_verbose_log="$(mktemp "${TMPDIR:-/tmp}/zig-langref-verbose.XXXXXX" 2>/dev/null || echo "${TMPDIR:-/tmp}/zig-langref-verbose.$$")"
+      _zigdiag_verbose_rc=0
+      (
+        cd "${cmake_source_dir}" &&
+        "${_stage3_runner[@]+"${_stage3_runner[@]}"}" "${PREFIX}/bin/zig" build langref --verbose \
+          --prefix "${PREFIX}" \
+          -Dversion-string="${PKG_VERSION}" \
+          "${_phase2_zig_args[@]}"
+      ) >"${_zigdiag_verbose_log}" 2>&1 || _zigdiag_verbose_rc=$?
+      echo "  --verbose retry exit code: ${_zigdiag_verbose_rc}" >&2
+      echo "  --- last 80 lines of --verbose retry log ---" >&2
+      tail -80 "${_zigdiag_verbose_log}" >&2 || true
+      echo "  --- end --verbose retry log ---" >&2
+      for _crash_glob in "${SRC_DIR}"/core* "${SRC_DIR}"/*.dmp "${TMPDIR:-/tmp}"/core* "${cmake_source_dir}"/core*; do
+        compgen -G "${_crash_glob}" >/dev/null 2>&1 && echo "  possible crash artifact: ${_crash_glob}" >&2 || true
+      done
+      rm -f "${_zigdiag_verbose_log}"
+      echo "=== end ZIGDIAG win-64 langref failure ===" >&2
+    fi
     if ! is_cross; then
       echo "ERROR: Phase 2 langref build failed (native build, expected to succeed)" >&2
       exit 1
