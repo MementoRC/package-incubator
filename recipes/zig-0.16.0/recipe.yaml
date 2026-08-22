@@ -613,7 +613,7 @@ outputs:
 
       # Verify zig cc compile+run works (MSYS2 UCRT DLL resolution on Windows)
       - script:
-          - if: not unix
+          - if: not unix and not xc_warm64
             then:
               - echo int main(void){return 0;} > %TEMP%\test_run.c
               - ${{ conda_triplet }}-zig cc -mconsole -o %TEMP%\test_run.exe %TEMP%\test_run.c
@@ -676,7 +676,30 @@ outputs:
                   # NOTE: rattler-build 0.68.0 rejects a MULTI-ITEM list under
                   # `then:` at ANY nesting depth. The probe MUST stay ;-chained
                   # into this one scalar item -- do not split it into a second item.
-                  - export ZIG_VERBOSE_CC=1; echo "=== RVDIAG glibc tree begin ==="; ls -la "${PREFIX}/lib/zig/libc/glibc/" || true; echo "--- RVDIAG include/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/include/" || true; echo "--- RVDIAG sysdeps/generic/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic/" || true; echo "--- RVDIAG find libc-symver.h under lib/zig ---"; find "${PREFIX}/lib/zig" -name 'libc-symver.h' -print || true; echo "--- RVDIAG find any sysdeps dir under lib/zig ---"; find "${PREFIX}/lib/zig" -type d -name 'sysdeps' -print || true; echo "=== RVDIAG glibc tree end ==="; ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -target ${{ zig_target_triplet }} -isystem "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic" -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
+                  #
+                  # RVDIAG2 (appended below, same scalar, same constraint): does
+                  # clang honour a plain -I pointing at sysdeps/generic for an
+                  # angle include of libc-symver.h? Preprocesses a 2-line probe
+                  # file with -H -E -nostdinc and exactly the two -I dirs (include,
+                  # then sysdeps/generic, mirroring the real argv's relative
+                  # order) so -H prints the header search list + inclusion tree.
+                  #
+                  # ORDERING (non-obvious, do not "tidy" this to the end):
+                  # rattler-build runs this script under `set -e`. The real test
+                  # command below is the KNOWN, EXPECTED failure point (the exact
+                  # libc-symver.h fatal error under diagnosis) -- if RVDIAG2 ran
+                  # after it, `set -e` would abort the script the instant that
+                  # command fails and RVDIAG2 would NEVER execute, silently
+                  # burning a full CI cycle for no diagnostic output. So RVDIAG2
+                  # runs BEFORE the real test command instead, unconditionally,
+                  # and every RVDIAG2 command that touches the filesystem or
+                  # invokes zig stays `|| true`-guarded so a probe failure can
+                  # never mask or replace the real test's result. Because
+                  # RVDIAG2 no longer runs after the real test, there is no need
+                  # to capture/restore its exit status -- no `status=$?`, no
+                  # trailing `( exit $status )`; the real test command is simply
+                  # last again, so its own exit code is the step's exit code.
+                  - export ZIG_VERBOSE_CC=1; echo "=== RVDIAG glibc tree begin ==="; ls -la "${PREFIX}/lib/zig/libc/glibc/" || true; echo "--- RVDIAG include/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/include/" || true; echo "--- RVDIAG sysdeps/generic/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic/" || true; echo "--- RVDIAG find libc-symver.h under lib/zig ---"; find "${PREFIX}/lib/zig" -name 'libc-symver.h' -print || true; echo "--- RVDIAG find any sysdeps dir under lib/zig ---"; find "${PREFIX}/lib/zig" -type d -name 'sysdeps' -print || true; echo "=== RVDIAG glibc tree end ==="; echo "=== RVDIAG2 begin ==="; printf '#include <libc-symver.h>\nint main(void){return 0;}\n' > /tmp/rvdiag2_probe.c || true; echo "--- RVDIAG2 include/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/include/" || true; echo "--- RVDIAG2 sysdeps/generic/ ---"; ls -la "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic/" || true; echo "--- RVDIAG2 preprocess -H -E ---"; ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -target ${{ zig_target_triplet }} -nostdinc -I "${PREFIX}/lib/zig/libc/glibc/include" -I "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic" -H -E /tmp/rvdiag2_probe.c -o /tmp/rvdiag2_probe.i 2>&1 || true; echo "=== RVDIAG2 end ==="; ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -target ${{ zig_target_triplet }} -isystem "${PREFIX}/lib/zig/libc/glibc/sysdeps/generic" -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
                 else:
                   - ${{ qemu }} "$(command -v ${{ conda_triplet }}-zig)" cc -Wno-unused-command-line-argument -fuse-ld=lld -Wl,--dynamic-list=/tmp/test_lld.dyn -o /tmp/test_lld /tmp/test_lld.c
               - echo "PASS -fuse-ld=lld with --dynamic-list (Linux/ELF)"

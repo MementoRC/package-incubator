@@ -86,6 +86,16 @@ _is_emulated = (
     and os.environ.get("CI", "") != ""
 )
 
+# Cross-compiler detection: build != host means the zig binary targets a
+# different platform than the machine it runs on (e.g. qemu-emulated aarch64
+# lane building a build_platform-native zig).  Unlike _is_emulated, this is
+# CI-independent -- it holds even outside CI as long as the env vars are set.
+_is_cross_compiler = (
+    os.environ.get("CONDA_ZIG_BUILD", "") != os.environ.get("CONDA_ZIG_HOST", "")
+    and os.environ.get("CONDA_ZIG_BUILD", "") != ""
+    and os.environ.get("CONDA_ZIG_HOST", "") != ""
+)
+
 
 # ---------------------------------------------------------------------------
 # Subprocess runner

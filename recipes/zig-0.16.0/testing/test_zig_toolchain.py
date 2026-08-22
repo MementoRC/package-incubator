@@ -30,6 +30,7 @@ from pathlib import Path
 from _test_utils import (
     _build_is_win,
     _build_is_mac,
+    _is_cross_compiler,
     _is_emulated,
     _native_machine,
     _record,
@@ -72,8 +73,8 @@ setup_zig_global_cache_dir()
 # Cross-compiler detection: build != host means the zig binary targets a
 # different platform.  Cross-compilers use the *prior published* zig_impl,
 # so linking tests may fail due to older patches.
+# (_is_cross_compiler imported from _test_utils; single source of truth)
 _build_zig = os.environ.get("CONDA_ZIG_BUILD", "")
-_is_cross_compiler = _build_zig != _host and _build_zig != "" and _host != ""
 
 _prefix = Path(os.environ.get("CONDA_PREFIX", ""))
 

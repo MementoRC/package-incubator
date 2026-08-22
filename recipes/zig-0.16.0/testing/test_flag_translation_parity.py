@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from _test_utils import PASS, FAIL, WARN, SKIP, _results, _is_emulated
+from _test_utils import PASS, FAIL, WARN, SKIP, _results, _is_emulated, _is_cross_compiler
 
 # Anchor: __file__ is <base>/testing/<thisfile>. At local-dev time <base> is
 # recipe/; at rattler-build test time the `files: recipe:` entries (recipe.yaml)
@@ -683,7 +683,7 @@ def run_generated_c_leg() -> None:
     """Leg (A): assert the GENERATED C translator (_translate.inc) matches
     the golden table's token-based predicates."""
     print("--- Generated-C leg (_translate.inc via _translate_harness.c) ---")
-    if _is_emulated:
+    if _is_emulated or _is_cross_compiler:
         SKIP("generated-C leg (genC)", "emulated/cross CI — cannot execute target binary")
         return
     harness = _compile_c_harness()
@@ -750,7 +750,7 @@ def run_generated_bash_leg() -> None:
     if not _BASH:
         SKIP("generated-bash leg (genB)", "bash unavailable")
         return
-    if _is_emulated:
+    if _is_emulated or _is_cross_compiler:
         SKIP("generated-bash leg (genB)", "emulated/cross CI — cannot execute target binary")
         return
 
@@ -777,7 +777,7 @@ def main() -> int:
     print("--- Golden table (bash-source-capture of _zig-cc-common.sh) ---")
 
     expected_red: list[str] = []
-    if _is_emulated:
+    if _is_emulated or _is_cross_compiler:
         SKIP("actual-bash leg (golden table)", "emulated/cross CI — cannot execute target binary")
     else:
         for case in CASES:
